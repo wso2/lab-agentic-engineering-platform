@@ -18,7 +18,7 @@ import {
 import { ArrowLeft, Check, Edit, Rocket } from '@wso2/oxygen-ui-icons-react';
 import { api } from '../services/api';
 import type { Design, DesignComponent, Project, Spec } from '../services/api';
-import { organizationOverviewPath, projectComponentsPath } from '../lib/paths';
+import { organizationOverviewPath, projectOverviewPath } from '../lib/paths';
 
 // ---------------------------------------------------------------------------
 // Stepper indicator
@@ -460,7 +460,7 @@ export default function ProjectSpecPage() {
     const result = await api.approveDesign(routeOrgId, projectId);
     if (result) {
       setDesign(result);
-      navigate(projectComponentsPath(routeOrgId, projectId));
+      navigate(projectOverviewPath(routeOrgId, projectId));
     }
     setApproving(false);
   };
@@ -649,7 +649,7 @@ export default function ProjectSpecPage() {
           {designApproved && (
             <Button
               variant="contained"
-              onClick={() => navigate(projectComponentsPath(routeOrgId, projectId!))}
+              onClick={() => navigate(projectOverviewPath(routeOrgId, projectId!))}
             >
               View Components
             </Button>

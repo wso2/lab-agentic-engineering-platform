@@ -18,7 +18,7 @@ import { ArrowLeft, Clock } from '@wso2/oxygen-ui-icons-react';
 import { formatDistanceToNow } from 'date-fns';
 import { api } from '../services/api';
 import type { ComponentDefinition, ComponentTask, Project, TaskStatus } from '../services/api';
-import { organizationOverviewPath, projectComponentsPath } from '../lib/paths';
+import { organizationOverviewPath, projectOverviewPath } from '../lib/paths';
 
 // ---------------------------------------------------------------------------
 // Status helpers
@@ -550,7 +550,7 @@ export default function ComponentDetailPage() {
         <Button
           variant="text"
           startIcon={<ArrowLeft size={16} />}
-          onClick={() => navigate(projectComponentsPath(routeOrgId, projectId!))}
+          onClick={() => navigate(projectOverviewPath(routeOrgId, projectId!))}
           sx={{ mb: 2 }}
         >
           Back to Components

@@ -14,10 +14,6 @@ export function projectOverviewPath(orgId: string, projectId: string): string {
   return `/organizations/${orgId}/projects/${projectId}`;
 }
 
-export function projectPromptPath(orgId: string, projectId: string): string {
-  return `/organizations/${orgId}/projects/${projectId}/prompt`;
-}
-
 export function projectRequirementsPath(orgId: string, projectId: string): string {
   return `/organizations/${orgId}/projects/${projectId}/requirements`;
 }
@@ -33,10 +29,6 @@ export function projectSpecPath(orgId: string, projectId: string): string {
 /** @deprecated Design is now part of the spec wizard. Redirects to the spec path. */
 export function projectDesignPath(orgId: string, projectId: string): string {
   return `/organizations/${orgId}/projects/${projectId}/spec`;
-}
-
-export function projectComponentsPath(orgId: string, projectId: string): string {
-  return `/organizations/${orgId}/projects/${projectId}/components`;
 }
 
 export function projectTasksPath(orgId: string, projectId: string): string {

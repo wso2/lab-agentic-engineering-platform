@@ -7,12 +7,10 @@ import AsdlcLayout from './layouts/AsdlcLayout';
 import OrgOverviewPage from './pages/OrgOverviewPage';
 import OrganizationCreatePage from './pages/OrganizationCreatePage';
 import ProjectCreatePage from './pages/ProjectCreatePage';
-import ProjectPromptPage from './pages/ProjectPromptPage';
 import ProjectArchitecturePage from './pages/ProjectArchitecturePage';
 import ProjectTasksPage from './pages/ProjectTasksPage';
 import ProjectRequirementsPage from './pages/ProjectRequirementsPage';
 import ProjectOverviewPage from './pages/ProjectOverviewPage';
-import ProjectComponentsPage from './pages/ProjectComponentsPage';
 import ComponentDetailPage from './pages/ComponentDetailPage';
 import ComponentBuildPage from './pages/ComponentBuildPage';
 import ComponentDeployPage from './pages/ComponentDeployPage';
@@ -66,7 +64,6 @@ export function App() {
 
         <Route path="/organizations/:orgId/projects/:projectId" element={<Outlet />}>
           <Route index element={<ProjectOverviewPage />} />
-          <Route path="prompt" element={<ProjectPromptPage />} />
           <Route path="requirements" element={<ProjectRequirementsPage />} />
           <Route path="architecture" element={<ProjectArchitecturePage />} />
           <Route path="tasks" element={<ProjectTasksPage />} />
@@ -74,7 +71,8 @@ export function App() {
           <Route path="implementation" element={<Navigate to="../tasks" replace />} />
           <Route path="spec" element={<Navigate to="../requirements" replace />} />
           <Route path="design" element={<Navigate to="../requirements" replace />} />
-          <Route path="components" element={<ProjectComponentsPage />} />
+          <Route path="prompt" element={<Navigate to=".." replace />} />
+          <Route path="components" element={<Navigate to=".." replace />} />
 
           <Route path="components/:componentId" element={<Outlet />}>
             <Route index element={<ComponentDetailPage />} />

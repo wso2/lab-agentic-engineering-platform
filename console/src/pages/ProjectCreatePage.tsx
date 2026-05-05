@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Box, Button, Stack, TextField, Typography } from '@wso2/oxygen-ui';
 import { ArrowLeft } from '@wso2/oxygen-ui-icons-react';
 import { api, ApiError } from '../services/api';
-import { organizationOverviewPath, projectPromptPath } from '../lib/paths';
+import { organizationOverviewPath, projectOverviewPath } from '../lib/paths';
 
 export default function ProjectCreatePage() {
   const navigate = useNavigate();
@@ -35,7 +35,7 @@ export default function ProjectCreatePage() {
       const project = await api.createProject(routeOrgId, {
         name: name.trim(),
       });
-      navigate(projectPromptPath(routeOrgId, project.id));
+      navigate(projectOverviewPath(routeOrgId, project.id));
     } catch (err) {
       const message = err instanceof ApiError ? err.message : 'Failed to create project. Please try again.';
       setErrors({ form: message });
@@ -79,6 +79,7 @@ export default function ProjectCreatePage() {
           helperText={errors.name}
           required
           fullWidth
+          autoFocus
         />
 
         <Stack direction="row" justifyContent="flex-end" gap={1}>

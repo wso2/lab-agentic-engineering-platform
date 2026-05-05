@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Box,
@@ -11,7 +11,6 @@ import {
   useTheme,
 } from '@wso2/oxygen-ui';
 import { Building, Check, Rocket } from '@wso2/oxygen-ui-icons-react';
-import { api } from '../services/api';
 import { projectRequirementsPath } from '../lib/paths';
 
 const PROMPT_TEMPLATES = [
@@ -50,16 +49,6 @@ export default function ProjectPromptPage() {
   const [prompt, setPrompt] = useState('');
   const [selectedCard, setSelectedCard] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  // If a spec already exists, redirect to requirements page
-  useEffect(() => {
-    if (!projectId) return;
-    api.getSpec(routeOrgId, projectId).then((spec) => {
-      if (spec) {
-        navigate(projectRequirementsPath(routeOrgId, projectId), { replace: true });
-      }
-    });
-  }, [projectId, routeOrgId, navigate]);
 
   const handleSubmit = () => {
     if (!projectId || !prompt.trim()) return;

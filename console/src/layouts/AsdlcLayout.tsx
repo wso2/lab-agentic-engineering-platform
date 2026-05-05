@@ -43,7 +43,6 @@ import {
   projectRequirementsPath,
   projectArchitecturePath,
   projectTasksPath,
-  projectComponentsPath,
   componentDetailPath,
   componentBuildPath,
   componentDeployPath,
@@ -79,12 +78,6 @@ export default function AsdlcLayout() {
 
   // MOCK: Listen for copilot open requests from pages
   useEffect(() => subscribeCopilotRequest(() => setCopilotOpen(true)), []);
-
-  // MOCK: Auto-close copilot on the prompt page (it's for project init, not iteration)
-  const isPromptPage = Boolean(matchPath('/organizations/:orgId/projects/:projectId/prompt', location.pathname));
-  useEffect(() => {
-    if (isPromptPage) setCopilotOpen(false);
-  }, [isPromptPage]);
 
   const routeOrgId = orgId ?? claimsOrgId;
   const inProjectLevel = Boolean(projectId);
@@ -174,11 +167,6 @@ export default function AsdlcLayout() {
       return 'overview';
     }
     if (
-      matchPath('/organizations/:orgId/projects/:projectId/components', location.pathname)
-    ) {
-      return 'components';
-    }
-    if (
       matchPath('/organizations/:orgId/projects/:projectId/requirements', location.pathname)
     ) {
       return 'requirements';
@@ -193,12 +181,7 @@ export default function AsdlcLayout() {
     ) {
       return 'tasks';
     }
-    if (
-      matchPath('/organizations/:orgId/projects/:projectId/prompt', location.pathname)
-    ) {
-      return '';
-    }
-    return 'requirements';
+    return 'overview';
   })();
 
   const handleSidebarSelect = (id: string) => {
@@ -235,6 +218,9 @@ export default function AsdlcLayout() {
 
     // Project-level navigation
     switch (id) {
+      case 'overview':
+        navigate(projectOverviewPath(routeOrgId, projectId));
+        break;
       case 'requirements':
         navigate(projectRequirementsPath(routeOrgId, projectId));
         break;
@@ -243,9 +229,6 @@ export default function AsdlcLayout() {
         break;
       case 'tasks':
         navigate(projectTasksPath(routeOrgId, projectId));
-        break;
-      case 'components':
-        navigate(projectComponentsPath(routeOrgId, projectId));
         break;
       default:
         break;
@@ -278,10 +261,16 @@ export default function AsdlcLayout() {
           <Header.Toggle collapsed={collapsed} onToggle={() => setCollapsed((prev) => !prev)} />
 
           <Header.Brand>
-            <Stack direction="row" alignItems="center" gap={1}>
+            <Stack
+              direction="row"
+              alignItems="center"
+              gap={1}
+              onClick={() => navigate(organizationOverviewPath(routeOrgId))}
+              sx={{ cursor: 'pointer' }}
+            >
               <Compass size={24} />
               <Box component="span" sx={{ fontWeight: 700, fontSize: '1.1rem', whiteSpace: 'nowrap' }}>
-                ASDLC
+                App Factory
               </Box>
             </Stack>
           </Header.Brand>
@@ -567,6 +556,12 @@ export default function AsdlcLayout() {
             {/* Project-level sidebar (not inside a component) */}
             {inProjectLevel && !inComponentLevel && (
               <Sidebar.Category>
+                <Sidebar.Item id="overview">
+                  <Sidebar.ItemIcon>
+                    <LayoutDashboard size={20} />
+                  </Sidebar.ItemIcon>
+                  <Sidebar.ItemLabel>Overview</Sidebar.ItemLabel>
+                </Sidebar.Item>
                 <Sidebar.Item id="requirements">
                   <Sidebar.ItemIcon>
                     <ScrollText size={20} />
@@ -584,12 +579,6 @@ export default function AsdlcLayout() {
                     <ClipboardList size={20} />
                   </Sidebar.ItemIcon>
                   <Sidebar.ItemLabel>Tasks</Sidebar.ItemLabel>
-                </Sidebar.Item>
-                <Sidebar.Item id="components">
-                  <Sidebar.ItemIcon>
-                    <Package size={20} />
-                  </Sidebar.ItemIcon>
-                  <Sidebar.ItemLabel>Components</Sidebar.ItemLabel>
                 </Sidebar.Item>
               </Sidebar.Category>
             )}
@@ -653,7 +642,7 @@ export default function AsdlcLayout() {
 
       <AppShell.Footer>
         <Footer
-          copyright={`\u00A9 ${new Date().getFullYear()} ASDLC Platform. All rights reserved.`}
+          copyright={`\u00A9 ${new Date().getFullYear()} App Factory Platform. All rights reserved.`}
           termsUrl="#terms"
           privacyUrl="#privacy"
         />
