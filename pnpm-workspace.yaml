@@ -1,0 +1,3 @@
+packages:
+  - console
+  - ui-components/*

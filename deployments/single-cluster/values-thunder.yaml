@@ -1,0 +1,258 @@
+# Shared Thunder helm values for k3d dev setups.
+# Only overrides that differ from Thunder chart defaults.
+
+fullnameOverride: thunder
+
+# Thunder v0.23.0+ manages its own HTTPRoute
+httproute:
+  enabled: true
+  parentRefs:
+    - name: gateway-default
+      namespace: openchoreo-control-plane
+  hostnames:
+    - thunder.openchoreo.localhost
+    - ${PUBLIC_THUNDER_HOST}
+
+# Not using nginx ingress in openchoreo
+ingress:
+  enabled: false
+
+# SQLite requires a single writer pod
+deployment:
+  replicaCount: 1
+
+hpa:
+  enabled: false
+
+configuration:
+  server:
+    httpOnly: true
+    publicUrl: "${PUBLIC_THUNDER_URL}"
+
+  gateClient:
+    hostname: "${PUBLIC_THUNDER_HOST}"
+    port: ${PUBLIC_THUNDER_PORT}
+    scheme: "${PUBLIC_THUNDER_SCHEME}"
+
+  database:
+    config:
+      type: sqlite
+      sqliteOptions: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+    runtime:
+      type: sqlite
+      sqliteOptions: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+    user:
+      type: sqlite
+      sqliteOptions: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+
+  cors:
+    allowedOrigins:
+      - "http://openchoreo.localhost:8080"
+      - "http://localhost:7007"
+      - "http://localhost:8090"
+      - "${PUBLIC_THUNDER_URL}"
+      - "${PUBLIC_CONSOLE_URL}"
+
+  passkey:
+    allowedOrigins:
+      - "http://openchoreo.localhost:8080"
+
+  # Thunder 0.34.0 added a Consent Server that defaults to PostgreSQL. We don't
+  # run a separate Postgres for it — keep everything on SQLite alongside the
+  # main Thunder DBs. Mirrors agent-manager's wso2-amp-thunder-extension config.
+  consent:
+    enabled: true
+    baseUrl: "http://localhost:9090/api/v1"
+    timeout: 5
+    maxRetries: 3
+    server:
+      port: 9090
+      hostname: "localhost"
+    database:
+      type: sqlite
+      sqlitePath: "repository/database/consentdb.db"
+      sqliteOptions: "_pragma=journal_mode(WAL)&_pragma=cache_size(-16000)"
+
+setup:
+  enabled: true
+  # Keep the setup Job around after a failure so we can read its logs.
+  preserveJob: true
+  ttlSecondsAfterFinished: 86400
+
+# Bootstrap scripts — only ASDLC-specific applications. Each script follows
+# the agent-manager pattern: source common.sh (provided by the Thunder image
+# at /opt/thunder/bootstrap/common.sh) for log_* and thunder_api_call helpers.
+# The built-in 01-default-resources.sh and 02-sample-resources.sh run first
+# (they're shipped with the Thunder image); these add ASDLC's own apps.
+bootstrap:
+  scripts:
+    60-asdlc-console-app.sh: |
+      #!/bin/bash
+      set -e
+      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+      source "${SCRIPT_DIR}/common.sh"
+
+      log_info "Looking up default OU + auth flow..."
+      RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
+      if [ "$HTTP_CODE" != "200" ]; then log_error "Failed to fetch OU (HTTP $HTTP_CODE): $BODY"; exit 1; fi
+      OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+      RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
+      AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+      log_info "Checking if 'ASDLC Console' application exists..."
+      RESPONSE=$(thunder_api_call GET "/applications")
+      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
+      if [ "$HTTP_CODE" != "200" ]; then log_error "Failed to fetch apps (HTTP $HTTP_CODE)"; exit 1; fi
+
+      APP_PAYLOAD=$(cat <<JSON
+      {
+        "name": "ASDLC Console",
+        "description": "ASDLC Platform Console",
+        "ouId": "${OU_ID}",
+        "authFlowId": "${AUTH_FLOW_ID}",
+        "inboundAuthConfig": [{
+          "type": "oauth2",
+          "config": {
+            "clientId": "asdlc-console-client",
+            "redirectUris": ["http://localhost:8090", "${PUBLIC_CONSOLE_URL}"],
+            "grantTypes": ["authorization_code", "refresh_token"],
+            "responseTypes": ["code"],
+            "tokenEndpointAuthMethod": "none",
+            "pkceRequired": true,
+            "publicClient": true,
+            "token": {
+              "accessToken": {"validityPeriod": 86400, "userAttributes": ["given_name","family_name","username","groups"]},
+              "idToken": {"validityPeriod": 86400, "userAttributes": ["given_name","family_name","username","groups"]}
+            }
+          }
+        }]
+      }
+      JSON
+      )
+
+      if echo "$BODY" | grep -q '"clientId":"asdlc-console-client"'; then
+        APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"asdlc-console-client"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        log_info "ASDLC Console exists ($APP_ID), updating..."
+        RESPONSE=$(thunder_api_call PUT "/applications/$APP_ID" "$APP_PAYLOAD")
+        HTTP_CODE="${RESPONSE: -3}"
+        if [ "$HTTP_CODE" != "200" ]; then log_error "Update failed: ${RESPONSE%???}"; exit 1; fi
+      else
+        log_info "Creating ASDLC Console..."
+        RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+        HTTP_CODE="${RESPONSE: -3}"
+        if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then log_error "Create failed: ${RESPONSE%???}"; exit 1; fi
+      fi
+      log_success "ASDLC Console application configured"
+
+    61-asdlc-api-app.sh: |
+      #!/bin/bash
+      set -e
+      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+      source "${SCRIPT_DIR}/common.sh"
+
+      RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+      BODY="${RESPONSE%???}"
+      OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+      log_info "Checking if 'ASDLC API Service' application exists..."
+      RESPONSE=$(thunder_api_call GET "/applications")
+      BODY="${RESPONSE%???}"
+
+      APP_PAYLOAD=$(cat <<JSON
+      {
+        "name": "ASDLC API Service",
+        "description": "ASDLC API Service - service-to-service client for OpenChoreo",
+        "ouId": "${OU_ID}",
+        "inboundAuthConfig": [{
+          "type": "oauth2",
+          "config": {
+            "clientId": "asdlc-api-client",
+            "clientSecret": "asdlc-api-client-secret",
+            "grantTypes": ["client_credentials"],
+            "tokenEndpointAuthMethod": "client_secret_post",
+            "pkceRequired": false,
+            "publicClient": false,
+            "token": {"accessToken": {"validityPeriod": 3600}}
+          }
+        }]
+      }
+      JSON
+      )
+
+      if echo "$BODY" | grep -q '"clientId":"asdlc-api-client"'; then
+        APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"asdlc-api-client"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        log_info "ASDLC API exists ($APP_ID), updating..."
+        RESPONSE=$(thunder_api_call PUT "/applications/$APP_ID" "$APP_PAYLOAD")
+        HTTP_CODE="${RESPONSE: -3}"
+        if [ "$HTTP_CODE" != "200" ]; then log_error "Update failed: ${RESPONSE%???}"; exit 1; fi
+      else
+        log_info "Creating ASDLC API Service..."
+        RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
+        HTTP_CODE="${RESPONSE: -3}"
+        if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then log_error "Create failed: ${RESPONSE%???}"; exit 1; fi
+      fi
+      log_success "ASDLC API Service configured"
+
+    # Auth-model refactor: per-target Service JWT clients used by the BFF
+    # for outbound calls to git-service / agents-service / remote-worker.
+    # Each client_credentials principal mints a token with audience pinned
+    # to its target — the receiving service only accepts tokens addressed
+    # to it, so a leaked git-service token can't be replayed at agents.
+    62-asdlc-bff-to-services-app.sh: |
+      #!/bin/bash
+      set -e
+      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+      source "${SCRIPT_DIR}/common.sh"
+
+      RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+      BODY="${RESPONSE%???}"
+      OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+      ensure_app() {
+        local NAME="$1"; local DESC="$2"; local CLIENT_ID="$3"; local CLIENT_SECRET="$4"
+        log_info "Checking if '$NAME' exists..."
+        RESPONSE=$(thunder_api_call GET "/applications")
+        BODY="${RESPONSE%???}"
+
+        local PAYLOAD=$(cat <<JSON
+        {
+          "name": "$NAME",
+          "description": "$DESC",
+          "ouId": "${OU_ID}",
+          "inboundAuthConfig": [{
+            "type": "oauth2",
+            "config": {
+              "clientId": "$CLIENT_ID",
+              "clientSecret": "$CLIENT_SECRET",
+              "grantTypes": ["client_credentials"],
+              "tokenEndpointAuthMethod": "client_secret_post",
+              "pkceRequired": false,
+              "publicClient": false,
+              "token": {"accessToken": {"validityPeriod": 3600}}
+            }
+          }]
+        }
+      JSON
+        )
+
+        if echo "$BODY" | grep -q "\"clientId\":\"$CLIENT_ID\""; then
+          local APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep "\"clientId\":\"$CLIENT_ID\"" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+          log_info "$NAME exists ($APP_ID), updating..."
+          RESPONSE=$(thunder_api_call PUT "/applications/$APP_ID" "$PAYLOAD")
+          HTTP_CODE="${RESPONSE: -3}"
+          [ "$HTTP_CODE" = "200" ] || { log_error "Update failed: ${RESPONSE%???}"; return 1; }
+        else
+          log_info "Creating $NAME..."
+          RESPONSE=$(thunder_api_call POST "/applications" "$PAYLOAD")
+          HTTP_CODE="${RESPONSE: -3}"
+          [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ] || { log_error "Create failed: ${RESPONSE%???}"; return 1; }
+        fi
+        log_success "$NAME configured"
+      }
+
+      ensure_app "ASDLC BFF to git-service"     "BFF outbound Service JWT, audience: git-service"     "asdlc-bff-to-git-service"     "asdlc-bff-to-git-service-secret"
+      ensure_app "ASDLC BFF to agents-service"  "BFF outbound Service JWT, audience: agents-service"  "asdlc-bff-to-agents-service"  "asdlc-bff-to-agents-service-secret"
+      ensure_app "ASDLC BFF to remote-worker"   "BFF outbound Service JWT, audience: remote-worker"   "asdlc-bff-to-remote-worker"   "asdlc-bff-to-remote-worker-secret"

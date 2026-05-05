@@ -1,0 +1,884 @@
+# Docker Build Workflow Infrastructure for ASDLC
+#
+# This file installs the Argo ClusterWorkflowTemplates and the OC ClusterWorkflow
+# needed for building Docker images from source code.
+#
+# These templates are adapted from the official OpenChoreo samples:
+#   openchoreo/samples/getting-started/workflow-templates/
+#   openchoreo/samples/getting-started/ci-workflows/dockerfile-builder.yaml
+#
+# Resources:
+# 1. checkout-source CWT — clones the git repo (with credential support)
+# 2. containerfile-build CWT — builds the Docker image using podman
+# 3. publish-image CWT — pushes the image to the k3d registry
+# 4. generate-workload CWT — creates Workload CR via OC API
+# 5. dockerfile-builder ClusterWorkflow — OC Workflow CR that ties them together
+
+---
+# Step 1: Checkout source code from git (with git credential support)
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: checkout-source
+spec:
+  templates:
+    - name: checkout
+      outputs:
+        parameters:
+          - name: git-revision
+            valueFrom:
+              path: /tmp/git-revision.txt
+      volumes:
+        - name: git-secret
+          secret:
+            secretName: '{{workflow.parameters.git-secret}}'
+            optional: true
+      container:
+        image: alpine/git
+        command:
+          - sh
+          - -c
+        args:
+          - |-
+            set -e
+
+            BRANCH={{workflow.parameters.branch}}
+            REPO={{workflow.parameters.git-repo}}
+            COMMIT={{workflow.parameters.commit}}
+            GIT_SECRET_PATH="/etc/secrets/git-secret"
+
+            # --- Parameter Validation ---
+            echo ">> Repository: $REPO"
+            echo ">> Branch: ${BRANCH:-<not specified>}"
+            echo ">> Commit: ${COMMIT:-<not specified>}"
+
+            if [ -z "$REPO" ]; then
+              echo ">> Error: Git repository URL is required but was not provided."
+              echo ">> Hint: Ensure a valid git repository URL is configured in your workflow parameters."
+              exit 1
+            fi
+
+            if [ -z "$COMMIT" ] && [ -z "$BRANCH" ]; then
+              echo ">> Error: Either a branch or commit must be specified."
+              echo ">> Hint: Provide a git branch name or a specific commit SHA in your workflow parameters."
+              exit 1
+            fi
+
+            # Check if git secret exists (for private repositories)
+            if [ -d "$GIT_SECRET_PATH" ] && [ "$(ls $GIT_SECRET_PATH 2>/dev/null)" ]; then
+                echo ">> Configuring repository authentication"
+
+                # SSH key auth (kubernetes.io/ssh-auth)
+                if [ -f "$GIT_SECRET_PATH/ssh-privatekey" ]; then
+                    echo ">> Authentication: SSH Key Authentication"
+                    mkdir -p ~/.ssh
+                    chmod 700 ~/.ssh
+
+                    # Normalize line endings and copy key
+                    tr -d '\r' < "$GIT_SECRET_PATH/ssh-privatekey" > ~/.ssh/id_rsa
+                    [ -n "$(tail -c 1 ~/.ssh/id_rsa)" ] && echo >> ~/.ssh/id_rsa
+                    chmod 600 ~/.ssh/id_rsa
+
+                    if ! grep -q "BEGIN.*PRIVATE KEY" ~/.ssh/id_rsa; then
+                        echo ">> Error: The provided SSH key does not appear to be valid."
+                        exit 1
+                    fi
+
+                    if ! ssh-keygen -l -f ~/.ssh/id_rsa > /dev/null 2>&1; then
+                        echo ">> Warning: SSH key validation failed with ssh-keygen"
+                        echo ">> This might indicate key format issues, but attempting to proceed"
+                    fi
+
+                    # AWS CodeCommit SSH Key ID
+                    SSH_KEY_ID=""
+                    if [ -f "$GIT_SECRET_PATH/ssh-key-id" ]; then
+                        SSH_KEY_ID=$(cat "$GIT_SECRET_PATH/ssh-key-id")
+                    fi
+
+                    cat > ~/.ssh/config <<EOF
+            Host github.com
+                StrictHostKeyChecking no
+                UserKnownHostsFile /dev/null
+            Host gitlab.com
+                StrictHostKeyChecking no
+                UserKnownHostsFile /dev/null
+            Host bitbucket.org
+                StrictHostKeyChecking no
+                UserKnownHostsFile /dev/null
+            Host git-codecommit.*.amazonaws.com
+                StrictHostKeyChecking no
+                UserKnownHostsFile /dev/null
+            EOF
+                    chmod 600 ~/.ssh/config
+
+                    if echo "$REPO" | grep -q "^ssh://.*git-codecommit"; then
+                        if [ -n "$SSH_KEY_ID" ] && ! echo "$REPO" | grep -q "@"; then
+                            REPO=$(echo "$REPO" | sed "s|ssh://|ssh://${SSH_KEY_ID}@|")
+                        fi
+                    elif echo "$REPO" | grep -q "^https://" && ! echo "$REPO" | grep -q "git-codecommit"; then
+                        REPO=$(echo "$REPO" | sed -E 's|https://([^/]+)/(.+)\.git|git@\1:\2.git|')
+                    fi
+
+                # Basic auth (kubernetes.io/basic-auth)
+                elif [ -f "$GIT_SECRET_PATH/password" ]; then
+                    echo ">> Authentication: Basic Authentication"
+                    PASSWORD=$(cat "$GIT_SECRET_PATH/password")
+
+                    if [ -f "$GIT_SECRET_PATH/username" ]; then
+                        USERNAME=$(cat "$GIT_SECRET_PATH/username")
+                    else
+                        USERNAME="git"
+                    fi
+
+                    if echo "$REPO" | grep -q "^https://"; then
+                        PROTOCOL=$(echo "$REPO" | cut -d: -f1)
+                        DOMAIN_PATH=$(echo "$REPO" | cut -d/ -f3-)
+
+                        USERNAME_ENCODED=$(echo -n "$USERNAME" | sed 's/%/%25/g; s/ /%20/g; s/!/%21/g; s/"/%22/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
+                        PASSWORD_ENCODED=$(echo -n "$PASSWORD" | sed 's/%/%25/g; s/ /%20/g; s/!/%21/g; s/"/%22/g; s/#/%23/g; s/\$/%24/g; s/&/%26/g; s/'\''/%27/g; s/(/%28/g; s/)/%29/g; s/\*/%2A/g; s/+/%2B/g; s/,/%2C/g; s/\//%2F/g; s/:/%3A/g; s/;/%3B/g; s/=/%3D/g; s/?/%3F/g; s/@/%40/g; s/\[/%5B/g; s/\]/%5D/g')
+
+                        REPO="$PROTOCOL://${USERNAME_ENCODED}:${PASSWORD_ENCODED}@${DOMAIN_PATH}"
+                    else
+                        echo ">> Warning: REPO is not an HTTPS URL, basic auth may not work"
+                    fi
+
+                    git config --global credential.helper store
+                else
+                    echo ">> Error: Git credentials secret was provided but does not contain recognized authentication data."
+                    echo ">> Hint: The secret should contain either an SSH private key (ssh-privatekey) or username/password."
+                    exit 1
+                fi
+            else
+                echo ">> Authentication: none (public repository)"
+            fi
+
+            if [ -n "$COMMIT" ]; then
+                git clone --no-checkout --depth 1 "$REPO" /mnt/vol/source
+                cd /mnt/vol/source
+                git config --global advice.detachedHead false
+                git fetch --depth 1 origin "$COMMIT"
+                git checkout "$COMMIT"
+                echo -n "$COMMIT" | cut -c1-8 > /tmp/git-revision.txt
+                echo ">> Checked out commit: $COMMIT"
+            else
+                git clone --single-branch --branch $BRANCH --depth 1 "$REPO" /mnt/vol/source
+                cd /mnt/vol/source
+                COMMIT_SHA=$(git rev-parse HEAD)
+                echo -n "$COMMIT_SHA" | cut -c1-8 > /tmp/git-revision.txt
+                echo ">> Checked out branch: $BRANCH (commit: $COMMIT_SHA)"
+            fi
+
+            echo ">> Repository cloned successfully"
+            echo ">> Source directory contents:"
+            ls -la /mnt/vol/source/
+        volumeMounts:
+          - mountPath: /mnt/vol
+            name: workspace
+          - mountPath: /etc/secrets/git-secret
+            name: git-secret
+            readOnly: true
+
+---
+# Step 2: Build Docker image using Podman (unprivileged-capable)
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: containerfile-build
+spec:
+  templates:
+    - name: build-image
+      inputs:
+        parameters:
+          - name: git-revision
+          - name: build-env
+          - name: build-args
+      container:
+        image: ghcr.io/openchoreo/podman-runner:v1.1
+        command:
+          - sh
+          - -c
+        args:
+          - |-
+            set -e
+
+            WORKDIR="/mnt/vol/source"
+            IMAGE="{{workflow.parameters.image-name}}:{{workflow.parameters.image-tag}}-{{inputs.parameters.git-revision}}"
+            DOCKER_CONTEXT="{{workflow.parameters.docker-context}}"
+            DOCKERFILE_PATH="{{workflow.parameters.dockerfile-path}}"
+            BUILD_ENV_JSON='{{inputs.parameters.build-env}}'
+            BUILD_ARGS_JSON='{{inputs.parameters.build-args}}'
+
+            # --- Parameter Validation ---
+            echo ">> Image: $IMAGE"
+            echo ">> Dockerfile: $DOCKERFILE_PATH"
+            echo ">> Docker context: $DOCKER_CONTEXT"
+
+            if [ ! -f "$WORKDIR/$DOCKERFILE_PATH" ]; then
+              echo ">> Error: Dockerfile not found at: '$DOCKERFILE_PATH'"
+              echo ">> Hint: Verify that the Dockerfile path is correct and relative to the repository root."
+              echo ">> Repository contents:"
+              ls -la "$WORKDIR/"
+              exit 1
+            fi
+
+            if [ ! -d "$WORKDIR/$DOCKER_CONTEXT" ]; then
+              echo ">> Error: Docker build context directory not found: '$DOCKER_CONTEXT'"
+              echo ">> Hint: Verify that the Docker build context points to a valid directory relative to the repository root."
+              echo ">> Repository contents:"
+              ls -la "$WORKDIR/"
+              exit 1
+            fi
+
+            mkdir -p /etc/containers
+            cat > /etc/containers/storage.conf <<EOF
+            [storage]
+            driver = "overlay"
+            runroot = "/run/containers/storage"
+            graphroot = "/var/lib/containers/storage"
+            [storage.options.overlay]
+            mount_program = "/usr/bin/fuse-overlayfs"
+            EOF
+
+            # Build --env flags
+            ENV_ARGS=""
+            if [ -n "$BUILD_ENV_JSON" ] && [ "$BUILD_ENV_JSON" != "[]" ]; then
+              ENV_ARGS=$(echo "$BUILD_ENV_JSON" | \
+                podman run --rm -i ghcr.io/jqlang/jq:1.7.1 -r '.[] | "--env \(.name)=\(.value)"' | \
+                tr '\n' ' ')
+            fi
+
+            # Build --build-arg flags
+            BUILD_ARG_ARGS=""
+            if [ -n "$BUILD_ARGS_JSON" ] && [ "$BUILD_ARGS_JSON" != "[]" ]; then
+              BUILD_ARG_ARGS=$(echo "$BUILD_ARGS_JSON" | \
+                podman run --rm -i ghcr.io/jqlang/jq:1.7.1 -r '.[] | "--build-arg \(.name)=\(.value)"' | \
+                tr '\n' ' ')
+            fi
+
+            echo ">> Building image"
+            podman build -t $IMAGE -f $WORKDIR/$DOCKERFILE_PATH $ENV_ARGS $BUILD_ARG_ARGS $WORKDIR/$DOCKER_CONTEXT
+            echo ">> Image built successfully"
+            echo ">> Saving image"
+            podman save -o /mnt/vol/app-image.tar $IMAGE
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - mountPath: /mnt/vol
+            name: workspace
+
+---
+# Step 3: Publish image to k3d local registry
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: publish-image
+spec:
+  templates:
+    - name: publish-image
+      inputs:
+        parameters:
+          - name: git-revision
+      outputs:
+        parameters:
+          - name: image
+            valueFrom:
+              path: /tmp/image.txt
+      volumes:
+        - name: registry-push-secret
+          secret:
+            optional: true
+            secretName: '{{workflow.parameters.registry-push-secret}}'
+      container:
+        image: ghcr.io/openchoreo/podman-runner:v1.1
+        command:
+          - sh
+          - -c
+        args:
+          - |-
+            set -e
+
+            GIT_REVISION={{inputs.parameters.git-revision}}
+            IMAGE_NAME={{workflow.parameters.image-name}}
+            IMAGE_TAG={{workflow.parameters.image-tag}}
+            SRC_IMAGE="${IMAGE_NAME}:${IMAGE_TAG}-${GIT_REVISION}"
+
+            REGISTRY_ENDPOINT="registry.openchoreo-workflow-plane.svc.cluster.local:10082"
+            AUTH_FILE="/etc/secrets/registry-push-secret/.dockerconfigjson"
+
+            # --- Parameter Validation ---
+            echo ">> Source image: $SRC_IMAGE"
+            echo ">> Registry: $REGISTRY_ENDPOINT"
+            echo ">> Authentication: $([ -f "$AUTH_FILE" ] && echo "registry secret found" || echo "no registry secret (anonymous push)")"
+
+            if [ ! -f "/mnt/vol/app-image.tar" ]; then
+              echo ">> Error: Built image tar not found at /mnt/vol/app-image.tar"
+              echo ">> Hint: The build step may have failed to produce an image. Check the build step logs."
+              exit 1
+            fi
+
+            mkdir -p /etc/containers
+            cat <<EOF > /etc/containers/storage.conf
+            [storage]
+            driver = "overlay"
+            runroot = "/run/containers/storage"
+            graphroot = "/var/lib/containers/storage"
+            [storage.options.overlay]
+            mount_program = "/usr/bin/fuse-overlayfs"
+            EOF
+
+            podman load -i /mnt/vol/app-image.tar
+
+            podman tag $SRC_IMAGE $REGISTRY_ENDPOINT/$SRC_IMAGE
+            podman tag $SRC_IMAGE $REGISTRY_ENDPOINT/${IMAGE_NAME}:latest
+
+            echo ">> Pushing image to registry"
+            if [ -f "$AUTH_FILE" ]; then
+              podman push --tls-verify=false --authfile "$AUTH_FILE" $REGISTRY_ENDPOINT/$SRC_IMAGE
+              podman push --tls-verify=false --authfile "$AUTH_FILE" $REGISTRY_ENDPOINT/${IMAGE_NAME}:latest
+            else
+              podman push --tls-verify=false $REGISTRY_ENDPOINT/$SRC_IMAGE
+              podman push --tls-verify=false $REGISTRY_ENDPOINT/${IMAGE_NAME}:latest
+            fi
+
+            echo ">> Image published successfully: $REGISTRY_ENDPOINT/$SRC_IMAGE"
+            echo -n "$REGISTRY_ENDPOINT/$SRC_IMAGE" > /tmp/image.txt
+        securityContext:
+          privileged: true
+        volumeMounts:
+          - mountPath: /mnt/vol
+            name: workspace
+          - mountPath: /etc/secrets/registry-push-secret
+            name: registry-push-secret
+            readOnly: true
+
+---
+# Step 4: Generate and apply Workload CR via OpenChoreo API
+apiVersion: argoproj.io/v1alpha1
+kind: ClusterWorkflowTemplate
+metadata:
+  name: generate-workload
+spec:
+  templates:
+    - name: generate-workload-cr
+      inputs:
+        parameters:
+          - name: image
+          - name: run-name
+          # --- IDP / OAuth Configuration ---
+          # Update these when changing your identity provider or its public URL.
+          - name: oauth-token-url
+            default: "http://host.k3d.internal:8080/oauth2/token"
+          - name: oauth-host-header
+            default: "thunder.openchoreo.localhost"
+          - name: oauth-client-id
+            default: "openchoreo-workload-publisher-client"
+          # TODO: Mount the client secret from a Kubernetes secret instead of using a default value.
+          - name: oauth-client-secret
+            default: "openchoreo-workload-publisher-secret"
+          # --- OpenChoreo API Server Configuration ---
+          # Update these when the API server URL or host changes.
+          - name: api-server-url
+            default: "http://host.k3d.internal:8080"
+          - name: api-server-host-header
+            default: "api.openchoreo.localhost"
+      container:
+        image: ghcr.io/openchoreo/podman-runner:v1.1
+        command:
+          - sh
+          - -c
+        args:
+          - |-
+            set -e
+
+            IMAGE={{inputs.parameters.image}}
+            RUN_NAME={{inputs.parameters.run-name}}
+            PROJECT_NAME={{workflow.parameters.project-name}}
+            COMPONENT_NAME={{workflow.parameters.component-name}}
+            NAMESPACE_NAME={{workflow.parameters.namespace-name}}
+            APP_PATH="{{workflow.parameters.app-path}}"
+
+            DESCRIPTOR_PATH="/mnt/vol/source${APP_PATH:+/${APP_PATH#/}}"
+            OUTPUT_PATH="/mnt/vol/workload-cr.yaml"
+
+            echo ">> Image: ${IMAGE}"
+            echo ">> Descriptor path: ${DESCRIPTOR_PATH}"
+            echo ">> Namespace: ${NAMESPACE_NAME}, Project: ${PROJECT_NAME}, Component: ${COMPONENT_NAME}"
+            if [ -f "${DESCRIPTOR_PATH}/workload.yaml" ]; then
+              echo ">> Workload descriptor: found (${DESCRIPTOR_PATH}/workload.yaml)"
+            else
+              echo ">> Workload descriptor: not found (will generate default workload)"
+            fi
+
+            if [ ! -d "$DESCRIPTOR_PATH" ]; then
+              echo ">> Error: The specified application path '$APP_PATH' does not exist in the repository"
+              echo ">> Hint: Verify that the application path points to a valid directory in your repository."
+              echo ">> Repository contents:"
+              ls -la /mnt/vol/source/
+              exit 1
+            fi
+
+            mkdir -p /etc/containers
+            cat <<EOF > /etc/containers/storage.conf
+            [storage]
+            driver = "overlay"
+            runroot = "/run/containers/storage"
+            graphroot = "/var/lib/containers/storage"
+            [storage.options.overlay]
+            mount_program = "/usr/bin/fuse-overlayfs"
+            EOF
+
+            # --- Step 1: Generate workload CR using occ ---
+            WORKLOAD_FROM_SOURCE="false"
+            if [ -f "${DESCRIPTOR_PATH}/workload.yaml" ]; then
+              WORKLOAD_FROM_SOURCE="true"
+              echo ">> Generating workload CR from workload descriptor"
+              podman run --rm --network=none \
+              -v $DESCRIPTOR_PATH:/app:rw -w /app \
+              ghcr.io/openchoreo/openchoreo-cli:latest-dev \
+                workload create \
+                --namespace "${NAMESPACE_NAME}" \
+                --project "${PROJECT_NAME}" \
+                --component "${COMPONENT_NAME}" \
+                --image "${IMAGE}" \
+                --descriptor "workload.yaml" \
+                -o "workload-cr.yaml"
+            else
+              echo ">> Generating default workload CR"
+              podman run --rm --network=none \
+              -v $DESCRIPTOR_PATH:/app:rw -w /app \
+              ghcr.io/openchoreo/openchoreo-cli:latest-dev \
+                workload create \
+                --namespace "${NAMESPACE_NAME}" \
+                --project "${PROJECT_NAME}" \
+                --component "${COMPONENT_NAME}" \
+                --image "${IMAGE}" \
+                -o "workload-cr.yaml"
+            fi
+
+            cp -f "${DESCRIPTOR_PATH}/workload-cr.yaml" "${OUTPUT_PATH}"
+
+            # --- Step 2: Convert workload CR YAML to JSON (strip apiVersion and kind) ---
+            # Use yq to convert YAML to JSON, then jq -c to produce valid compact single-line JSON
+             podman run --rm \
+               -v /mnt/vol:/data:rw \
+               mikefarah/yq -o=json 'del(.apiVersion) | del(.kind)' /data/workload-cr.yaml \
+               > /mnt/vol/workload-cr-raw.json
+             podman run --rm \
+               -v /mnt/vol:/data:rw \
+               ghcr.io/jqlang/jq:1.7.1 -c '.' /data/workload-cr-raw.json \
+               > /mnt/vol/workload-cr.json
+            echo ">> Generated workload JSON payload:"
+            cat /mnt/vol/workload-cr.json
+
+            # --- Step 3: Get OAuth token ---
+            OAUTH_URL="{{inputs.parameters.oauth-token-url}}"
+            OAUTH_HOST="{{inputs.parameters.oauth-host-header}}"
+            CLIENT_ID="{{inputs.parameters.oauth-client-id}}"
+            CLIENT_SECRET="{{inputs.parameters.oauth-client-secret}}"
+
+            echo ">> Requesting OAuth token from ${OAUTH_URL}"
+            TOKEN_RESPONSE=$(curl -s --fail-with-body \
+              -X POST "${OAUTH_URL}" \
+              -H "Host: ${OAUTH_HOST}" \
+              -H "Content-Type: application/x-www-form-urlencoded" \
+              -d "grant_type=client_credentials&client_id=${CLIENT_ID}&client_secret=${CLIENT_SECRET}")
+
+            ACCESS_TOKEN=$(echo "${TOKEN_RESPONSE}" | grep -o '"access_token":"[^"]*"' | cut -d'"' -f4)
+
+            if [ -z "${ACCESS_TOKEN}" ]; then
+              echo ">> Failed to get access token: ${TOKEN_RESPONSE}"
+              exit 1
+            fi
+
+            echo ">> Successfully obtained access token"
+
+            # --- Step 4: Create or update workload via API server ---
+            API_URL="{{inputs.parameters.api-server-url}}"
+            API_HOST="{{inputs.parameters.api-server-host-header}}"
+
+            # Extract workload name from the JSON payload for potential update
+            WORKLOAD_NAME=$(podman run --rm -v /mnt/vol:/data:ro mikefarah/yq -r '.metadata.name' /data/workload-cr.json)
+
+            echo ">> Creating workload via ${API_URL}/api/v1/namespaces/${NAMESPACE_NAME}/workloads"
+            RESPONSE=$(curl -s -w "\n%{http_code}" \
+              -X POST "${API_URL}/api/v1/namespaces/${NAMESPACE_NAME}/workloads" \
+              -H "Host: ${API_HOST}" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              -d @/mnt/vol/workload-cr.json)
+
+            HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
+            BODY=$(echo "${RESPONSE}" | sed '$d')
+
+            if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+              echo ">> Workload created successfully (HTTP ${HTTP_CODE}): ${BODY}"
+            elif [ "${HTTP_CODE}" -eq 409 ]; then
+              if [ "${WORKLOAD_FROM_SOURCE}" = "true" ]; then
+                echo ">> Workload already exists, updating via PUT (full replace - source-defined)"
+                RESPONSE=$(curl -s -w "\n%{http_code}" \
+                  -X PUT "${API_URL}/api/v1/namespaces/${NAMESPACE_NAME}/workloads/${WORKLOAD_NAME}" \
+                  -H "Host: ${API_HOST}" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+                  -d @/mnt/vol/workload-cr.json)
+              else
+                echo ">> Workload already exists, updating only container image (auto-generated)"
+                # GET the existing workload
+                GET_RESPONSE=$(curl -s -w "\n%{http_code}" \
+                  -X GET "${API_URL}/api/v1/namespaces/${NAMESPACE_NAME}/workloads/${WORKLOAD_NAME}" \
+                  -H "Host: ${API_HOST}" \
+                  -H "Authorization: Bearer ${ACCESS_TOKEN}")
+
+                GET_HTTP_CODE=$(echo "${GET_RESPONSE}" | tail -1)
+                GET_BODY=$(echo "${GET_RESPONSE}" | sed '$d')
+
+                if [ "${GET_HTTP_CODE}" -lt 200 ] || [ "${GET_HTTP_CODE}" -ge 300 ]; then
+                  echo ">> Failed to get existing workload (HTTP ${GET_HTTP_CODE}): ${GET_BODY}"
+                  exit 1
+                fi
+
+                # Extract the new image from the generated workload and merge into existing
+                echo "${GET_BODY}" > /mnt/vol/workload-existing.json
+                NEW_IMAGE=$(podman run --rm \
+                  -v /mnt/vol:/data:ro \
+                  ghcr.io/jqlang/jq:1.7.1 -r '.spec.container.image' /data/workload-cr.json)
+
+                echo ">> Updating container image to: ${NEW_IMAGE}"
+                podman run --rm \
+                  -v /mnt/vol:/data:rw \
+                  ghcr.io/jqlang/jq:1.7.1 \
+                  --arg img "${NEW_IMAGE}" \
+                  '.spec.container.image = $img' \
+                  /data/workload-existing.json \
+                  > /mnt/vol/workload-merged.json
+
+                RESPONSE=$(curl -s -w "\n%{http_code}" \
+                  -X PUT "${API_URL}/api/v1/namespaces/${NAMESPACE_NAME}/workloads/${WORKLOAD_NAME}" \
+                  -H "Host: ${API_HOST}" \
+                  -H "Content-Type: application/json" \
+                  -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+                  -d @/mnt/vol/workload-merged.json)
+              fi
+
+              HTTP_CODE=$(echo "${RESPONSE}" | tail -1)
+              BODY=$(echo "${RESPONSE}" | sed '$d')
+
+              if [ "${HTTP_CODE}" -ge 200 ] && [ "${HTTP_CODE}" -lt 300 ]; then
+                echo ">> Workload updated successfully (HTTP ${HTTP_CODE}): ${BODY}"
+              else
+                echo ">> Failed to update workload (HTTP ${HTTP_CODE}): ${BODY}"
+                exit 1
+              fi
+            else
+              echo ">> Failed to create workload (HTTP ${HTTP_CODE}): ${BODY}"
+              exit 1
+            fi
+
+            # --- Step 5: Annotate the WorkflowRun with the workload CR ---
+            # Get the current WorkflowRun
+            echo ">> Getting WorkflowRun ${RUN_NAME}"
+            WF_RUN_RESPONSE=$(curl -s -w "\n%{http_code}" \
+              -X GET "${API_URL}/api/v1/namespaces/${NAMESPACE_NAME}/workflowruns/${RUN_NAME}" \
+              -H "Host: ${API_HOST}" \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}")
+
+            WF_RUN_HTTP_CODE=$(echo "${WF_RUN_RESPONSE}" | tail -1)
+            WF_RUN_BODY=$(echo "${WF_RUN_RESPONSE}" | sed '$d')
+
+            if [ "${WF_RUN_HTTP_CODE}" -lt 200 ] || [ "${WF_RUN_HTTP_CODE}" -ge 300 ]; then
+              echo ">> Failed to get WorkflowRun (HTTP ${WF_RUN_HTTP_CODE}): ${WF_RUN_BODY}"
+              exit 1
+            fi
+
+            # Add the workload CR as a compact JSON string annotation on the WorkflowRun
+            # Use jq --rawfile to read the compact JSON as a raw string (no escape interpretation)
+            # If workload is source-defined, also add the workload-from-source annotation
+            echo "${WF_RUN_BODY}" > /mnt/vol/workflowrun-get.json
+            if [ "${WORKLOAD_FROM_SOURCE}" = "true" ]; then
+              podman run --rm \
+                -v /mnt/vol:/data:rw \
+                ghcr.io/jqlang/jq:1.7.1 \
+                --rawfile wl /data/workload-cr.json \
+                '.metadata.annotations["openchoreo.dev/workload"] = ($wl | rtrimstr("\n")) | .metadata.annotations["openchoreo.dev/workload-from-source"] = "true"' \
+                /data/workflowrun-get.json \
+                > /mnt/vol/workflowrun-updated.json
+            else
+              podman run --rm \
+                -v /mnt/vol:/data:rw \
+                ghcr.io/jqlang/jq:1.7.1 \
+                --rawfile wl /data/workload-cr.json \
+                '.metadata.annotations["openchoreo.dev/workload"] = ($wl | rtrimstr("\n")) | .metadata.annotations["openchoreo.dev/workload-from-source"] = "false"' \
+                /data/workflowrun-get.json \
+                > /mnt/vol/workflowrun-updated.json
+            fi
+
+            echo ">> Updating WorkflowRun with workload annotation"
+            UPDATE_RESPONSE=$(curl -s -w "\n%{http_code}" \
+              -X PUT "${API_URL}/api/v1/namespaces/${NAMESPACE_NAME}/workflowruns/${RUN_NAME}" \
+              -H "Host: ${API_HOST}" \
+              -H "Content-Type: application/json" \
+              -H "Authorization: Bearer ${ACCESS_TOKEN}" \
+              -d @/mnt/vol/workflowrun-updated.json)
+
+            UPDATE_HTTP_CODE=$(echo "${UPDATE_RESPONSE}" | tail -1)
+            UPDATE_BODY=$(echo "${UPDATE_RESPONSE}" | sed '$d')
+
+            if [ "${UPDATE_HTTP_CODE}" -ge 200 ] && [ "${UPDATE_HTTP_CODE}" -lt 300 ]; then
+              echo ">> WorkflowRun annotated successfully (HTTP ${UPDATE_HTTP_CODE})"
+            else
+              echo ">> Failed to update WorkflowRun (HTTP ${UPDATE_HTTP_CODE}): ${UPDATE_BODY}"
+              exit 1
+            fi
+        volumeMounts:
+          - name: workspace
+            mountPath: /mnt/vol
+        securityContext:
+          privileged: true
+
+---
+# OC ClusterWorkflow: dockerfile-builder
+# Maps OC workflow parameters to Argo workflow arguments.
+# Adapted from the official OpenChoreo dockerfile-builder ClusterWorkflow.
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterWorkflow
+metadata:
+  name: dockerfile-builder
+  labels:
+    openchoreo.dev/workflow-type: "component"
+  annotations:
+    openchoreo.dev/description: "Build with a provided Dockerfile/Containerfile/Podmanfile"
+spec:
+  workflowPlaneRef:
+    kind: ClusterWorkflowPlane
+    name: default
+  ttlAfterCompletion: "1d"
+  parameters:
+    openAPIV3Schema:
+      type: object
+      required:
+        - repository
+      properties:
+        repository:
+          type: object
+          description: "Git repository configuration"
+          required:
+            - url
+          properties:
+            url:
+              type: string
+              description: "Git repository URL"
+              x-openchoreo-component-parameter-repository-url: true
+            secretRef:
+              type: string
+              default: ""
+              description: "Secret reference name for Git credentials"
+              x-openchoreo-component-parameter-repository-secret-ref: true
+            revision:
+              type: object
+              default: {}
+              properties:
+                branch:
+                  type: string
+                  default: main
+                  description: "Git branch to checkout"
+                  x-openchoreo-component-parameter-repository-branch: true
+                commit:
+                  type: string
+                  default: ""
+                  description: "Git commit SHA or reference (optional, defaults to latest)"
+                  x-openchoreo-component-parameter-repository-commit: true
+            appPath:
+              type: string
+              default: "."
+              description: "Path to the application directory within the repository"
+              x-openchoreo-component-parameter-repository-app-path: true
+        docker:
+          type: object
+          default: {}
+          description: "Docker build configuration"
+          properties:
+            context:
+              type: string
+              default: "."
+              description: "Docker build context path relative to the repository root"
+            filePath:
+              type: string
+              default: "./Dockerfile"
+              description: "Path to the Dockerfile relative to the repository root"
+        buildEnv:
+          type: array
+          default: []
+          description: "Environment variables available during the build (passed as --env to podman build)"
+          items:
+            type: object
+            required: [name, value]
+            properties:
+              name:
+                type: string
+                description: "Environment variable name"
+              value:
+                type: string
+                description: "Environment variable value"
+        buildArgs:
+          type: array
+          default: []
+          description: "Docker build arguments declared with ARG in the Dockerfile (passed as --build-arg)"
+          items:
+            type: object
+            required: [name, value]
+            properties:
+              name:
+                type: string
+                description: "Build argument name"
+              value:
+                type: string
+                description: "Build argument value"
+  runTemplate:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Workflow
+    metadata:
+      name: ${metadata.workflowRunName}
+      namespace: ${metadata.namespace}
+    spec:
+      arguments:
+        parameters:
+          - name: component-name
+            value: ${metadata.labels['openchoreo.dev/component']}
+          - name: project-name
+            value: ${metadata.labels['openchoreo.dev/project']}
+          - name: workflowrun-name
+            value: ${metadata.workflowRunName}
+          - name: namespace-name
+            value: ${metadata.namespaceName}
+          - name: git-repo
+            value: ${parameters.repository.url}
+          - name: branch
+            value: ${parameters.repository.revision.branch}
+          - name: commit
+            value: ${parameters.repository.revision.commit}
+          - name: app-path
+            value: ${parameters.repository.appPath}
+          - name: docker-context
+            value: ${parameters.docker.context}
+          - name: dockerfile-path
+            value: ${parameters.docker.filePath}
+          - name: build-env
+            value: ${parameters.buildEnv}
+          - name: build-args
+            value: ${parameters.buildArgs}
+          - name: image-name
+            value: ${metadata.namespaceName}-${metadata.labels['openchoreo.dev/project']}-${metadata.labels['openchoreo.dev/component']}
+          - name: image-tag
+            value: v1
+          - name: git-secret
+            value: ${metadata.workflowRunName}-git-secret
+          - name: registry-push-secret
+            value: ${metadata.workflowRunName}-registry-push-secret
+      serviceAccountName: workflow-sa
+      entrypoint: build-workflow
+      templates:
+        - name: build-workflow
+          steps:
+            - - name: checkout-source
+                templateRef:
+                  name: checkout-source
+                  clusterScope: true
+                  template: checkout
+            - - name: build-image
+                templateRef:
+                  name: containerfile-build
+                  clusterScope: true
+                  template: build-image
+                arguments:
+                  parameters:
+                    - name: git-revision
+                      value: '{{steps.checkout-source.outputs.parameters.git-revision}}'
+                    - name: build-env
+                      value: '{{workflow.parameters.build-env}}'
+                    - name: build-args
+                      value: '{{workflow.parameters.build-args}}'
+            - - name: publish-image
+                templateRef:
+                  name: publish-image
+                  clusterScope: true
+                  template: publish-image
+                arguments:
+                  parameters:
+                    - name: git-revision
+                      value: '{{steps.checkout-source.outputs.parameters.git-revision}}'
+            - - name: generate-workload-cr
+                templateRef:
+                  name: generate-workload
+                  clusterScope: true
+                  template: generate-workload-cr
+                arguments:
+                  parameters:
+                    - name: image
+                      value: '{{steps.publish-image.outputs.parameters.image}}'
+                    - name: run-name
+                      value: '{{workflow.parameters.workflowrun-name}}'
+      volumeClaimTemplates:
+        - metadata:
+            name: workspace
+          spec:
+            accessModes:
+              - ReadWriteOnce
+            resources:
+              requests:
+                storage: 2Gi
+  externalRefs:
+    - id: git-secret-reference
+      apiVersion: openchoreo.dev/v1alpha1
+      kind: SecretReference
+      name: ${parameters.repository.secretRef}
+  resources:
+    - id: git-secret
+      includeWhen: ${has(parameters.repository.secretRef) && parameters.repository.secretRef != ""}
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${metadata.workflowRunName}-git-secret
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            kind: ClusterSecretStore
+            name: ${workflowplane.secretStore}
+          target:
+            name: ${metadata.workflowRunName}-git-secret
+            creationPolicy: Owner
+            template:
+              type: ${externalRefs['git-secret-reference'].spec.template.type}
+          data: |
+            ${externalRefs['git-secret-reference'].spec.data.map(secret, {
+              "secretKey": secret.secretKey,
+              "remoteRef": {
+                "key": secret.remoteRef.key,
+                "property": has(secret.remoteRef.property) && secret.remoteRef.property != "" ? secret.remoteRef.property : oc_omit()
+              }
+            })}
+    - id: registry-push-secret
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${metadata.workflowRunName}-registry-push-secret
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: ${workflowplane.secretStore}
+            kind: ClusterSecretStore
+          target:
+            name: ${metadata.workflowRunName}-registry-push-secret
+            creationPolicy: Owner
+            template:
+              type: kubernetes.io/dockerconfigjson
+              data:
+                .dockerconfigjson: "{{ .registrysecret | toString }}"
+          data:
+            - secretKey: registrysecret
+              remoteRef:
+                key: registry-push-secret
+                property: value

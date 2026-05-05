@@ -1,0 +1,9 @@
+apiVersion: openchoreo.dev/v1alpha1
+metadata:
+  name: app-factory-git-service
+endpoints:
+  - name: http
+    type: HTTP
+    port: 3300
+    visibility:
+      - project

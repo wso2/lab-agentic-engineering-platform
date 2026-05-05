@@ -1,0 +1,21 @@
+{
+  "name": "collab-server",
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/index.ts",
+    "build": "tsc --noEmit"
+  },
+  "dependencies": {
+    "lib0": "^0.2.103",
+    "ws": "^8.18.1",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.23"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.18.1",
+    "tsx": "^4.19.4",
+    "typescript": "^5.8.3"
+  }
+}

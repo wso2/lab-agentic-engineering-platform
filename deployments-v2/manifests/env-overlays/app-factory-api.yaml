@@ -1,0 +1,56 @@
+env:
+  - key: SERVER_PORT
+    value: "8080"
+  - key: LOG_LEVEL
+    value: "debug"
+  - key: DEPLOYMENT_TIER
+    value: "dev"
+  - key: TEST_MODE
+    value: "true"
+  - key: DATABASE_URL
+    value: "postgres://app_factory:app_factory_pwd@app-factory-postgresql.wso2cloud:5432/app_factory?sslmode=disable"
+  - key: PLATFORM_API_SERVICE_BASE_URL
+    value: "http://openchoreo-api.openchoreo-control-plane.svc.cluster.local:8080"
+  - key: PLATFORM_API_NAMESPACE_OVERRIDE
+    value: "admin=asdlc-user-projects,default=asdlc-user-projects"
+  - key: JWKS_URL
+    value: "http://thunder.openchoreo.localhost:8080/oauth2/jwks"
+  - key: JWT_ISSUER
+    value: "http://thunder.openchoreo.localhost:8080"
+  - key: OAUTH_TOKEN_ENDPOINT
+    value: "http://thunder.openchoreo.localhost:8080/oauth2/token"
+  - key: OAUTH_INTROSPECTION_ENDPOINT
+    value: "http://thunder.openchoreo.localhost:8080/oauth2/token"
+  - key: OAUTH_USERINFO_ENDPOINT
+    value: "http://thunder.openchoreo.localhost:8080/oauth2/token"
+  - key: SERVICE_AUTH_GIT_TOKEN_URL
+    value: "http://thunder.openchoreo.localhost:8080/oauth2/token"
+  - key: SERVICE_AUTH_GIT_CLIENT_ID
+    value: "asdlc-bff-to-git-service"
+  - key: SERVICE_AUTH_GIT_CLIENT_SECRET
+    value: "asdlc-bff-to-git-service-secret"
+  # SERVICE_AUTH_AGENTS_* intentionally not set — agents-service runs with JWKS
+  # validation disabled (JWKS_URL not set), so service auth is unnecessary.
+  - key: SERVICE_AUTH_RW_TOKEN_URL
+    value: "http://thunder.openchoreo.localhost:8080/oauth2/token"
+  - key: SERVICE_AUTH_RW_CLIENT_ID
+    value: "asdlc-bff-to-remote-worker"
+  - key: SERVICE_AUTH_RW_CLIENT_SECRET
+    value: "asdlc-bff-to-remote-worker-secret"
+  - key: BFF_TASK_SIGNING_KEY_PATH
+    value: "/app/keys/task-signing.pem"
+  - key: BFF_TASK_TOKEN_ISSUER
+    value: "asdlc-bff"
+  - key: BFF_TASK_TOKEN_AUDIENCE
+    value: "git-service"
+  - key: OAUTH_STATE_SIGNING_KEY
+    value: "${OAUTH_STATE_SIGNING_KEY}"
+  - key: GITHUB_WEBHOOK_SECRET
+    value: "${GITHUB_WEBHOOK_SECRET}"
+files:
+  - key: task-signing.pem
+    mountPath: /app/keys
+    valueFrom:
+      secretKeyRef:
+        name: app-factory-task-signing-key
+        key: task-signing.pem

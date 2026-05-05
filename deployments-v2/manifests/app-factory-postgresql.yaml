@@ -1,0 +1,86 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-factory-postgresql-pvc
+  namespace: wso2cloud
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-factory-postgresql
+  namespace: wso2cloud
+type: kubernetes.io/basic-auth
+stringData:
+  username: app_factory
+  password: app_factory_pwd
+  database: app_factory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-factory-postgresql
+  namespace: wso2cloud
+spec:
+  selector:
+    app: app-factory-postgresql
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-factory-postgresql
+  namespace: wso2cloud
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: app-factory-postgresql
+  template:
+    metadata:
+      labels:
+        app: app-factory-postgresql
+    spec:
+      containers:
+        - name: postgresql
+          image: postgres:16-alpine
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRES_DB
+              valueFrom:
+                secretKeyRef:
+                  name: app-factory-postgresql
+                  key: database
+            - name: POSTGRES_USER
+              valueFrom:
+                secretKeyRef:
+                  name: app-factory-postgresql
+                  key: username
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: app-factory-postgresql
+                  key: password
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command:
+                - pg_isready
+                - -U
+                - app_factory
+            initialDelaySeconds: 5
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: app-factory-postgresql-pvc

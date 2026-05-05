@@ -1,0 +1,50 @@
+# Stage 1: Build the React application.
+# Build context is the repo root so workspace packages (ui-components/*) are
+# reachable from console's workspace:* dependency on @asdlc/md-editor.
+FROM node:22-alpine AS builder
+
+RUN corepack enable
+
+WORKDIR /repo
+
+COPY pnpm-workspace.yaml pnpm-lock.yaml ./
+COPY console/package.json ./console/
+COPY ui-components/md-editor/package.json ./ui-components/md-editor/
+COPY ui-components/md-explorer/package.json ./ui-components/md-explorer/
+RUN pnpm install --frozen-lockfile
+
+COPY console/ ./console/
+COPY ui-components/ ./ui-components/
+
+RUN pnpm --filter asdlc-console build
+
+# Stage 2: Serve with nginx
+FROM nginx:1.27-alpine
+
+USER root
+
+RUN addgroup -g 10001 -S asdlcuser && \
+    adduser -u 10001 -S asdlcuser -G asdlcuser
+
+COPY --chown=10001:10001 console/nginx.conf /etc/nginx/nginx.conf
+COPY --from=builder --chown=10001:10001 /repo/console/dist /usr/share/nginx/html
+
+COPY --chown=10001:10001 console/docker-entrypoint.sh /docker-entrypoint.sh
+RUN chmod +x /docker-entrypoint.sh
+
+RUN chown -R 10001:10001 /var/cache/nginx && \
+    chown -R 10001:10001 /var/log/nginx && \
+    chown -R 10001:10001 /etc/nginx && \
+    chown -R 10001:10001 /usr/share/nginx/html && \
+    touch /var/run/nginx.pid && \
+    chown -R 10001:10001 /var/run/nginx.pid
+
+USER 10001
+
+EXPOSE 3000
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+  CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+
+ENTRYPOINT ["/docker-entrypoint.sh"]
+CMD ["nginx", "-g", "daemon off;"]

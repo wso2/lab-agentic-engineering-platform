@@ -1,0 +1,9 @@
+apiVersion: openchoreo.dev/v1alpha1
+metadata:
+  name: app-factory-agents-service
+endpoints:
+  - name: http
+    type: HTTP
+    port: 3400
+    visibility:
+      - project

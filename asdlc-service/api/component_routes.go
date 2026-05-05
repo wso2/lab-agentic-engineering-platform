@@ -1,0 +1,24 @@
+package api
+
+import (
+	"net/http"
+
+	"github.com/wso2/asdlc/asdlc-service/controllers"
+)
+
+func registerComponentRoutes(mux *http.ServeMux, c controllers.ComponentController) {
+	prefix := "/api/v1/organizations/{orgHandle}/projects/{projectName}/components"
+
+	mux.HandleFunc("GET "+prefix, c.ListComponents)
+	mux.HandleFunc("GET "+prefix+"/{componentName}", c.GetComponent)
+
+	// Build operations
+	mux.HandleFunc("POST "+prefix+"/{componentName}/builds", c.TriggerBuild)
+	mux.HandleFunc("GET "+prefix+"/{componentName}/builds", c.ListBuilds)
+	mux.HandleFunc("GET "+prefix+"/{componentName}/builds/{buildName}", c.GetBuildStatus)
+	mux.HandleFunc("GET "+prefix+"/{componentName}/builds/{buildName}/logs", c.GetBuildLogs)
+
+	// Deploy operations
+	mux.HandleFunc("POST "+prefix+"/{componentName}/deployments", c.Deploy)
+	mux.HandleFunc("GET "+prefix+"/{componentName}/deployments", c.ListDeployments)
+}

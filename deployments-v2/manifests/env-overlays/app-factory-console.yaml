@@ -1,0 +1,9 @@
+env:
+  - key: VITE_THUNDER_URL
+    value: "http://thunder.openchoreo.localhost:8080"
+  - key: VITE_THUNDER_CLIENT_ID
+    value: "APP_FACTORY_CONSOLE"
+  - key: VITE_THUNDER_SCOPES
+    value: "openid profile email"
+  - key: VITE_DEV_BYPASS_AUTH
+    value: "true"

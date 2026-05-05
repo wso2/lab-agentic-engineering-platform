@@ -1,0 +1,13 @@
+env:
+  - key: PORT
+    value: "3400"
+  - key: LOG_LEVEL
+    value: "debug"
+  - key: AGENT_MODEL
+    value: "claude-sonnet-4-5"
+  - key: JWT_ISSUER
+    value: "http://thunder.openchoreo.localhost:8080"
+  - key: JWT_AUDIENCE
+    value: "asdlc-bff-to-agents-service"
+  - key: ANTHROPIC_API_KEY
+    value: "${ANTHROPIC_API_KEY}"

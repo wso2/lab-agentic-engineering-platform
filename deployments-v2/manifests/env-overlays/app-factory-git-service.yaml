@@ -1,0 +1,45 @@
+env:
+  - key: SERVER_PORT
+    value: "3300"
+  - key: LOG_LEVEL
+    value: "debug"
+  - key: DEPLOYMENT_TIER
+    value: "dev"
+  - key: TEST_MODE
+    value: "true"
+  - key: DATABASE_URL
+    value: "postgres://app_factory:app_factory_pwd@app-factory-postgresql.wso2cloud:5432/app_factory?sslmode=disable"
+  - key: REPO_BASE_PATH
+    value: "/data/repos"
+  - key: OPENBAO_ADDR
+    value: "http://openbao.openbao.svc.cluster.local:8200"
+  - key: OPENBAO_TOKEN
+    value: "root"
+  - key: JWT_ISSUER
+    value: "http://thunder.openchoreo.localhost:8080"
+  - key: JWT_AUDIENCE
+    value: "APP_FACTORY_CONSOLE"
+  - key: BFF_JWKS_URL
+    value: "http://app-factory-api:8080/auth/external/jwks.json"
+  - key: TASK_JWT_ISSUER
+    value: "asdlc-bff"
+  - key: TASK_JWT_AUDIENCE
+    value: "git-service"
+  - key: GITHUB_REPO_VISIBILITY
+    value: "private"
+  - key: GIT_COMMITTER_NAME
+    value: "ASDLC Bot"
+  - key: GIT_COMMITTER_EMAIL
+    value: "bot@asdlc.dev"
+  - key: GITHUB_PLATFORM_PAT_SEED_ORGS
+    value: "default"
+  - key: GITHUB_REPO_OWNER
+    value: "${GITHUB_REPO_OWNER}"
+  - key: ASDLC_API_INTERNAL_URL
+    value: "http://app-factory-api:8080"
+  - key: GITHUB_PLATFORM_PAT
+    value: "${GITHUB_PLATFORM_PAT}"
+  - key: GITHUB_WEBHOOK_DELIVERY_URL
+    value: "${GITHUB_WEBHOOK_DELIVERY_URL}"
+  - key: GITHUB_WEBHOOK_SECRET
+    value: "${GITHUB_WEBHOOK_SECRET}"

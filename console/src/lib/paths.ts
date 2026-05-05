@@ -1,0 +1,60 @@
+export function organizationOverviewPath(orgId: string): string {
+  return `/organizations/${orgId}`;
+}
+
+export function organizationCreatePath(): string {
+  return `/organizations/new`;
+}
+
+export function projectCreatePath(orgId: string): string {
+  return `/organizations/${orgId}/projects/new`;
+}
+
+export function projectOverviewPath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}`;
+}
+
+export function projectPromptPath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/prompt`;
+}
+
+export function projectRequirementsPath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/requirements`;
+}
+
+export function projectArchitecturePath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/architecture`;
+}
+
+export function projectSpecPath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/spec`;
+}
+
+/** @deprecated Design is now part of the spec wizard. Redirects to the spec path. */
+export function projectDesignPath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/spec`;
+}
+
+export function projectComponentsPath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/components`;
+}
+
+export function projectTasksPath(orgId: string, projectId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/tasks`;
+}
+
+export function componentDetailPath(orgId: string, projectId: string, componentId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/components/${componentId}`;
+}
+
+export function componentBuildPath(orgId: string, projectId: string, componentId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/components/${componentId}/build`;
+}
+
+export function componentDeployPath(orgId: string, projectId: string, componentId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/components/${componentId}/deploy`;
+}
+
+export function componentConfigsPath(orgId: string, projectId: string, componentId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/components/${componentId}/configs`;
+}
