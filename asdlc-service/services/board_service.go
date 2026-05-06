@@ -23,6 +23,7 @@ type BoardTask struct {
 
 // ProjectBoard holds tasks grouped by their kanban column.
 type ProjectBoard struct {
+	URL        string      `json:"url"`
 	Todo       []BoardTask `json:"todo"`
 	InProgress []BoardTask `json:"inProgress"`
 	Done       []BoardTask `json:"done"`
@@ -46,6 +47,7 @@ func NewBoardService(gitClient gitservice.Client, taskRepo repositories.TaskRepo
 
 func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*ProjectBoard, error) {
 	board := &ProjectBoard{
+		URL:        "",
 		Todo:       []BoardTask{},
 		InProgress: []BoardTask{},
 		Done:       []BoardTask{},
@@ -101,6 +103,7 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			board.Todo = append(board.Todo, task)
 		}
 	}
+	board.URL = result.URL
 
 	// Fallback: when the GitHub board has no items, show component tasks from DB.
 	if len(result.Items) == 0 && len(allComponentTasks) > 0 {

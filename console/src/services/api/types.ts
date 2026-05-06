@@ -226,6 +226,7 @@ export interface Task {
 }
 
 export interface ProjectBoard {
+  url: string;
   todo: Task[];
   inProgress: Task[];
   done: Task[];

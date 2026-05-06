@@ -267,12 +267,6 @@ export default function ProjectTasksPage() {
     clearActionError,
   } = useProjectBoard(orgId, projectId);
 
-  // Derive a GitHub project board URL from the first available task URL.
-  const firstTaskUrl =
-    board.inProgress[0]?.url ?? board.todo[0]?.url ?? board.done[0]?.url ?? null;
-  const githubProjectUrl = firstTaskUrl
-    ? firstTaskUrl.replace(/\/issues\/\d+.*$/, '') + '/projects'
-    : null;
 
   if (isLoading) {
     return (
@@ -311,7 +305,7 @@ export default function ProjectTasksPage() {
         totalTasks={totalTasks}
         isGenerating={isGenerating}
         isDispatching={isDispatching}
-        githubProjectUrl={githubProjectUrl}
+        githubProjectUrl={board.url}
         onGenerate={handleGenerate}
         onStartImplementation={handleStartImplementation}
       />

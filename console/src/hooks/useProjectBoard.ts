@@ -2,7 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { api, ApiError } from '../services/api';
 import type { ProjectBoard } from '../services/api';
 
-const EMPTY_BOARD: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [] };
+const EMPTY_BOARD: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], url: '' };
 
 export function useProjectBoard(orgId: string | undefined, projectId: string | undefined) {
   const [board, setBoard] = useState<ProjectBoard>(EMPTY_BOARD);
