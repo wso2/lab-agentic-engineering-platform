@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
 import {
   Box,
   Button,
   CircularProgress,
+  Divider,
+  PageContent,
   Stack,
   Typography,
 } from '@wso2/oxygen-ui';
@@ -22,7 +24,16 @@ import WireframePreviewModal from '../components/WireframePreviewModal';
 // Main page
 // ---------------------------------------------------------------------------
 
+interface LayoutContext {
+  setSidebarCollapsed: (collapsed: boolean) => void;
+}
+
 export default function ProjectRequirementsPage() {
+  const { setSidebarCollapsed } = useOutletContext<LayoutContext>();
+  useEffect(() => {
+    setSidebarCollapsed(true);
+  }, [setSidebarCollapsed]);
+
   const navigate = useNavigate();
   const location = useLocation();
   const { orgId, projectId } = useParams();
@@ -247,10 +258,12 @@ export default function ProjectRequirementsPage() {
 
   if (loading) {
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
-        <CircularProgress size={48} sx={{ mb: 3 }} />
-        <Typography variant="h6" color="text.secondary">Loading requirements...</Typography>
-      </Box>
+      <PageContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
+          <CircularProgress size={48} sx={{ mb: 3 }} />
+          <Typography variant="h6" color="text.secondary">Loading requirements...</Typography>
+        </Box>
+      </PageContent>
     );
   }
 
@@ -259,12 +272,14 @@ export default function ProjectRequirementsPage() {
 
   if (!staticDisplay && !viewingHistorical && !streaming && !connected) {
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
-        <Typography variant="h6" color="text.secondary">No requirements generated yet.</Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          Go to the prompt page to generate requirements from a description.
-        </Typography>
-      </Box>
+      <PageContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
+          <Typography variant="h6" color="text.secondary">No requirements generated yet.</Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Go to the prompt page to generate requirements from a description.
+          </Typography>
+        </Box>
+      </PageContent>
     );
   }
 
@@ -273,38 +288,64 @@ export default function ProjectRequirementsPage() {
 
   const contentForGating = isEditing ? liveContent : specContent;
 
+  const showDiff =
+    !isEditing && !viewingHistorical && hasUnsavedChanges && lastTaggedContent !== null;
+  const diffNew = liveContent || staticDisplay;
+
   return (
-    <Box sx={{ height: 'calc(100vh - 180px)', display: 'flex', flexDirection: 'column' }}>
-      {/* Header */}
-      <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
-        <Stack direction="row" alignItems="center" gap={1.5}>
-          <Typography variant="h4" fontWeight={700}>Requirements</Typography>
-          {versions.length > 0 && (
-            <VersionSelector
-              versions={versions}
-              currentVersion={currentVersion}
-              onVersionSelect={handleVersionSelect}
-              isHistorical={viewingHistorical}
-              hasUnsavedChanges={hasUnsavedChanges}
-              onDiscard={handleDiscard}
-              isDiscarding={isDiscarding}
-            />
-          )}
-          {repoUrl && (
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<GitHub size={16} />}
-              onClick={() => window.open(repoUrl, '_blank', 'noopener,noreferrer')}
-            >
-              View Repo
-            </Button>
-          )}
-        </Stack>
+    <PageContent fullWidth noPadding sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* Header / toolbar (no back button) */}
+      <Box
+        sx={{
+          px: 3,
+          py: 1.5,
+          borderBottom: 1,
+          borderColor: 'divider',
+          display: 'flex',
+          alignItems: 'center',
+          gap: 2,
+          bgcolor: 'background.paper',
+          flexShrink: 0,
+        }}
+      >
+        <Box sx={{ flexGrow: 1, minWidth: 0 }}>
+          <Stack direction="row" alignItems="center" gap={1.5}>
+            <Typography variant="h4">Requirements</Typography>
+            {versions.length > 0 && (
+              <VersionSelector
+                versions={versions}
+                currentVersion={currentVersion}
+                onVersionSelect={handleVersionSelect}
+                isHistorical={viewingHistorical}
+                hasUnsavedChanges={hasUnsavedChanges}
+                onDiscard={handleDiscard}
+                isDiscarding={isDiscarding}
+              />
+            )}
+            {streaming && (
+              <Typography variant="caption" color="text.secondary">
+                Generating requirements from your specification...
+              </Typography>
+            )}
+          </Stack>
+        </Box>
+
+        {repoUrl && (
+          <Button
+            variant="outlined"
+            size="small"
+            startIcon={<GitHub size={16} />}
+            onClick={() => window.open(repoUrl, '_blank', 'noopener,noreferrer')}
+          >
+            View Repo
+          </Button>
+        )}
+
         {!viewingHistorical && !streaming && (
-          <Stack direction="row" alignItems="center" gap={1}>
+          <>
+            <Divider orientation="vertical" flexItem />
             {isEditing ? (
-              <>
+              <Stack direction="row" alignItems="center" gap={1}>
                 <Button
                   variant="outlined"
                   size="small"
@@ -329,9 +370,9 @@ export default function ProjectRequirementsPage() {
                 >
                   {saving ? 'Saving...' : 'Save'}
                 </Button>
-              </>
+              </Stack>
             ) : (
-              <>
+              <Stack direction="row" alignItems="center" gap={1}>
                 <Button
                   variant="outlined"
                   size="small"
@@ -380,9 +421,9 @@ export default function ProjectRequirementsPage() {
                 >
                   {generating ? 'Publishing...' : 'Publish'}
                 </Button>
-              </>
+              </Stack>
             )}
-          </Stack>
+          </>
         )}
         {streaming && (
           <Stack direction="row" alignItems="center" gap={1}>
@@ -392,59 +433,53 @@ export default function ProjectRequirementsPage() {
             </Typography>
           </Stack>
         )}
-      </Stack>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-        {streaming
-          ? 'Generating requirements from your specification. This may take a moment.'
-          : 'AI-generated requirements from your specification. Review and edit as needed.'}
-      </Typography>
-      {streamError && (
-        <Typography variant="body2" color="error" sx={{ mb: 2 }}>
-          {streamError}
-        </Typography>
-      )}
-      {publishError && (
-        <Typography variant="body2" color="error" sx={{ mb: 2 }}>
-          {publishError}
-        </Typography>
+      </Box>
+
+      {/* Inline error banner (kept thin so it doesn't shift the editor much) */}
+      {(streamError || publishError) && (
+        <Box sx={{ px: 3, py: 1, borderBottom: 1, borderColor: 'divider', flexShrink: 0 }}>
+          {streamError && (
+            <Typography variant="body2" color="error">
+              {streamError}
+            </Typography>
+          )}
+          {publishError && (
+            <Typography variant="body2" color="error">
+              {publishError}
+            </Typography>
+          )}
+        </Box>
       )}
 
-      {/* Markdown editor / diff viewer */}
-      {(() => {
-        const showDiff =
-          !isEditing && !viewingHistorical && hasUnsavedChanges && lastTaggedContent !== null;
-        const diffNew = liveContent || staticDisplay;
-        return (
-          <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-            {showDiff && (
-              <MdDiffViewer
-                oldMarkdown={lastTaggedContent ?? ''}
-                newMarkdown={diffNew}
-                maxHeight={Math.max(320, typeof window !== 'undefined' ? window.innerHeight - 340 : 600)}
-                minHeight={320}
-              />
-            )}
-            <Box sx={{ flex: 1, minHeight: 0, display: showDiff ? 'none' : 'flex' }}>
-              <MdExplorer
-                files={{ Requirements: filesContent }}
-                activePath="Requirements"
-                onFileChange={(_: string, md: string) => setLiveContent(md)}
-                editorProps={{
-                  readOnly: !isEditing || viewingHistorical || streaming,
-                  showToolbar: isEditing && !viewingHistorical,
-                  toolbarRightContent: isEditing && roomId ? (
-                    <CollabAwarenessBar connected={connected} peers={peers} inToolbar />
-                  ) : undefined,
-                  collab: editorCollab,
-                }}
-                editorRef={editorRef}
-                maxHeight={Math.max(320, typeof window !== 'undefined' ? window.innerHeight - 340 : 600)}
-                minHeight={320}
-              />
-            </Box>
-          </Box>
-        );
-      })()}
+      {/* Main content — editor / diff viewer fills remaining height */}
+      <Box sx={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+        {showDiff && (
+          <MdDiffViewer
+            oldMarkdown={lastTaggedContent ?? ''}
+            newMarkdown={diffNew}
+            maxHeight={Math.max(320, typeof window !== 'undefined' ? window.innerHeight - 200 : 600)}
+            minHeight={320}
+          />
+        )}
+        <Box sx={{ flex: 1, minHeight: 0, display: showDiff ? 'none' : 'flex' }}>
+          <MdExplorer
+            files={{ Requirements: filesContent }}
+            activePath="Requirements"
+            onFileChange={(_: string, md: string) => setLiveContent(md)}
+            editorProps={{
+              readOnly: !isEditing || viewingHistorical || streaming,
+              showToolbar: isEditing && !viewingHistorical,
+              toolbarRightContent: isEditing && roomId ? (
+                <CollabAwarenessBar connected={connected} peers={peers} inToolbar />
+              ) : undefined,
+              collab: editorCollab,
+            }}
+            editorRef={editorRef}
+            maxHeight={Math.max(320, typeof window !== 'undefined' ? window.innerHeight - 200 : 600)}
+            minHeight={320}
+          />
+        </Box>
+      </Box>
 
       <WireframePreviewModal
         open={wireframeOpen}
@@ -452,6 +487,6 @@ export default function ProjectRequirementsPage() {
         orgHandle={routeOrgId}
         projectId={projectId ?? ''}
       />
-    </Box>
+    </PageContent>
   );
 }

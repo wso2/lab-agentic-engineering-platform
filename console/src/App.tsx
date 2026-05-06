@@ -1,5 +1,5 @@
 import { useMemo } from 'react';
-import { Navigate, Outlet, Route, Routes } from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes, useOutletContext } from 'react-router-dom';
 import { useAuth, useUserClaims } from './auth';
 import AuthGuard from './auth/AuthGuard';
 import { setTokenAccessor } from './services/api/rest';
@@ -20,6 +20,13 @@ import OrgGitHubSettings from './pages/OrgGitHubSettings';
 import OrgGitHubAppPicker from './pages/OrgGitHubAppPicker';
 import { setOrgGithubTokenAccessor } from './services/api/orgGithub';
 import { organizationOverviewPath } from './lib/paths';
+
+// Forwards the parent layout's outlet context (e.g. setSidebarCollapsed) through
+// nested route boundaries so deep pages can still call useOutletContext().
+function ContextForwardingOutlet() {
+  const context = useOutletContext();
+  return <Outlet context={context} />;
+}
 
 export function App() {
   const { isSignedIn, getAccessToken } = useAuth();
@@ -62,7 +69,7 @@ export function App() {
           <Route path="github/pick" element={<OrgGitHubAppPicker />} />
         </Route>
 
-        <Route path="/organizations/:orgId/projects/:projectId" element={<Outlet />}>
+        <Route path="/organizations/:orgId/projects/:projectId" element={<ContextForwardingOutlet />}>
           <Route index element={<ProjectOverviewPage />} />
           <Route path="requirements" element={<ProjectRequirementsPage />} />
           <Route path="architecture" element={<ProjectArchitecturePage />} />
@@ -74,7 +81,7 @@ export function App() {
           <Route path="prompt" element={<Navigate to=".." replace />} />
           <Route path="components" element={<Navigate to=".." replace />} />
 
-          <Route path="components/:componentId" element={<Outlet />}>
+          <Route path="components/:componentId" element={<ContextForwardingOutlet />}>
             <Route index element={<ComponentDetailPage />} />
             <Route path="build" element={<ComponentBuildPage />} />
             <Route path="deploy" element={<ComponentDeployPage />} />

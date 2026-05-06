@@ -10,7 +10,7 @@ import {
   useTheme,
 } from '@wso2/oxygen-ui';
 import ReactMarkdown from 'react-markdown';
-import { Play } from 'lucide-react';
+import { Play } from '@wso2/oxygen-ui-icons-react';
 import { api } from '../../services/api';
 import type { Task } from '../../services/api';
 import { AssigneeChip } from './AssigneeChip';
@@ -51,7 +51,7 @@ export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, project
       anchorEl={anchorEl}
       placement="right-start"
       modifiers={[{ name: 'offset', options: { offset: [0, 8] } }]}
-      style={{ zIndex: 1300 }}
+      sx={{ zIndex: 'modal' }}
     >
       <ClickAwayListener onClickAway={onClose}>
         <Paper
@@ -59,18 +59,18 @@ export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, project
           sx={{
             width: 440,
             maxHeight: 520,
-            p: '16px',
-            borderRadius: '12px',
+            p: 2,
+            borderRadius: 1.5,
             border: '1px solid',
-            borderColor: isDark ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.08)',
+            borderColor: 'divider',
             bgcolor: 'background.paper',
             display: 'flex',
             flexDirection: 'column',
-            gap: '12px',
+            gap: 1.5,
             overflow: 'hidden',
           }}
         >
-          <Typography sx={{ fontSize: '0.8125rem', fontWeight: 600, lineHeight: 1.4, color: 'text.primary' }}>
+          <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.4, color: 'text.primary' }}>
             {task.title}
           </Typography>
 
@@ -79,7 +79,7 @@ export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, project
               sx={{
                 overflowY: 'auto',
                 maxHeight: 300,
-                pr: '4px',
+                pr: 0.5,
                 '&::-webkit-scrollbar': { width: 4 },
                 '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
                 '&::-webkit-scrollbar-thumb': {
@@ -134,14 +134,14 @@ export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, project
             </Box>
           )}
 
-          <Box sx={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-            <Typography sx={{ fontSize: '0.7rem', color: 'text.disabled', fontWeight: 500 }}>Assignee</Typography>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75 }}>
+            <Typography variant="caption" sx={{ color: 'text.disabled', fontWeight: 500 }}>Assignee</Typography>
             <AssigneeChip assignee={task.assignee} />
           </Box>
 
           {task.labels && task.labels.length > 0 && (
             <Box>
-              <Typography sx={{ fontSize: '0.7rem', color: 'text.disabled', fontWeight: 500, mb: '6px' }}>Labels</Typography>
+              <Typography variant="caption" sx={{ color: 'text.disabled', fontWeight: 500, mb: 0.75, display: 'block' }}>Labels</Typography>
               <LabelList labels={task.labels} />
             </Box>
           )}

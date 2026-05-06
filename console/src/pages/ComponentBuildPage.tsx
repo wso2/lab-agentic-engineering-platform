@@ -8,6 +8,7 @@ import {
   Chip,
   CircularProgress,
   IconButton,
+  PageContent,
   Skeleton,
   Stack,
   Table,
@@ -149,25 +150,25 @@ export default function ComponentBuildPage() {
 
   if (loading) {
     return (
-      <Box>
+      <PageContent>
         <Skeleton variant="text" width="40%" height={40} />
         <Skeleton variant="rectangular" width="100%" height={200} sx={{ mt: 3, borderRadius: 1 }} />
-      </Box>
+      </PageContent>
     );
   }
 
   if (!component) {
     return (
-      <Box>
+      <PageContent>
         <Typography variant="h5" color="error">
           Component not found
         </Typography>
-      </Box>
+      </PageContent>
     );
   }
 
   return (
-    <Box>
+    <PageContent>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
         <Box>
           <Typography variant="h4" sx={{ fontWeight: 700, mb: 0.5 }}>
@@ -377,6 +378,6 @@ export default function ComponentBuildPage() {
           </Box>
         </>
       )}
-    </Box>
+    </PageContent>
   );
 }

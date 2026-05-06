@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { Accordion, AccordionDetails, AccordionSummary, Box, CircularProgress, IconButton, Tooltip, Typography, useTheme } from '@wso2/oxygen-ui';
-import { ChevronDown, ChevronRight, Github } from 'lucide-react';
+import { Accordion, AccordionDetails, AccordionSummary, alpha, Box, CircularProgress, IconButton, PageContent, Tooltip, Typography, useTheme } from '@wso2/oxygen-ui';
+import { ChevronDown, ChevronRight, Github } from '@wso2/oxygen-ui-icons-react';
 import { useProjectBoard } from '../hooks/useProjectBoard';
 import { TasksPageHeader } from '../components/tasks/TasksPageHeader';
 import { TaskDetailPopup } from '../components/tasks/TaskDetailPopup';
@@ -19,11 +19,11 @@ interface SectionConfig {
 }
 
 const SECTIONS: SectionConfig[] = [
-  { key: 'inProgress', label: 'In Progress', isPrimary: true,  dotColor: 'primary', borderColor: null      },
-  { key: 'todo',       label: 'To Do',        isPrimary: false, dotColor: null,      borderColor: null      },
-  { key: 'done',       label: 'Done',         isPrimary: false, dotColor: null,      borderColor: null      },
-  { key: 'onHold',     label: 'On Hold',      isPrimary: false, dotColor: null,      borderColor: null      },
-  { key: 'failed',     label: 'Failed',       isPrimary: false, dotColor: '#EF4444', borderColor: '#EF4444' },
+  { key: 'inProgress', label: 'In Progress', isPrimary: true,  dotColor: 'primary',    borderColor: null         },
+  { key: 'todo',       label: 'To Do',        isPrimary: false, dotColor: null,         borderColor: null         },
+  { key: 'done',       label: 'Done',         isPrimary: false, dotColor: null,         borderColor: null         },
+  { key: 'onHold',     label: 'On Hold',      isPrimary: false, dotColor: null,         borderColor: null         },
+  { key: 'failed',     label: 'Failed',       isPrimary: false, dotColor: 'error.main', borderColor: 'error.main' },
 ];
 
 // ── TaskRow ─────────────────────────────────────────────────────────────────
@@ -49,20 +49,22 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
         sx={{
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
-          px: '16px',
-          py: '13px',
+          gap: 1.5,
+          px: 2,
+          py: 1.5,
           cursor: 'pointer',
-          borderRadius: '10px',
+          borderRadius: 1.25,
           border: '1px solid',
           borderColor: popupOpen
             ? 'primary.main'
             : isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)',
           ...(section.borderColor && {
-            borderLeft: `3px solid ${section.borderColor}`,
+            borderLeft: '3px solid',
+            borderLeftColor: section.borderColor,
           }),
           ...(section.isPrimary && {
-            borderLeft: `3px solid ${theme.palette.primary.main}`,
+            borderLeft: '3px solid',
+            borderLeftColor: 'primary.main',
           }),
           bgcolor: 'background.paper',
           transition: 'border-color 0.15s, background-color 0.15s',
@@ -143,7 +145,7 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
               rel="noopener noreferrer"
               size="small"
               onClick={(e: React.MouseEvent) => e.stopPropagation()}
-              sx={{ p: '4px', color: 'text.disabled', '&:hover': { color: 'text.secondary' } }}
+              sx={{ p: 0.5, color: 'text.disabled', '&:hover': { color: 'text.secondary' } }}
             >
               <Github size={14} />
             </IconButton>
@@ -194,10 +196,10 @@ function TaskSection({ section, tasks, orgId, projectId, initiallyExpanded }: Ta
       disableGutters
       elevation={0}
       sx={{
-        mb: '6px',
+        mb: 0.75,
         border: '1px solid',
         borderColor: 'divider',
-        borderRadius: '10px !important',
+        borderRadius: 1.25,
         '&:before': { display: 'none' },
         overflow: 'hidden',
       }}
@@ -205,10 +207,10 @@ function TaskSection({ section, tasks, orgId, projectId, initiallyExpanded }: Ta
       <AccordionSummary
         expandIcon={<ChevronDown size={14} style={{ color: labelColor }} />}
         sx={{
-          minHeight: '40px',
-          px: '14px',
+          minHeight: 40,
+          px: 1.75,
           py: 0,
-          '& .MuiAccordionSummary-content': { my: '8px', alignItems: 'center', gap: '6px' },
+          '& .MuiAccordionSummary-content': { my: 1, alignItems: 'center', gap: 0.75 },
         }}
       >
         <Typography
@@ -223,7 +225,7 @@ function TaskSection({ section, tasks, orgId, projectId, initiallyExpanded }: Ta
         </Typography>
       </AccordionSummary>
 
-      <AccordionDetails sx={{ p: '10px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+      <AccordionDetails sx={{ p: 1.25, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
         {/* Task rows */}
         {filteredTasks.length > 0 ? (
           filteredTasks.map(task => (
@@ -236,7 +238,7 @@ function TaskSection({ section, tasks, orgId, projectId, initiallyExpanded }: Ta
             />
           ))
         ) : (
-          <Box sx={{ py: '16px', display: 'flex', justifyContent: 'center' }}>
+          <Box sx={{ py: 2, display: 'flex', justifyContent: 'center' }}>
             <Typography sx={{ fontSize: '0.75rem', color: 'text.disabled' }}>
               {tasks.length > 0 ? 'No matching tasks' : 'No tasks'}
             </Typography>
@@ -270,18 +272,22 @@ export default function ProjectTasksPage() {
 
   if (isLoading) {
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pt: 16, gap: 1.5 }}>
-        <CircularProgress size={28} thickness={3} />
-        <Typography variant="body2" color="text.disabled">Loading tasks…</Typography>
-      </Box>
+      <PageContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', pt: 16, gap: 1.5 }}>
+          <CircularProgress size={28} thickness={3} />
+          <Typography variant="body2" color="text.disabled">Loading tasks…</Typography>
+        </Box>
+      </PageContent>
     );
   }
 
   if (error) {
     return (
-      <Box sx={{ display: 'flex', justifyContent: 'center', pt: 16 }}>
-        <Typography variant="body2" color="error.main">{error}</Typography>
-      </Box>
+      <PageContent>
+        <Box sx={{ display: 'flex', justifyContent: 'center', pt: 16 }}>
+          <Typography variant="body2" color="error.main">{error}</Typography>
+        </Box>
+      </PageContent>
     );
   }
 
@@ -299,7 +305,8 @@ export default function ProjectTasksPage() {
   }
 
   return (
-    <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
+    <PageContent sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
       <TasksPageHeader
         projectId={projectId ?? ''}
         totalTasks={totalTasks}
@@ -315,25 +322,25 @@ export default function ProjectTasksPage() {
           sx={{
             display: 'flex',
             alignItems: 'center',
-            gap: '12px',
-            px: '16px',
-            py: '12px',
+            gap: 1.5,
+            px: 2,
+            py: 1.5,
             mb: 2,
-            borderRadius: '10px',
-            bgcolor: 'rgba(239, 68, 68, 0.08)',
+            borderRadius: 1.25,
+            bgcolor: (t) => alpha(t.palette.error.main, 0.08),
             border: '1px solid',
-            borderColor: 'rgba(239, 68, 68, 0.2)',
+            borderColor: (t) => alpha(t.palette.error.main, 0.2),
           }}
         >
           <Box sx={{ flex: 1 }}>
-            <Typography sx={{ fontSize: '0.875rem', color: '#EF4444', lineHeight: 1.3 }}>
+            <Typography variant="body2" sx={{ color: 'error.main', lineHeight: 1.3 }}>
               {actionError}
             </Typography>
           </Box>
           <IconButton
             size="small"
             onClick={clearActionError}
-            sx={{ color: '#EF4444', p: 0.5 }}
+            sx={{ color: 'error.main', p: 0.5 }}
           >
             ×
           </IconButton>
@@ -347,31 +354,36 @@ export default function ProjectTasksPage() {
           sx={{
             display: 'flex',
             alignItems: 'center',
-            gap: '12px',
-            px: '16px',
-            py: '12px',
-            mb: '16px',
-            borderRadius: '10px',
-            bgcolor: 'rgba(239, 68, 68, 0.08)',
+            gap: 1.5,
+            px: 2,
+            py: 1.5,
+            mb: 2,
+            borderRadius: 1.25,
+            bgcolor: (t) => alpha(t.palette.error.main, 0.08),
             border: '1px solid',
-            borderColor: 'rgba(239, 68, 68, 0.2)',
+            borderColor: (t) => alpha(t.palette.error.main, 0.2),
             cursor: 'pointer',
             transition: 'all 0.15s',
-            '&:hover': { bgcolor: 'rgba(239, 68, 68, 0.12)', borderColor: 'rgba(239, 68, 68, 0.3)' },
+            '&:hover': {
+              bgcolor: (t) => alpha(t.palette.error.main, 0.12),
+              borderColor: (t) => alpha(t.palette.error.main, 0.3),
+            },
           }}
         >
-          <Box sx={{ flexShrink: 0, color: '#EF4444', display: 'flex' }}>
+          <Box sx={{ flexShrink: 0, color: 'error.main', display: 'flex' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.5L20.5 19H3.5L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
           </Box>
           <Box sx={{ flex: 1 }}>
-            <Typography sx={{ fontWeight: 700, fontSize: '0.875rem', color: '#EF4444', lineHeight: 1.3 }}>
+            <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main', lineHeight: 1.3 }}>
               {failedCount} task{failedCount !== 1 ? 's' : ''} failed
             </Typography>
-            <Typography sx={{ fontSize: '0.75rem', color: '#DC2626', lineHeight: 1.3 }}>
+            <Typography variant="caption" sx={{ color: 'error.dark', lineHeight: 1.3 }}>
               Click to review failed tasks
             </Typography>
           </Box>
-          <ChevronRight size={16} style={{ flexShrink: 0, color: '#EF4444' }} />
+          <Box sx={{ flexShrink: 0, color: 'error.main', display: 'flex' }}>
+            <ChevronRight size={16} />
+          </Box>
         </Box>
       )}
 
@@ -380,24 +392,24 @@ export default function ProjectTasksPage() {
           sx={{
             display: 'flex',
             alignItems: 'center',
-            gap: '12px',
-            px: '16px',
-            py: '12px',
-            mb: '16px',
-            borderRadius: '10px',
-            bgcolor: 'rgba(59, 130, 246, 0.08)',
+            gap: 1.5,
+            px: 2,
+            py: 1.5,
+            mb: 2,
+            borderRadius: 1.25,
+            bgcolor: (t) => alpha(t.palette.info.main, 0.08),
             border: '1px solid',
-            borderColor: 'rgba(59, 130, 246, 0.2)',
+            borderColor: (t) => alpha(t.palette.info.main, 0.2),
           }}
         >
           <Box sx={{ flexShrink: 0, display: 'flex' }}>
-            <CircularProgress size={16} sx={{ color: '#3B82F6' }} />
+            <CircularProgress size={16} sx={{ color: 'info.main' }} />
           </Box>
           <Box sx={{ flex: 1 }}>
-            <Typography sx={{ fontWeight: 700, fontSize: '0.875rem', color: '#3B82F6', lineHeight: 1.3 }}>
+            <Typography variant="body2" sx={{ fontWeight: 700, color: 'info.main', lineHeight: 1.3 }}>
               {inProgressCount} task{inProgressCount !== 1 ? 's' : ''} in progress
             </Typography>
-            <Typography sx={{ fontSize: '0.75rem', color: '#1F2937', lineHeight: 1.3 }}>
+            <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
               All tasks are dispatched to the agents and they are working on it
             </Typography>
           </Box>
@@ -409,24 +421,24 @@ export default function ProjectTasksPage() {
           sx={{
             display: 'flex',
             alignItems: 'center',
-            gap: '12px',
-            px: '16px',
-            py: '12px',
-            mb: '16px',
-            borderRadius: '10px',
-            bgcolor: 'rgba(34, 197, 94, 0.08)',
+            gap: 1.5,
+            px: 2,
+            py: 1.5,
+            mb: 2,
+            borderRadius: 1.25,
+            bgcolor: (t) => alpha(t.palette.success.main, 0.08),
             border: '1px solid',
-            borderColor: 'rgba(34, 197, 94, 0.2)',
+            borderColor: (t) => alpha(t.palette.success.main, 0.2),
           }}
         >
-          <Box sx={{ flexShrink: 0, color: '#22C55E', display: 'flex' }}>
+          <Box sx={{ flexShrink: 0, color: 'success.main', display: 'flex' }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
           </Box>
           <Box sx={{ flex: 1 }}>
-            <Typography sx={{ fontWeight: 700, fontSize: '0.875rem', color: '#22C55E', lineHeight: 1.3 }}>
+            <Typography variant="body2" sx={{ fontWeight: 700, color: 'success.main', lineHeight: 1.3 }}>
               All pending tasks are complete
             </Typography>
-            <Typography sx={{ fontSize: '0.75rem', color: '#1F2937', lineHeight: 1.3 }}>
+            <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
               All tasks have been completed successfully
             </Typography>
           </Box>
@@ -434,32 +446,32 @@ export default function ProjectTasksPage() {
       )}
 
       {/* Task sections */}
-      <Box sx={{ flex: 1, overflowY: 'auto', pr: '2px' }}>
+      <Box sx={{ flex: 1, overflowY: 'auto', pr: 0.25 }}>
         {totalTasks === 0 && (
           <Box
             sx={{
               display: 'flex',
               alignItems: 'center',
-              gap: '12px',
-              px: '16px',
-              py: '12px',
-              mb: '16px',
-              borderRadius: '10px',
-              bgcolor: 'rgba(59, 130, 246, 0.08)',
+              gap: 1.5,
+              px: 2,
+              py: 1.5,
+              mb: 2,
+              borderRadius: 1.25,
+              bgcolor: (t) => alpha(t.palette.info.main, 0.08),
               border: '1px solid',
-              borderColor: 'rgba(59, 130, 246, 0.2)',
+              borderColor: (t) => alpha(t.palette.info.main, 0.2),
             }}
           >
-            <Box sx={{ flexShrink: 0, display: 'flex' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ color: '#3B82F6' }}>
+            <Box sx={{ flexShrink: 0, display: 'flex', color: 'info.main' }}>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                 <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
               </svg>
             </Box>
             <Box sx={{ flex: 1 }}>
-              <Typography sx={{ fontWeight: 700, fontSize: '0.875rem', color: '#3B82F6', lineHeight: 1.3 }}>
+              <Typography variant="body2" sx={{ fontWeight: 700, color: 'info.main', lineHeight: 1.3 }}>
                 No tasks generated yet
               </Typography>
-              <Typography sx={{ fontSize: '0.75rem', color: '#1F2937', lineHeight: 1.3 }}>
+              <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
                 Tasks haven't been generated for this project. Generate tasks to get started.
               </Typography>
             </Box>
@@ -478,6 +490,7 @@ export default function ProjectTasksPage() {
           </Box>
         ))}
       </Box>
-    </Box>
+      </Box>
+    </PageContent>
   );
 }

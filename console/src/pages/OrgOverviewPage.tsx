@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Box, Button, Card, CardContent, Chip, Dialog, DialogActions, DialogContent,
-  DialogContentText, DialogTitle, Grid, IconButton, Skeleton, Stack, Typography,
+  DialogContentText, DialogTitle, Grid, IconButton, PageContent, Skeleton, Stack, Typography,
 } from '@wso2/oxygen-ui';
 import { Plus, Trash2 } from '@wso2/oxygen-ui-icons-react';
 import { api } from '../services/api';
@@ -66,7 +66,7 @@ export default function OrgOverviewPage() {
   };
 
   return (
-    <Box>
+    <PageContent>
       <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 3 }}>
         <Typography variant="h4" fontWeight={700}>
           Projects
@@ -197,6 +197,6 @@ export default function OrgOverviewPage() {
           </Button>
         </DialogActions>
       </Dialog>
-    </Box>
+    </PageContent>
   );
 }

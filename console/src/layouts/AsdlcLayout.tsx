@@ -35,7 +35,7 @@ import { useUserClaims } from '../auth';
 import { api } from '../services/api';
 // MOCK: AI Chat panel
 import ChatPanel from '../components/ChatPanel';
-import { isChatPanelOpen, subscribeChatPanelState, subscribeCopilotRequest } from '../services/chatStore';
+import { subscribeCopilotRequest } from '../services/chatStore';
 import {
   organizationOverviewPath,
   organizationCreatePath,
@@ -73,8 +73,6 @@ export default function AsdlcLayout() {
   const [copilotOpen, setCopilotOpen] = useState(false);
 
   // MOCK: Track chat panel state for content shrinking (synced from ChatPanel)
-  const [chatOpen, setChatOpen] = useState(() => isChatPanelOpen());
-  useEffect(() => subscribeChatPanelState(() => setChatOpen(isChatPanelOpen())), []);
 
   // MOCK: Listen for copilot open requests from pages
   useEffect(() => subscribeCopilotRequest(() => setCopilotOpen(true)), []);
@@ -635,8 +633,22 @@ export default function AsdlcLayout() {
       </AppShell.Sidebar>
 
       <AppShell.Main>
-        <Box sx={{ p: 3, pb: 6, flex: 1, minWidth: 0, maxWidth: `calc(100vw - ${collapsed ? 64 : 250}px)`, display: 'flex', flexDirection: 'column', overflow: 'hidden', boxSizing: 'border-box', pr: chatOpen && inProjectLevel ? '396px' : 3, transition: 'padding-right 0.2s' }}>
-          <Outlet />
+        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
+          <Box sx={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
+            <Outlet context={{ setSidebarCollapsed: setCollapsed }} />
+          </Box>
+          {inProjectLevel && (
+            <Box
+              sx={{
+                width: copilotOpen ? 380 : 0,
+                flexShrink: 0,
+                overflow: 'hidden',
+                transition: 'width 0.22s ease-out',
+              }}
+            >
+              <ChatPanel onClose={() => setCopilotOpen(false)} />
+            </Box>
+          )}
         </Box>
       </AppShell.Main>
 
@@ -645,15 +657,11 @@ export default function AsdlcLayout() {
           copyright={`\u00A9 ${new Date().getFullYear()} App Factory Platform. All rights reserved.`}
           termsUrl="#terms"
           privacyUrl="#privacy"
+          sx={{ py: 0.5 }}
         />
       </AppShell.Footer>
 
     </AppShell>
-
-    {/* MOCK: Copilot chat panel — shown on project-level pages when toggled */}
-    {inProjectLevel && copilotOpen && (
-      <ChatPanel onClose={() => setCopilotOpen(false)} />
-    )}
     </>
   );
 }
