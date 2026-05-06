@@ -14,6 +14,9 @@ importers:
       '@asdlc/md-explorer':
         specifier: workspace:*
         version: link:../ui-components/md-explorer
+      '@asdlc/project-status':
+        specifier: workspace:*
+        version: link:../ui-components/project-status
       '@asgardeo/react':
         specifier: ^0.20.0
         version: 0.20.1(@types/react@19.1.6)(react@19.2.3)

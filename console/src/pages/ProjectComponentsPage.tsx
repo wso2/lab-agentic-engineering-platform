@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import {
   Avatar,
@@ -74,7 +74,11 @@ function LastUpdatedCell({ value }: { value?: string }) {
 // Main page
 // ---------------------------------------------------------------------------
 
-export default function ProjectComponentsPage() {
+interface ProjectComponentsPageProps {
+  statusBanner?: ReactNode;
+}
+
+export default function ProjectComponentsPage({ statusBanner }: ProjectComponentsPageProps = {}) {
   const navigate = useNavigate();
   const { orgId, projectId } = useParams();
   const routeOrgId = orgId ?? 'demo-org';
@@ -191,6 +195,12 @@ export default function ProjectComponentsPage() {
       </PageTitle>
 
       <Divider sx={{ mt: 2, mb: 3 }} />
+
+      {statusBanner && <Box sx={{ mb: 4 }}>{statusBanner}</Box>}
+
+      <Typography variant="h6" sx={{ mb: 2 }}>
+        Components
+      </Typography>
 
       {rows.length === 0 ? (
         <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 8 }}>
