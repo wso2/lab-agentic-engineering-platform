@@ -84,11 +84,23 @@ type ocWorkflowRevision struct {
 	Commit string `json:"commit,omitempty"`
 }
 
+// ocWorkflowIdentity is the {name,email,login} block used by ClusterWorkflows
+// that need a git author identity passed in (coding-agent today).
+type ocWorkflowIdentity struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Login string `json:"login,omitempty"`
+}
+
 type ocWorkflowRepository struct {
 	URL       string              `json:"url,omitempty"`
 	SecretRef string              `json:"secretRef,omitempty"`
 	Revision  *ocWorkflowRevision `json:"revision,omitempty"`
 	AppPath   string              `json:"appPath,omitempty"`
+	// Identity is set only by the coding-agent ClusterWorkflow path. The
+	// build path (dockerfile-builder etc.) leaves it nil — the field is
+	// `omitempty` so the JSON shape stays unchanged for those callers.
+	Identity *ocWorkflowIdentity `json:"identity,omitempty"`
 }
 
 type ocDockerParameters struct {
@@ -96,9 +108,33 @@ type ocDockerParameters struct {
 	FilePath string `json:"filePath,omitempty"`
 }
 
+// ocCodingAgentTask carries the per-task fields of the coding-agent
+// ClusterWorkflow's `task` parameter object. Field names match the
+// openAPIV3Schema in the YAML.
+type ocCodingAgentTask struct {
+	ID            string `json:"id"`
+	OrgID         string `json:"orgId"`
+	ProjectID     string `json:"projectId"`
+	ComponentName string `json:"componentName"`
+	BranchName    string `json:"branchName"`
+	Prompt        string `json:"prompt"`
+	CorrelationID string `json:"correlationId,omitempty"`
+}
+
+type ocCodingAgentBFF struct {
+	Bearer string `json:"bearer"`
+}
+
+type ocCodingAgentGitService struct {
+	URL string `json:"url"`
+}
+
 type ocWorkflowParameters struct {
-	Repository *ocWorkflowRepository `json:"repository,omitempty"`
-	Docker     *ocDockerParameters   `json:"docker,omitempty"`
+	Repository *ocWorkflowRepository    `json:"repository,omitempty"`
+	Docker     *ocDockerParameters      `json:"docker,omitempty"`
+	Task       *ocCodingAgentTask       `json:"task,omitempty"`
+	BFF        *ocCodingAgentBFF        `json:"bff,omitempty"`
+	GitService *ocCodingAgentGitService `json:"gitService,omitempty"`
 }
 
 type ocWorkflow struct {

@@ -60,7 +60,7 @@ bootstrap_workloads() {
   export PUBLIC_THUNDER_URL="${PUBLIC_THUNDER_URL:-}"
   export PUBLIC_CONSOLE_URL="${PUBLIC_CONSOLE_URL:-}"
 
-  log_info "bootstrapping 5 workloads (build + import + apply)"
+  log_info "bootstrapping ${#COMPONENTS[@]} workloads (build + import + apply)"
   source "$ROOT_DIR/deployments-v2/scripts/components.sh"
   source "$ROOT_DIR/deployments-v2/scripts/lib/images.sh"
   source "$ROOT_DIR/deployments-v2/scripts/lib/workload.sh"
@@ -77,6 +77,19 @@ bootstrap_workloads() {
   done
 
   log_ok "workloads bootstrapped"
+
+  if [ "${#RUNNER_IMAGES[@]}" -gt 0 ]; then
+    log_info "bootstrapping ${#RUNNER_IMAGES[@]} runner image(s) (build + import)"
+    for row in "${RUNNER_IMAGES[@]}"; do
+      IFS='|' read -r name src dockerfile context <<<"$row"
+      local image
+      image="asdlc.local/${name}:local"
+      log_step "$name (runner image)"
+      build_image "$name" "$ROOT_DIR/$src" "$dockerfile" "$context" "$image"
+      import_image "$image"
+    done
+    log_ok "runner images imported"
+  fi
 }
 
 # discover_console_origin polls for the console HTTPRoute hostname (OpenChoreo
@@ -267,8 +280,7 @@ register_service_oauth_clients() {
   local registered=0 skipped=0
   for pair in \
     "asdlc-bff-to-agents-service:asdlc-bff-to-agents-service-secret" \
-    "asdlc-bff-to-git-service:asdlc-bff-to-git-service-secret" \
-    "asdlc-bff-to-remote-worker:asdlc-bff-to-remote-worker-secret"; do
+    "asdlc-bff-to-git-service:asdlc-bff-to-git-service-secret"; do
     local client_id="${pair%%:*}" client_secret="${pair##*:}"
 
     local exists

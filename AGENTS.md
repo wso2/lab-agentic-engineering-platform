@@ -10,7 +10,7 @@ asdlc/
 ├── asdlc-service/          → Go backend API (BFF) + GitHub webhook receiver
 ├── git-service/            → Go microservice for git operations (clone, commit, push, tag)
 ├── agents/                 → TypeScript agents service (Vercel AI SDK; BA, Architect, TaskGen, Wireframe)
-├── remote-worker/          → TS service that runs Claude Agent SDK agents per component (containerised on cluster)
+├── remote-worker/          → TS one-shot runner image for the `app-factory-coding-agent` ClusterWorkflow (Argo per-task pod)
 ├── deployments-v2/         → CANONICAL local setup — k3d + WSO2 Cloud (OpenChoreo + Thunder + OpenBao + ESO + kgateway)
 │   ├── README.md           → Quick-start, env reference, troubleshooting
 │   ├── .env.example        → Template; setup.sh prompts for missing values
@@ -69,7 +69,7 @@ the end of `setup.sh` and printed in the login banner.
 | `app-factory-api` | Go, GORM, PostgreSQL | 8080 | BFF — CRUD, OC proxy, GitHub webhook receiver, build trigger |
 | `app-factory-git-service` | Go, GORM, PostgreSQL | 3300 | Git operations — clone, commit, push, tag; resolves per-org credentials from OpenBao |
 | `app-factory-agents-service` | TypeScript, Vercel AI SDK | 3400 | AI agents: BusinessAnalyst (spec), Architect (design), TaskGenerator, Wireframe |
-| `app-factory-remote-worker` | TypeScript, Claude Agent SDK | 3200 | Runs an Agent SDK `query()` per component in an isolated workspace. Containerised on cluster; authed via `ANTHROPIC_API_KEY` from OpenBao. |
+| `app-factory-coding-agent-runner` | TypeScript, Claude Agent SDK | n/a | One-shot runner image referenced by ClusterWorkflow `app-factory-coding-agent`. Argo creates one ephemeral pod per ComponentTask; pod exits when the agent finishes. Authed via `ANTHROPIC_API_KEY` (per-WorkflowRun ExternalSecret from OpenBao). |
 | `app-factory-postgresql` | PostgreSQL 16 | 5432 | Component tasks, git repository records (`wso2cloud` namespace) |
 | `thunder` | WSO2 Thunder IDP | 8080/8090 | Identity provider; user auth (PKCE) + service-to-service `client_credentials`. Browser URL: `http://thunder.openchoreo.localhost:8080` |
 | `openbao` | HashiCorp Vault fork | 8200 | Secret store. Holds `ANTHROPIC_API_KEY`, `GITHUB_PLATFORM_PAT`, GitHub webhook secret, BFF task-signing PEM. |
@@ -155,7 +155,7 @@ In-cluster service DNS (k3d, namespace `default` for asdlc workloads, `wso2cloud
 - BFF inside cluster: `http://app-factory-api:8080`
 - Agents service: `http://app-factory-agents-service:3400`
 - Git service: `http://app-factory-git-service:3300`
-- Remote worker: `http://app-factory-remote-worker:3200`
+- Coding-agent: no Service — Argo creates one pod per WorkflowRun in the WorkflowPlane namespace
 - Postgres: `app-factory-postgresql.wso2cloud:5432`
 - GitHub webhook: BFF `/webhooks/github` (HMAC-authed; delivered via smee.io — channel auto-provisioned at first setup)
 
@@ -172,9 +172,11 @@ Structure:
 
 Requires `ANTHROPIC_API_KEY`. Run `npm install && npx tsc --noEmit` in `agents/` to verify.
 
-#### Remote-worker deployment
+#### Coding-agent runner deployment
 
-The `remote-worker` uses the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`'s `query()`) and runs as the `app-factory-remote-worker` Workload on the cluster, authed via `ANTHROPIC_API_KEY` (same key the agents-service already uses). The SDK auto-discovers the bundled native Claude binary inside the image. The BFF reaches it at `http://app-factory-remote-worker:3200`. Workspaces live inside the pod under `/home/asdlc/asdlc-workspace/<orgId>/<projectId>/<taskId>/` and are wiped on restart by design — in-flight tasks are recovered by the webhook-driven projector + redispatch.
+The `remote-worker/` directory is a **one-shot runner image** referenced by the OpenChoreo `ClusterWorkflow: app-factory-coding-agent` (defined in `deployments-v2/wso2cloud-deployment/.../cluster-workflows/app-factory-coding-agent.yaml`). It is **not** a long-lived Workload. On each task dispatch the BFF creates a `WorkflowRun`; Argo schedules one ephemeral pod on the WorkflowPlane that runs `npx tsx src/oneshot.ts`, calls `provisionWorkspace()` and `runClaudeQuery()`, and exits. Workspace lives inside the pod's `emptyDir` (`/home/asdlc/asdlc-workspace/<orgId>/<projectId>/<taskId>/`) and is discarded with the pod. `ANTHROPIC_API_KEY` flows in via a per-WorkflowRun ExternalSecret backed by the same OpenBao path the agents-service uses (`secret/apps/anthropic`).
+
+For local k3d the runner image is built and imported by `dev-cycle.sh` under the static tag `asdlc.local/app-factory-coding-agent-runner:local`; the ClusterWorkflow pins this name with `imagePullPolicy: Never` so each new pod uses the freshly imported image. Add new runner images to `deployments-v2/scripts/components.sh`'s `RUNNER_IMAGES` array.
 
 #### Implementation execution flow (Phase 0 — GitHub-native)
 
@@ -182,15 +184,15 @@ When the user clicks "Start Implementation" in the console:
 
 1. BFF creates `ComponentTask` records from the design (one per component) via `/tasks/generate`. Each task gets a GitHub issue with full context.
 2. Per task, BFF idempotently provisions: feature branch `task/<slug>-<short-id>` off the default branch, a draft PR linking back to the issue (`Closes #N`), and a per-task bearer (HS256 JWT, 24h TTL) for the agent's credential helper.
-3. BFF dispatches each task to `remote-worker` (POST `/dispatch`). The Local flow skips this — the user runs Claude Code locally; if they install the ASDLC plugin (`remote-worker/plugin/`) they get the same workflow skill the remote agent loads.
-4. Remote-worker provisions the per-task workspace at `<WORKSPACE_BASE_PATH>/<orgId>/<projectId>/<taskId>/` (`/home/asdlc/asdlc-workspace/...` inside the pod), clones the feature branch, configures `.git/config` (user + credential helper), and writes `gh` config + bearer file. Then starts an Agent SDK `query()` with `cwd = workspace`, the ASDLC plugin loaded (so the `asdlc` skill is available), and no tokens in env.
+3. BFF creates a `WorkflowRun` of `ClusterWorkflow: app-factory-coding-agent` via the OC REST API (`/api/v1/namespaces/<ns>/workflowruns`). Labels include `app-factory.openchoreo.dev/coding-agent-task: <taskId>`. The Local flow skips dispatch — the user runs Claude Code locally; if they install the ASDLC plugin (`remote-worker/plugin/`) they get the same workflow skill the cluster pod loads.
+4. Argo schedules an ephemeral pod on the WorkflowPlane. The pod's entrypoint is `npx tsx src/oneshot.ts`, which reads ASDLC_* env vars (substituted from `{{workflow.parameters.*}}`), provisions the workspace under an `emptyDir` mount (`/home/asdlc/asdlc-workspace/<orgId>/<projectId>/<taskId>/`), clones the feature branch, configures `.git/config`, writes `gh` config + bearer file, and starts an Agent SDK `query()` with `cwd = workspace`, the ASDLC plugin loaded (so the `asdlc` skill is available), and no tokens in env.
 5. Agent reads the issue (via `gh issue view`), edits code, runs `git commit` / `git push origin HEAD`, posts `gh issue comment` for progress, and runs `gh pr ready <prNumber>` when done. The SDK is credential-blind — `git` and `gh` authenticate via the workspace's credential helper / `gh` wrapper, both of which fetch fresh tokens from `git-service /api/v1/credentials/refresh`. **The agent does not merge.**
 6. Webhooks drive every state transition. The BFF's `/webhooks/github` (HMAC-validated, delivery-ID-deduped) processes:
    - `pull_request.ready_for_review` → task `in_progress` → `ready_for_review`
    - `pull_request.closed merged=true` → task `* → merged`, records merge SHA
    - `pull_request.closed merged=false` → task `* → rejected`
    - `push` to default branch → BFF creates an OC `WorkflowRun` with `params.repository.revision.commit` pinned to the merge SHA. Filters components by changed paths.
-7. The build watcher (10s sweep) polls OC `WorkflowRun` status and applies `build.{succeeded,failed}` via the projector → task `building → deployed | failed`.
+7. The build watcher (10s sweep) polls OC `WorkflowRun` status and applies `build.{succeeded,failed}` via the projector → task `building → deployed | failed`. A parallel coding-agent watcher (also 10s) polls coding-agent WorkflowRuns and applies `coding_agent.failed` on terminal pod failure → task `in_progress → failed` (success transitions ride the GitHub `pr.ready_for_review` webhook instead).
 
 **Task lifecycle**: `pending → in_progress → ready_for_review → merged → building → deployed | rejected | failed`.
 

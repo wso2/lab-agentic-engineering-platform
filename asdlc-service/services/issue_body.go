@@ -120,11 +120,11 @@ func buildIssueBody(task *models.ComponentTask, comp *models.DesignComponent, re
 		sb.WriteString("gh auth status || gh auth login   # must be authenticated as a user with write access to the repo above\n")
 		sb.WriteString("claude                            # with the asdlc plugin installed\n")
 		sb.WriteString("```\n\n")
-		sb.WriteString("Required `gh` scopes: `repo` and `workflow` (same as the platform PAT, per `CLAUDE.md`). The remote-worker flow handles all of this automatically; this section is only for the local-laptop path.\n\n")
+		sb.WriteString("Required `gh` scopes: `repo` and `workflow` (same as the platform PAT, per `CLAUDE.md`). The cluster coding-agent runs everything in an ephemeral pod for you; this section is only for the local-laptop path.\n\n")
 	}
 
 	sb.WriteString("## How To Submit\n")
-	sb.WriteString("Your working directory should be a fresh clone of this repo with `git` and `gh` configured. The remote-worker flow prepares this for you; if you're running locally, see Local Developer Setup above. ")
+	sb.WriteString("Your working directory should be a fresh clone of this repo with `git` and `gh` configured. The cluster coding-agent prepares this for you; if you're running locally, see Local Developer Setup above. ")
 	if task.BranchName != "" {
 		sb.WriteString(fmt.Sprintf("Branch `%s` is the working branch — do all work on that branch.\n\n", task.BranchName))
 	} else {

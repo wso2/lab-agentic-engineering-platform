@@ -39,6 +39,27 @@ type WorkflowRunService interface {
 	// the retry budget). Returns the new run name; caller persists it
 	// onto the task row.
 	RetryAuthFailedBuild(ctx context.Context, task *models.ComponentTask) (runName string, err error)
+	// TriggerCodingAgent creates a WorkflowRun of ClusterWorkflow
+	// `app-factory-coding-agent` for the per-task ephemeral pod that runs the
+	// Claude Agent SDK. Replaces the legacy `remote-worker /dispatch` HTTP
+	// call. Caller has already set up the GitHub artifacts (issue, branch,
+	// draft PR) and resolved the credential identity.
+	TriggerCodingAgent(ctx context.Context, params CodingAgentTrigger) (runName string, err error)
+}
+
+// CodingAgentTrigger is the input to WorkflowRunService.TriggerCodingAgent.
+// Built by the dispatch path from the ComponentTask plus the resolved repo
+// info, identity, and prompt.
+type CodingAgentTrigger struct {
+	Task          *models.ComponentTask
+	RepoURL       string
+	IdentityName  string
+	IdentityEmail string
+	IdentityLogin string
+	Prompt        string
+	Bearer        string
+	GitServiceURL string
+	CorrelationID string
 }
 
 // TriggeredRun is the (component, runName) pair returned per build created.
@@ -227,6 +248,48 @@ func pathsMatchComponent(appPath string, paths []string) bool {
 // original. Mint failures (org disconnected, repo not in org) abort the
 // retry — the watcher will eventually exhaust the budget if the
 // underlying problem persists.
+// TriggerCodingAgent creates a fresh WorkflowRun of ClusterWorkflow
+// `app-factory-coding-agent`. Each call increments the attempt counter
+// implicitly via time.Now(); idempotency is at the dispatch-service level
+// (DispatchedAt + LastCodingAgentRunName).
+func (s *workflowRunService) TriggerCodingAgent(ctx context.Context, p CodingAgentTrigger) (string, error) {
+	if s.tokenInject != nil {
+		ctx = s.tokenInject(ctx)
+	}
+	if p.Task == nil {
+		return "", fmt.Errorf("trigger coding-agent: task is nil")
+	}
+	if p.Bearer == "" {
+		return "", fmt.Errorf("trigger coding-agent: empty bearer for task %s", p.Task.ID)
+	}
+	if p.GitServiceURL == "" {
+		return "", fmt.Errorf("trigger coding-agent: empty git-service URL for task %s", p.Task.ID)
+	}
+	if p.RepoURL == "" {
+		return "", fmt.Errorf("trigger coding-agent: empty repo URL for task %s", p.Task.ID)
+	}
+
+	run, err := s.ocClient.TriggerCodingAgent(ctx, openchoreo.CodingAgentParams{
+		OrgName:       p.Task.OrgID,
+		ProjectName:   p.Task.ProjectID,
+		ComponentName: p.Task.ComponentName,
+		TaskID:        p.Task.ID,
+		BranchName:    p.Task.BranchName,
+		Prompt:        p.Prompt,
+		CorrelationID: p.CorrelationID,
+		RepoURL:       p.RepoURL,
+		IdentityName:  p.IdentityName,
+		IdentityEmail: p.IdentityEmail,
+		IdentityLogin: p.IdentityLogin,
+		Bearer:        p.Bearer,
+		GitServiceURL: p.GitServiceURL,
+	})
+	if err != nil {
+		return "", fmt.Errorf("trigger coding-agent: %w", err)
+	}
+	return run.Name, nil
+}
+
 func (s *workflowRunService) RetryAuthFailedBuild(ctx context.Context, task *models.ComponentTask) (string, error) {
 	if s.tokenInject != nil {
 		ctx = s.tokenInject(ctx)

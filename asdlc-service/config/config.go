@@ -52,10 +52,16 @@ type Config struct {
 
 	Observability   ObservabilityConfig
 	AgentsService   AgentsServiceConfig
-	RemoteWorker    RemoteWorkerConfig
 	ServiceAuth     ServiceAuthConfig
 	GitService      GitServiceConfig
 	DatabaseService DatabaseServiceConfig
+
+	// AgentGitServiceURL is the URL the coding-agent runner pod uses to reach
+	// git-service for /credentials/refresh. The pod runs in the WorkflowPlane
+	// namespace (`workflows-default`), so this must be a cross-namespace FQDN
+	// (e.g. http://app-factory-git-service.<dp-ns>.svc.cluster.local:3300).
+	// Falls back to GitService.BaseURL when empty.
+	AgentGitServiceURL string
 
 	// JWKS settings for inbound JWT verification — Thunder publishes the
 	// User JWT and Service JWT signing key at JWKSURL; verifiers refresh
@@ -70,17 +76,6 @@ type Config struct {
 	// pinned to the target service.
 	ServiceAuthGitService    ServiceAuthConfig
 	ServiceAuthAgentsService ServiceAuthConfig
-	ServiceAuthRemoteWorker  ServiceAuthConfig
-}
-
-// RemoteWorkerConfig holds connection settings for the remote-worker service.
-// BaseURL is optional; if empty, task dispatch via remote-worker is disabled.
-type RemoteWorkerConfig struct {
-	BaseURL string
-	// GitServiceHostURL is the URL the remote-worker uses to reach git-service
-	// for /credentials/refresh. In container mode this is an in-network DNS
-	// name; in host mode it's the published localhost port.
-	GitServiceHostURL string
 }
 
 // ServiceAuthConfig holds OAuth2 client_credentials settings for

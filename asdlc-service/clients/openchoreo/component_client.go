@@ -35,8 +35,33 @@ type ComponentClient interface {
 	// params.repository.revision.commit. Mirrors agent-manager's pattern at
 	// agent-manager-service/clients/openchoreosvc/client/builds.go:71-85.
 	TriggerBuildAtCommit(ctx context.Context, orgName, projectName, componentName, commitSHA string) (*models.WorkflowRun, error)
+	// TriggerCodingAgent creates a WorkflowRun of ClusterWorkflow
+	// `app-factory-coding-agent` for the per-task ephemeral pod that runs the
+	// Claude Agent SDK against the task's feature branch. Replaces the legacy
+	// HTTP POST to remote-worker /dispatch. The label
+	// `app-factory.openchoreo.dev/coding-agent-task` carries the taskId so
+	// the BFF watcher can correlate runs back to the task.
+	TriggerCodingAgent(ctx context.Context, params CodingAgentParams) (*models.WorkflowRun, error)
 	ListWorkflowRuns(ctx context.Context, orgName, projectName, componentName string, limit int, cursor string) (*models.WorkflowRunList, error)
 	GetWorkflowRun(ctx context.Context, orgName, runName string) (*models.WorkflowRun, error)
+}
+
+// CodingAgentParams is the input to TriggerCodingAgent. Mirrors the schema
+// of `app-factory-coding-agent` ClusterWorkflow. All fields are required.
+type CodingAgentParams struct {
+	OrgName       string
+	ProjectName   string
+	ComponentName string
+	TaskID        string
+	BranchName    string
+	Prompt        string
+	CorrelationID string
+	RepoURL       string
+	IdentityName  string
+	IdentityEmail string
+	IdentityLogin string
+	Bearer        string
+	GitServiceURL string
 }
 
 type componentClient struct {
@@ -611,6 +636,79 @@ func (c *componentClient) triggerBuildInner(ctx context.Context, orgName, projec
 	var raw ocWorkflowRun
 	if err := c.send(ctx, httpReq, &raw, http.StatusCreated); err != nil {
 		return nil, fmt.Errorf("trigger build: %w", err)
+	}
+	run := normalizeWorkflowRun(raw)
+	return &run, nil
+}
+
+// TriggerCodingAgent creates a WorkflowRun of ClusterWorkflow
+// `app-factory-coding-agent`. Each call creates a fresh run; idempotency is
+// the caller's responsibility (see DispatchService.dispatchOne which gates on
+// task.LastCodingAgentRunName + DispatchedAt).
+func (c *componentClient) TriggerCodingAgent(ctx context.Context, params CodingAgentParams) (*models.WorkflowRun, error) {
+	scopedComp := ScopedComponentName(params.ProjectName, params.ComponentName)
+
+	// Run name shape: coding-agent-<short-task>-<unixMs>. K8s names must be
+	// ≤63 chars and start with a letter. Truncate the taskID to 8 to stay
+	// safely inside the budget. The unixMs suffix makes re-dispatch unique.
+	shortTask := params.TaskID
+	if len(shortTask) > 8 {
+		shortTask = shortTask[:8]
+	}
+	runName := fmt.Sprintf("coding-agent-%s-%d", shortTask, time.Now().UnixMilli())
+
+	// NOTE: deliberately NOT setting `openchoreo.dev/component` / `openchoreo.dev/project`
+	// labels. OC validates ClusterWorkflow → ClusterComponentType allowed-workflow
+	// pairs when a WorkflowRun carries the `openchoreo.dev/component` label, which
+	// would reject `app-factory-coding-agent` because the user's component is
+	// `deployment/service` (allowed only the builder ClusterWorkflows). The agent
+	// pod has no need to be tied to the user's Component for OC's purposes — the
+	// project + component identifiers flow in via the `parameters.task.*` fields
+	// that the runner reads.
+	body := ocWorkflowRun{
+		Metadata: ocObjectMeta{
+			Name: runName,
+			Labels: map[string]string{
+				"app-factory.openchoreo.dev/coding-agent-task": params.TaskID,
+				"app-factory.openchoreo.dev/project":           params.ProjectName,
+				"app-factory.openchoreo.dev/component":         scopedComp,
+			},
+		},
+		Spec: ocWorkflowRunSpec{
+			Workflow: &ocWorkflow{
+				Kind: "ClusterWorkflow",
+				Name: "app-factory-coding-agent",
+				Parameters: &ocWorkflowParameters{
+					Task: &ocCodingAgentTask{
+						ID:            params.TaskID,
+						OrgID:         params.OrgName,
+						ProjectID:     params.ProjectName,
+						ComponentName: params.ComponentName,
+						BranchName:    params.BranchName,
+						Prompt:        params.Prompt,
+						CorrelationID: params.CorrelationID,
+					},
+					Repository: &ocWorkflowRepository{
+						URL: params.RepoURL,
+						Identity: &ocWorkflowIdentity{
+							Name:  params.IdentityName,
+							Email: params.IdentityEmail,
+							Login: params.IdentityLogin,
+						},
+					},
+					BFF:        &ocCodingAgentBFF{Bearer: params.Bearer},
+					GitService: &ocCodingAgentGitService{URL: params.GitServiceURL},
+				},
+			},
+		},
+	}
+
+	httpReq := c.newRequest(ctx, "openchoreo.TriggerCodingAgent", http.MethodPost, c.workflowRunsURL(c.resolveNamespace(params.OrgName)))
+	httpReq.SetJSON(body)
+
+	var raw ocWorkflowRun
+	if err := c.send(ctx, httpReq, &raw, http.StatusCreated); err != nil {
+		return nil, fmt.Errorf("trigger coding-agent: %w", err)
 	}
 	run := normalizeWorkflowRun(raw)
 	return &run, nil

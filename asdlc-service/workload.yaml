@@ -19,8 +19,3 @@ dependencies:
       visibility: project
       envBindings:
         address: AGENTS_SERVICE_BASE_URL
-    - component: app-factory-remote-worker
-      name: http
-      visibility: project
-      envBindings:
-        address: REMOTE_WORKER_BASE_URL

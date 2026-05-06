@@ -31,12 +31,11 @@ env:
     value: "asdlc-bff-to-git-service-secret"
   # SERVICE_AUTH_AGENTS_* intentionally not set — agents-service runs with JWKS
   # validation disabled (JWKS_URL not set), so service auth is unnecessary.
-  - key: SERVICE_AUTH_RW_TOKEN_URL
-    value: "http://thunder.openchoreo.localhost:8080/oauth2/token"
-  - key: SERVICE_AUTH_RW_CLIENT_ID
-    value: "asdlc-bff-to-remote-worker"
-  - key: SERVICE_AUTH_RW_CLIENT_SECRET
-    value: "asdlc-bff-to-remote-worker-secret"
+  # URL the coding-agent runner pod (in `workflows-default` namespace) uses to
+  # reach git-service in the data-plane namespace. BFF passes this verbatim to
+  # the WorkflowRun parameter, which the pod reads as ASDLC_GIT_SERVICE_URL.
+  - key: AGENT_GIT_SERVICE_URL
+    value: "http://app-factory-git-service.dp-default-app-factory-development-be7a44ac.svc.cluster.local:3300"
   - key: BFF_TASK_SIGNING_KEY_PATH
     value: "/app/keys/task-signing.pem"
   - key: BFF_TASK_TOKEN_ISSUER

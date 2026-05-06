@@ -92,4 +92,28 @@ _dc_cycle() {
   fi
 }
 
+# _dc_runner_images: build + import runner images that ClusterWorkflows reference.
+# These don't have a Workload; the image is consumed at WorkflowRun time. Tag is
+# always `:local` so the ClusterWorkflow YAML can pin a stable image ref.
+# Imports unconditionally; k3d image import is idempotent and the WorkflowRun
+# uses imagePullPolicy: Never so each new pod sees the latest local content.
+_dc_runner_images() {
+  local name src dockerfile context src_dir image
+  for row in "${RUNNER_IMAGES[@]}"; do
+    IFS='|' read -r name src dockerfile context <<<"$row"
+
+    if [ -n "$FILTER" ] && [ "$name" != "$FILTER" ]; then
+      continue
+    fi
+
+    src_dir="$ROOT_DIR/$src"
+    image="asdlc.local/${name}:local"
+    log_step "$name (runner image)"
+    build_image "$name" "$src_dir" "$dockerfile" "$context" "$image"
+    import_image "$image"
+    log_ok "$name imported"
+  done
+}
+
 _dc_cycle
+_dc_runner_images

@@ -56,10 +56,7 @@ func Load() (Config, error) {
 		AgentsService: AgentsServiceConfig{
 			BaseURL: r.readOptionalString("AGENTS_SERVICE_BASE_URL", ""),
 		},
-		RemoteWorker: RemoteWorkerConfig{
-			BaseURL:           r.readOptionalString("REMOTE_WORKER_BASE_URL", ""),
-			GitServiceHostURL: r.readOptionalString("GIT_SERVICE_HOST_URL", ""),
-		},
+		AgentGitServiceURL: r.readOptionalString("AGENT_GIT_SERVICE_URL", ""),
 		ServiceAuth: ServiceAuthConfig{
 			TokenURL:     r.readOptionalString("SERVICE_AUTH_TOKEN_URL", ""),
 			ClientID:     r.readOptionalString("SERVICE_AUTH_CLIENT_ID", ""),
@@ -77,12 +74,6 @@ func Load() (Config, error) {
 			ClientID:     r.readOptionalString("SERVICE_AUTH_AGENTS_CLIENT_ID", ""),
 			ClientSecret: r.readOptionalString("SERVICE_AUTH_AGENTS_CLIENT_SECRET", ""),
 			HostHeader:   r.readOptionalString("SERVICE_AUTH_AGENTS_HOST_HEADER", ""),
-		},
-		ServiceAuthRemoteWorker: ServiceAuthConfig{
-			TokenURL:     r.readOptionalString("SERVICE_AUTH_RW_TOKEN_URL", ""),
-			ClientID:     r.readOptionalString("SERVICE_AUTH_RW_CLIENT_ID", ""),
-			ClientSecret: r.readOptionalString("SERVICE_AUTH_RW_CLIENT_SECRET", ""),
-			HostHeader:   r.readOptionalString("SERVICE_AUTH_RW_HOST_HEADER", ""),
 		},
 		GitService: GitServiceConfig{
 			BaseURL: r.readOptionalString("GIT_SERVICE_BASE_URL", ""),

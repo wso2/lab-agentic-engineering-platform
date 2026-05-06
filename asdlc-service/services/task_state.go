@@ -26,6 +26,10 @@ const (
 	// Phase 2 PR D — git-clone auth-failure retry budget exhausted (§9.3).
 	// Drives building → failed; cause column gets "build.auth_retry_exceeded".
 	TaskEventBuildAuthRetryExhausted TaskEvent = "build.auth_retry_exceeded"
+	// Coding-agent WorkflowRun terminated Failed/Error. Drives in_progress → failed.
+	// Emitted by services/webhook/coding_agent_watcher.go on terminal failure
+	// of the per-task `app-factory-coding-agent` WorkflowRun.
+	TaskEventCodingAgentFailed TaskEvent = "coding_agent.failed"
 )
 
 // EventCause maps a TaskEvent to the value written into ComponentTask.Cause
@@ -40,6 +44,8 @@ func EventCause(event TaskEvent) string {
 		return "build.failed"
 	case TaskEventBuildAuthRetryExhausted:
 		return "build.auth_retry_exceeded"
+	case TaskEventCodingAgentFailed:
+		return "coding_agent.failed"
 	case TaskEventPRRejected:
 		return "pr.rejected"
 	case TaskEventOrgDisconnected:
@@ -95,6 +101,11 @@ var allowedTransitions = []stateTransition{
 	// Stays in the building → failed lane (the auth-retry events that did
 	// not exhaust the budget loop the watcher without changing status).
 	{models.TaskStatusBuilding, models.TaskStatusFailed, TaskEventBuildAuthRetryExhausted},
+	// Coding-agent WorkflowRun terminated Failed/Error. Drives the task to
+	// terminal `failed` so the operator sees the dispatch never produced a
+	// PR-ready state. The webhook path (pr.ready_for_review) is preferred
+	// when both fire — first-write-wins on the projector.
+	{models.TaskStatusInProgress, models.TaskStatusFailed, TaskEventCodingAgentFailed},
 }
 
 // ErrInvalidTransition is returned by Apply when the current status doesn't

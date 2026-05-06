@@ -1,7 +1,9 @@
 // Per-task workspace provisioning.
 //
-// At dispatch time the BFF asks remote-worker to clone the task's feature
-// branch into ~/asdlc-workspace/<orgId>/<projectId>/<taskId>/ and configure
+// On dispatch the BFF creates a WorkflowRun of `app-factory-coding-agent`
+// and Argo schedules an ephemeral pod whose entrypoint (src/oneshot.ts)
+// calls this function. We clone the task's feature branch into
+// $WORKSPACE_BASE_PATH/<orgId>/<projectId>/<taskId>/ and configure
 // `.git/config` + `gh` so the agent can git/gh against GitHub without ever
 // seeing a token in environment variables.
 //

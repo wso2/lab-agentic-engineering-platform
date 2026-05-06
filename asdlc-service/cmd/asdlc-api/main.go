@@ -18,7 +18,6 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
 	"github.com/wso2/asdlc/asdlc-service/clients/observability"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
-	remoteworkerclient "github.com/wso2/asdlc/asdlc-service/clients/remoteworker"
 	"github.com/wso2/asdlc/asdlc-service/config"
 	"github.com/wso2/asdlc/asdlc-service/controllers"
 	"github.com/wso2/asdlc/asdlc-service/database"
@@ -87,6 +86,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Phase 4 — coding-agent ClusterWorkflow refactor. Adds
+	// last_coding_agent_run_name to component_tasks. Idempotent.
+	if err := migrations.RunPhase4CodingAgent(db); err != nil {
+		slog.Error("phase4_coding_agent migration failed", "error", err)
+		os.Exit(1)
+	}
+
 	// Repositories — only task and config remain
 	taskRepo := repositories.NewTaskRepository(db)
 	configRepo := repositories.NewConfigRepository(db)
@@ -124,7 +130,6 @@ func main() {
 	// service is configured with IS_LOCAL_DEV_ENV.
 	gitAuth := buildAuthProvider("git-service", cfg.ServiceAuthGitService)
 	agentsAuth := buildAuthProvider("agents-service", cfg.ServiceAuthAgentsService)
-	rwAuth := buildAuthProvider("remote-worker", cfg.ServiceAuthRemoteWorker)
 
 	// Agents service client (AI SDK v6 — BA, architect, task-generator, wireframe)
 	agentsClient := agents.NewClient(cfg.AgentsService.BaseURL, agentsAuth)
@@ -206,17 +211,9 @@ func main() {
 		return middleware.WithAuthToken(ctx, token)
 	}
 
-	// Remote-worker (optional — disabled when REMOTE_WORKER_BASE_URL not set)
-	var remoteWorkerSvc services.RemoteWorkerService
-	if cfg.RemoteWorker.BaseURL != "" {
-		workerClient := remoteworkerclient.NewClient(cfg.RemoteWorker.BaseURL, rwAuth)
-		gitServiceHostURL := cfg.RemoteWorker.GitServiceHostURL
-		if gitServiceHostURL == "" {
-			gitServiceHostURL = cfg.GitService.BaseURL
-		}
-		remoteWorkerSvc = services.NewRemoteWorkerService(taskRepo, workerClient, gitClient, componentService, artifactStore, taskTokens, tokenInject, gitServiceHostURL)
-		slog.Info("Remote-worker", "baseURL", cfg.RemoteWorker.BaseURL, "gitServiceHostURL", gitServiceHostURL)
-	}
+	// Dispatch service drives the per-task Issue/branch/PR/Component
+	// pipeline and creates a coding-agent WorkflowRun. wfRunService is
+	// constructed below; we wire DispatchService after it.
 
 	// Webhook receiver wiring. PR B swaps EnvSecretProvider for
 	// GitServiceSecretProvider — secrets now come from the per-org
@@ -243,6 +240,18 @@ func main() {
 	projector := webhook.NewProjector(db)
 
 	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, tokenInject)
+
+	// Dispatch service — replaces the legacy RemoteWorkerService. Routes to
+	// WorkflowRunService.TriggerCodingAgent (ClusterWorkflow `app-factory-coding-agent`)
+	// for the per-task agent pod. AGENT_GIT_SERVICE_URL must be reachable from
+	// the WorkflowPlane namespace (cross-namespace FQDN — see env-overlay).
+	agentGitServiceURL := cfg.AgentGitServiceURL
+	if agentGitServiceURL == "" {
+		agentGitServiceURL = cfg.GitService.BaseURL
+	}
+	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, artifactStore, taskTokens, tokenInject, wfRunService, agentGitServiceURL)
+	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
+
 	webhook.Register(webhookRouter, db, projector, wfRunService)
 	if gitClient != nil {
 		webhook.RegisterInstallationHandlers(webhookRouter, db, gitClient, taskRepo, projector)
@@ -254,6 +263,11 @@ func main() {
 	// Phase 2 PR D — wfRunService.RetryAuthFailedBuild backs the auth
 	// retry path. authBudget is configurable for tests via env.
 	buildWatcher := webhook.NewBuildWatcher(db, componentClient, projector, tokenInject, wfRunService, cfg.BuildAuthRetryBudget)
+
+	// Coding-agent watcher — same cadence, complementary to the GitHub
+	// webhook path. Only acts on terminal-failed coding-agent WorkflowRuns;
+	// success transitions ride the pull_request:ready_for_review webhook.
+	codingAgentWatcher := webhook.NewCodingAgentWatcher(db, componentClient, projector, tokenInject)
 
 	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
 	var orgGitHubCtrl controllers.OrgGitHubController
@@ -288,7 +302,7 @@ func main() {
 		ComponentController:    controllers.NewComponentController(componentService, taskService),
 		SpecController:         controllers.NewSpecController(specService),
 		DesignController:       controllers.NewDesignController(designService),
-		TaskController:         controllers.NewTaskController(taskService, remoteWorkerSvc),
+		TaskController:         controllers.NewTaskController(taskService, dispatchSvc),
 		BoardController:        controllers.NewBoardController(boardService),
 		ConfigController:       controllers.NewConfigController(configService),
 		CollabController:       controllers.NewCollabController(projectService),
@@ -326,6 +340,7 @@ func main() {
 	watcherCtx, cancelWatcher := context.WithCancel(context.Background())
 	defer cancelWatcher()
 	go buildWatcher.Run(watcherCtx)
+	go codingAgentWatcher.Run(watcherCtx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

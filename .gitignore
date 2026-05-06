@@ -6,10 +6,6 @@ dist/
 
 # Go binaries
 /asdlc-service/asdlc-service
-/remote-worker/remote-worker
-
-# Remote-worker runtime worktrees (ephemeral per-task workspaces)
-/remote-worker/worktrees/
 
 # Environment files (keep .env.example)
 .env

@@ -94,7 +94,7 @@ and local state (`.env`, keys). The cluster and wso2cloud platform stay running.
 
 | Variable | Required | Auto | Description |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Prompted | No | Anthropic API key for AI agents + remote-worker. Skip to run without AI. |
+| `ANTHROPIC_API_KEY` | Prompted | No | Anthropic API key for the agents-service and the per-task coding-agent ClusterWorkflow pods. Skip to run without AI. |
 | `GITHUB_PLATFORM_PAT` | Prompted | No | GitHub PAT to auto-seed org credentials at startup (dev-tier). |
 | `GITHUB_REPO_OWNER` | Prompted | No | GitHub org/user where repos are created. Only prompted if PAT is set. |
 | `GITHUB_WEBHOOK_SECRET` | No | Yes | 32-byte random hex for GitHub webhook HMAC |
@@ -125,15 +125,16 @@ deployments-v2/
 │       ├── app-factory-api.yaml
 │       ├── app-factory-console.yaml
 │       ├── app-factory-git-service.yaml
-│       ├── app-factory-agents-service.yaml
-│       └── app-factory-remote-worker.yaml
+│       └── app-factory-agents-service.yaml
 │       # postgres comes from the submodule's kustomize (app-factory project)
+│       # The coding-agent runner image (built from remote-worker/) has no
+│       # env-overlay — its env flows in via WorkflowRun parameters at dispatch.
 └── scripts/
     ├── setup.sh
     ├── dev-cycle.sh
     ├── teardown.sh
     ├── webhook-relay.sh               # host-side smee.io → cluster relay (local only)
-    ├── components.sh                  # registry of 5 components
+    ├── components.sh                  # registry of 4 long-lived components + 1 runner image
     └── lib/
         ├── ui.sh                      # colored logging
         ├── env.sh                     # .env load + validate + autogen

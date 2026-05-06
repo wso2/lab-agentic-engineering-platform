@@ -106,6 +106,12 @@ type ComponentTask struct {
 	LastEventAt      *time.Time `gorm:"index" json:"lastEventAt,omitempty"`
 	LastBuildRunName string     `gorm:"type:text" json:"lastBuildRunName,omitempty"`
 	LastBuildSHA     string     `gorm:"type:text" json:"lastBuildSha,omitempty"`
+	// LastCodingAgentRunName is the most recent OC WorkflowRun that ran the
+	// per-task coding agent. Mirrors LastBuildRunName for the build phase.
+	// Set by DispatchService at dispatch time; the coding-agent watcher
+	// reads it to poll the run's status. Replaces the legacy WorkspacePath
+	// column populated by remote-worker.
+	LastCodingAgentRunName string `gorm:"type:text" json:"lastCodingAgentRunName,omitempty"`
 
 	// Error tracking
 	ErrorMessage string `gorm:"type:text" json:"errorMessage,omitempty"`

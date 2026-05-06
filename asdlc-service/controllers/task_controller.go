@@ -25,12 +25,12 @@ type TaskController interface {
 }
 
 type taskController struct {
-	service      services.TaskService
-	workerSvc    services.RemoteWorkerService
+	service     services.TaskService
+	dispatchSvc services.DispatchService
 }
 
-func NewTaskController(service services.TaskService, workerSvc services.RemoteWorkerService) TaskController {
-	return &taskController{service: service, workerSvc: workerSvc}
+func NewTaskController(service services.TaskService, dispatchSvc services.DispatchService) TaskController {
+	return &taskController{service: service, dispatchSvc: dispatchSvc}
 }
 
 func (c *taskController) ListTasks(w http.ResponseWriter, r *http.Request) {
@@ -125,8 +125,8 @@ func (c *taskController) GetTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *taskController) DispatchTasks(w http.ResponseWriter, r *http.Request) {
-	if c.workerSvc == nil {
-		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "remote-worker not configured")
+	if c.dispatchSvc == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "dispatch service not configured")
 		return
 	}
 
@@ -136,7 +136,7 @@ func (c *taskController) DispatchTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := c.workerSvc.DispatchTasks(r.Context(), org, project)
+	results, err := c.dispatchSvc.DispatchTasks(r.Context(), org, project)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "dispatch tasks failed", "error", err, "org", org, "project", project)
 		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to dispatch tasks")
