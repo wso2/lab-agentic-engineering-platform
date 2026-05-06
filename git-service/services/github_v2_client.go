@@ -43,6 +43,7 @@ type BoardItem struct {
 
 // ProjectBoardResult holds all items fetched from a GitHub Project v2.
 type ProjectBoardResult struct {
+	URL   string
 	Items []BoardItem
 }
 
@@ -184,64 +185,6 @@ func (c *githubV2Client) CreateGitHubV2Project(ctx context.Context, orgID, pat, 
 	}
 
 	url := updateData.UpdateProjectV2.ProjectV2.URL
-	if url == "" {
-		url = p.URL
-	}
-
-	// GitHub auto-creates a Table view — replace it with a Board view as the default.
-	// First, get the auto-created view's ID.
-	viewsQuery := `
-		query($projectId: ID!) {
-			node(id: $projectId) {
-				... on ProjectV2 {
-					views(first: 1) {
-						nodes { id }
-					}
-				}
-			}
-		}`
-	var viewsData struct {
-		Node struct {
-			Views struct {
-				Nodes []struct {
-					ID string `json:"id"`
-				} `json:"nodes"`
-			} `json:"views"`
-		} `json:"node"`
-	}
-	if err := c.graphqlRequest(ctx, pat, viewsQuery, map[string]any{"projectId": p.ID}, &viewsData); err != nil {
-		slog.WarnContext(ctx, "failed to query project views", "projectId", p.ID, "error", err)
-	} else {
-		// Create the Board view first (so it becomes the default after table is deleted).
-		createViewMutation := `
-			mutation($projectId: ID!, $name: String!, $layout: ProjectV2ViewLayout!) {
-				createProjectV2View(input: { projectId: $projectId, name: $name, layout: $layout }) {
-					projectV2View { id }
-				}
-			}`
-		if err := c.graphqlRequest(ctx, pat, createViewMutation, map[string]any{
-			"projectId": p.ID,
-			"name":      "Board",
-			"layout":    "BOARD_LAYOUT",
-		}, nil); err != nil {
-			slog.WarnContext(ctx, "failed to create board view", "projectId", p.ID, "error", err)
-		} else if len(viewsData.Node.Views.Nodes) > 0 {
-			// Delete the auto-created Table view.
-			deleteViewMutation := `
-				mutation($projectId: ID!, $viewId: ID!) {
-					deleteProjectV2View(input: { projectId: $projectId, viewId: $viewId }) {
-						owner { ... on ProjectV2Owner { id } }
-					}
-				}`
-			if err := c.graphqlRequest(ctx, pat, deleteViewMutation, map[string]any{
-				"projectId": p.ID,
-				"viewId":    viewsData.Node.Views.Nodes[0].ID,
-			}, nil); err != nil {
-				slog.WarnContext(ctx, "failed to delete default table view", "projectId", p.ID, "error", err)
-			}
-		}
-	}
-
 	slog.InfoContext(ctx, "GitHub project created", "title", title, "projectId", p.ID, "url", url)
 	return p.ID, nil
 }
@@ -252,6 +195,7 @@ func (c *githubV2Client) GetProjectBoard(ctx context.Context, githubProjectID, p
 		query($projectId: ID!) {
 			node(id: $projectId) {
 				... on ProjectV2 {
+					url
 					items(first: 100) {
 						nodes {
 							id
@@ -286,6 +230,7 @@ func (c *githubV2Client) GetProjectBoard(ctx context.Context, githubProjectID, p
 
 	var data struct {
 		Node struct {
+			URL   string `json:"url"`
 			Items struct {
 				Nodes []struct {
 					ID          string `json:"id"`
@@ -322,7 +267,7 @@ func (c *githubV2Client) GetProjectBoard(ctx context.Context, githubProjectID, p
 		return nil, fmt.Errorf("get project board: %w", err)
 	}
 
-	result := &ProjectBoardResult{Items: []BoardItem{}}
+	result := &ProjectBoardResult{URL: data.Node.URL, Items: []BoardItem{}}
 
 	for _, node := range data.Node.Items.Nodes {
 		if node.Content.Title == "" {

@@ -884,7 +884,7 @@ export const restApi = {
   },
 
   async getProjectBoard(orgHandle: string, projectId: string): Promise<ProjectBoard> {
-    const empty: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [] };
+    const empty: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], url: '' };
     try {
       const data = await fetchJSON<ProjectBoard>(`${projectPrefix(orgHandle, projectId)}/board`);
       return data ?? empty;

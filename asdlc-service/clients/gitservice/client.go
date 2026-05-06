@@ -128,8 +128,8 @@ type PutResult struct {
 }
 
 type SaveArtifactRequest struct {
-	Content string         `json:"content"`
-	Message string         `json:"message,omitempty"`
+	Content string          `json:"content"`
+	Message string          `json:"message,omitempty"`
 	Lineage ArtifactLineage `json:"lineage,omitempty"`
 }
 
@@ -286,6 +286,7 @@ type BoardItem struct {
 
 // ProjectBoard holds board items as returned by the git-service.
 type ProjectBoard struct {
+	URL   string      `json:"url"`
 	Items []BoardItem `json:"items"`
 }
 
@@ -504,7 +505,6 @@ func (c *client) Pull(ctx context.Context, orgID, projectID string, branch strin
 
 	return nil
 }
-
 
 func (c *client) CreateTag(ctx context.Context, orgID, projectID string, req *CreateTagRequest) (*TagResult, error) {
 	body, err := json.Marshal(req)
