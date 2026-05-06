@@ -5,6 +5,7 @@ import {
   Card,
   CardContent,
   IconButton,
+  PageContent,
   Stack,
   TextField,
   Typography,
@@ -64,6 +65,7 @@ export default function ProjectPromptPage() {
   };
 
   return (
+    <PageContent>
     <Box
       sx={{
         display: 'flex',
@@ -199,5 +201,6 @@ export default function ProjectPromptPage() {
         })}
       </Stack>
     </Box>
+    </PageContent>
   );
 }

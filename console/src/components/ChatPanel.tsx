@@ -1,5 +1,5 @@
 /**
- * MOCK: Copilot chat panel.
+ * MOCK: Agent chat panel.
  *
  * A right-side panel that lets users iterate on project artifacts with AI.
  * Shows tool call cards, streaming-style mock responses.
@@ -437,24 +437,20 @@ export default function ChatPanel({ onClose }: { onClose: () => void }) {
       <style>{`
         @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
         @keyframes pulse { 0%, 100% { opacity: 0.3; } 50% { opacity: 1; } }
-        @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+        @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
       `}</style>
 
       <Box
         sx={{
-          position: 'fixed',
-          top: 0,
-          right: 0,
-          bottom: 0,
           width: PANEL_WIDTH,
-          zIndex: 1200,
+          flexShrink: 0,
+          height: '100%',
           display: 'flex',
           flexDirection: 'column',
           bgcolor: theme.vars?.palette.background?.paper ?? 'background.paper',
           borderLeft: '1px solid',
           borderColor: 'divider',
-          boxShadow: '-4px 0 24px rgba(0,0,0,0.08)',
-          animation: 'slideIn 0.2s ease-out',
+          animation: 'fadeIn 0.18s ease-out',
         }}
       >
         {/* Header */}
@@ -462,19 +458,21 @@ export default function ChatPanel({ onClose }: { onClose: () => void }) {
           sx={{
             px: 2,
             py: 1.25,
-            bgcolor: theme.vars?.palette.primary.main ?? 'primary.main',
-            color: theme.vars?.palette.primary.contrastText ?? '#fff',
+            bgcolor: 'background.paper',
+            color: 'text.primary',
+            borderBottom: '1px solid',
+            borderColor: 'divider',
             flexShrink: 0,
           }}
         >
           <Stack direction="row" alignItems="center" justifyContent="space-between">
             <Stack direction="row" alignItems="center" gap={1}>
-              <Sparkles size={18} />
-              <Typography variant="body2" fontWeight={700} sx={{ fontSize: '0.875rem' }}>
-                Copilot
+              <Sparkles size={18} color={theme.vars?.palette.primary.main as string} />
+              <Typography variant="body2" fontWeight={700}>
+                Agent Chat
               </Typography>
             </Stack>
-            <IconButton size="small" sx={{ color: 'inherit' }} onClick={onClose}>
+            <IconButton size="small" sx={{ color: 'text.secondary' }} onClick={onClose}>
               <X size={16} />
             </IconButton>
           </Stack>
@@ -507,7 +505,7 @@ export default function ChatPanel({ onClose }: { onClose: () => void }) {
                 <Sparkles size={24} />
               </Box>
               <Typography variant="body2" fontWeight={600} sx={{ mb: 1, textAlign: 'center' }}>
-                Hi! I'm your Copilot.
+                Hi! I'm your Agent.
               </Typography>
               <Typography
                 variant="caption"
@@ -595,13 +593,15 @@ export default function ChatPanel({ onClose }: { onClose: () => void }) {
               onKeyDown={handleKeyDown}
               placeholder="Ask about this step..."
               multiline
-              maxRows={4}
+              minRows={3}
+              maxRows={6}
               fullWidth
               size="small"
               sx={{
                 '& .MuiOutlinedInput-root': {
-                  borderRadius: 3,
+                  borderRadius: 1,
                   fontSize: '0.8125rem',
+                  alignItems: 'flex-start',
                 },
               }}
             />

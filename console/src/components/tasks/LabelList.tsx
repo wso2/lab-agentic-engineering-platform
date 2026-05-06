@@ -9,7 +9,7 @@ interface LabelListProps {
 export function LabelList({ labels }: LabelListProps) {
   if (labels.length === 0) return null;
   return (
-    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+    <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5 }}>
       {labels.map(label => (
         <Chip
           key={label.name}

@@ -12,7 +12,7 @@ import {
   Stack,
   Typography,
 } from '@wso2/oxygen-ui';
-import { ChevronDown, Cloud, ExternalLink, Github, Laptop, Play, Sparkles } from 'lucide-react';
+import { ChevronDown, Cloud, ExternalLink, Github, Laptop, Play, Sparkles } from '@wso2/oxygen-ui-icons-react';
 
 interface TasksPageHeaderProps {
   projectId: string;

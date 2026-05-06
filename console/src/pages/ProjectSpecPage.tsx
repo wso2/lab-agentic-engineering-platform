@@ -9,6 +9,7 @@ import {
   Chip,
   CircularProgress,
   Grid,
+  PageContent,
   Skeleton,
   Stack,
   TextField,
@@ -476,17 +477,17 @@ export default function ProjectSpecPage() {
 
   if (loading) {
     return (
-      <Box>
+      <PageContent>
         <Skeleton variant="text" width="40%" height={40} />
         <Skeleton variant="text" width="20%" height={24} sx={{ mt: 1 }} />
         <Skeleton variant="rectangular" width="100%" height={200} sx={{ mt: 3, borderRadius: 1 }} />
-      </Box>
+      </PageContent>
     );
   }
 
   if (!project) {
     return (
-      <Box>
+      <PageContent>
         <Typography variant="h5" color="error">
           Project not found
         </Typography>
@@ -498,16 +499,16 @@ export default function ProjectSpecPage() {
         >
           Back to Projects
         </Button>
-      </Box>
+      </PageContent>
     );
   }
 
   if (!spec) {
     return (
-      <Box>
+      <PageContent>
         <Skeleton variant="text" width="40%" height={40} />
         <Skeleton variant="rectangular" width="100%" height={200} sx={{ mt: 3, borderRadius: 1 }} />
-      </Box>
+      </PageContent>
     );
   }
 
@@ -662,7 +663,7 @@ export default function ProjectSpecPage() {
   // -- Render: Main ----------------------------------------------------------
 
   return (
-    <Box>
+    <PageContent>
       <Button
         variant="text"
         startIcon={<ArrowLeft size={16} />}
@@ -701,6 +702,6 @@ export default function ProjectSpecPage() {
 
       {activeStep === 0 && renderSpecStep()}
       {activeStep === 1 && renderDesignStep()}
-    </Box>
+    </PageContent>
   );
 }

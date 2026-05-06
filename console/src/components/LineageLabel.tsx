@@ -16,10 +16,10 @@ export default function LineageLabel({ sourceSpec, sourceDesign }: LineageLabelP
     <Chip
       label={
         <Stack direction="row" alignItems="center" gap={0.5}>
-          <Typography variant="caption" sx={{ fontSize: '0.7rem', opacity: 0.7 }}>
+          <Typography variant="caption" sx={{ opacity: 0.7 }}>
             from
           </Typography>
-          <Typography variant="caption" fontWeight={600} sx={{ fontSize: '0.7rem' }}>
+          <Typography variant="caption" fontWeight={600}>
             {parts.join(', ')}
           </Typography>
         </Stack>

@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Alert, Box, Button, Stack, TextField, Typography } from '@wso2/oxygen-ui';
+import { Alert, Box, Button, PageContent, Stack, TextField, Typography } from '@wso2/oxygen-ui';
 import { ArrowLeft } from '@wso2/oxygen-ui-icons-react';
 import { api, ApiError } from '../services/api';
 import { organizationOverviewPath } from '../lib/paths';
@@ -56,6 +56,7 @@ export default function OrganizationCreatePage() {
   };
 
   return (
+    <PageContent>
     <Box sx={{ maxWidth: 640 }}>
       <Button
         variant="text"
@@ -112,5 +113,6 @@ export default function OrganizationCreatePage() {
         </Stack>
       </Stack>
     </Box>
+    </PageContent>
   );
 }

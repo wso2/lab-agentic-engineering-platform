@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Button, CircularProgress } from '@wso2/oxygen-ui';
+import { Button, CircularProgress, Typography } from '@wso2/oxygen-ui';
 import { Github } from '@wso2/oxygen-ui-icons-react';
 import { orgGithubApi } from '../services/api/orgGithub';
 
@@ -49,7 +49,7 @@ export default function ConnectAppButton({ orgHandle }: Props) {
         {loading ? 'Starting…' : 'Connect GitHub App'}
       </Button>
       {error && (
-        <div style={{ color: 'red', marginTop: 8, fontSize: 13 }}>{error}</div>
+        <Typography variant="body2" color="error" sx={{ mt: 1 }}>{error}</Typography>
       )}
     </>
   );

@@ -10,6 +10,7 @@ import {
   CircularProgress,
   Divider,
   Grid,
+  PageContent,
   Skeleton,
   Stack,
   Typography,
@@ -544,7 +545,7 @@ export default function ComponentDetailPage() {
   const techStack = component?.techStack ?? '';
 
   return (
-    <Box sx={{ position: 'relative', overflow: 'hidden', flex: 1 }}>
+    <PageContent>
       <Box>
         {/* Back navigation */}
         <Button
@@ -705,6 +706,6 @@ export default function ComponentDetailPage() {
           </Grid>
         </Grid>
       </Box>
-    </Box>
+    </PageContent>
   );
 }

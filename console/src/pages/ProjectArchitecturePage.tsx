@@ -9,6 +9,7 @@ import {
   CircularProgress,
   Divider,
   Grid,
+  PageContent,
   Stack,
   Typography,
   useTheme,
@@ -715,12 +716,14 @@ export default function ProjectArchitecturePage() {
   // todo: if (roomId && !connected)) , need to show a separate indicator
   if (isLoading) {
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
-        <CircularProgress size={48} sx={{ mb: 3 }} />
-        <Typography variant="h6" color="text.secondary">
-          Loading architecture...
-        </Typography>
-      </Box>
+      <PageContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
+          <CircularProgress size={48} sx={{ mb: 3 }} />
+          <Typography variant="h6" color="text.secondary">
+            Loading architecture...
+          </Typography>
+        </Box>
+      </PageContent>
     );
   }
 
@@ -734,33 +737,39 @@ export default function ProjectArchitecturePage() {
   if (!design) {
     if (isGenerating) {
       return (
-        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
-          <CircularProgress size={48} sx={{ mb: 3 }} />
-          <Typography variant="h6" color="text.secondary">
-            Generating architecture...
-          </Typography>
-        </Box>
+        <PageContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
+            <CircularProgress size={48} sx={{ mb: 3 }} />
+            <Typography variant="h6" color="text.secondary">
+              Generating architecture...
+            </Typography>
+          </Box>
+        </PageContent>
       );
     }
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
-        <Typography variant="h6" color="text.secondary">
-          No architecture generated yet.
-        </Typography>
-        <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-          Go to the requirements page and click &quot;Generate Architecture&quot;.
-        </Typography>
-      </Box>
+      <PageContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
+          <Typography variant="h6" color="text.secondary">
+            No architecture generated yet.
+          </Typography>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Go to the requirements page and click &quot;Generate Architecture&quot;.
+          </Typography>
+        </Box>
+      </PageContent>
     );
   }
 
   if (!isGenerating && (!design.components || design.components.length === 0)) {
     return (
-      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
-        <Typography variant="h6" color="text.secondary">
-          No architecture generated yet.
-        </Typography>
-      </Box>
+      <PageContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
+          <Typography variant="h6" color="text.secondary">
+            No architecture generated yet.
+          </Typography>
+        </Box>
+      </PageContent>
     );
   }
 
@@ -784,7 +793,7 @@ export default function ProjectArchitecturePage() {
     : design.components.length;
 
   return (
-    <Box>
+    <PageContent>
       {error && (
         <Box
           sx={{
@@ -976,6 +985,6 @@ export default function ProjectArchitecturePage() {
           </Grid>
         ))}
       </Grid>
-    </Box>
+    </PageContent>
   );
 }

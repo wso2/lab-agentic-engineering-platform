@@ -1,5 +1,5 @@
 import { Chip, useTheme } from '@wso2/oxygen-ui';
-import { Bot, User } from 'lucide-react';
+import { Bot, User } from '@wso2/oxygen-ui-icons-react';
 
 interface AssigneeChipProps {
   assignee?: string;
