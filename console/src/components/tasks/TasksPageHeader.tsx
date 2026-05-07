@@ -20,6 +20,7 @@ interface TasksPageHeaderProps {
   isGenerating: boolean;
   isDispatching: boolean;
   githubProjectUrl: string | null;
+  hideGenerateButton: boolean;
   onGenerate: () => void;
   onStartImplementation: () => void;
 }
@@ -30,6 +31,7 @@ export function TasksPageHeader({
   isGenerating,
   isDispatching,
   githubProjectUrl,
+  hideGenerateButton,
   onGenerate,
   onStartImplementation,
 }: TasksPageHeaderProps) {
@@ -59,7 +61,7 @@ export function TasksPageHeader({
         </Box>
 
         <Stack direction="row" spacing={1} alignItems="center">
-          {totalTasks === 0 ? (
+          {!hideGenerateButton && totalTasks === 0 && (
             <Button
               variant="contained"
               size="small"
@@ -69,7 +71,8 @@ export function TasksPageHeader({
             >
               {isGenerating ? 'Generating…' : 'Generate Tasks'}
             </Button>
-          ) : (
+          )}
+          {(hideGenerateButton || totalTasks > 0) && (
             <>
               <Button
                 variant="contained"

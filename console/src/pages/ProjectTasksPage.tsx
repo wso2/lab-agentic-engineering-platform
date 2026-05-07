@@ -1,7 +1,7 @@
-import { useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { Accordion, AccordionDetails, AccordionSummary, alpha, Box, CircularProgress, IconButton, PageContent, Tooltip, Typography, useTheme } from '@wso2/oxygen-ui';
-import { ChevronDown, ChevronRight, Github } from '@wso2/oxygen-ui-icons-react';
+import { useEffect, useRef, useState } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { Accordion, AccordionDetails, AccordionSummary, alpha, Box, Button, CircularProgress, IconButton, PageContent, Tooltip, Typography, useTheme } from '@wso2/oxygen-ui';
+import { AlertTriangle, CheckCircle, ChevronDown, ChevronRight, Github, OctagonAlert } from '@wso2/oxygen-ui-icons-react';
 import { useProjectBoard } from '../hooks/useProjectBoard';
 import { TasksPageHeader } from '../components/tasks/TasksPageHeader';
 import { TaskDetailPopup } from '../components/tasks/TaskDetailPopup';
@@ -41,6 +41,76 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
   const rowRef = useRef<HTMLDivElement>(null);
   const [popupOpen, setPopupOpen] = useState(false);
 
+  const lifecycle = task.lifecycleStatus ?? 'gh_issue_created';
+  const isWaiting  = lifecycle === 'gh_issue_waiting';
+  const isSyncing  = lifecycle === 'gh_issue_syncing';
+  const isFailed   = lifecycle === 'gh_issue_failed';
+
+  // Syncing card while issue creation is in flight or board hasn't synced yet
+  if (isWaiting || isSyncing) {
+    return (
+      <Box
+        sx={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 1.5,
+          px: 2,
+          py: 1.5,
+          borderRadius: 1.25,
+          border: '1px solid',
+          borderColor: isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)',
+          bgcolor: 'background.paper',
+          opacity: 0.55,
+        }}
+      >
+        {/* Gray pulsing dot */}
+        <Box sx={{ flexShrink: 0, width: 8, height: 8, position: 'relative' }}>
+          <Box
+            sx={{
+              width: 8,
+              height: 8,
+              borderRadius: '50%',
+              bgcolor: 'text.disabled',
+              position: 'relative',
+              zIndex: 1,
+            }}
+          />
+          <Box
+            aria-hidden
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              borderRadius: '50%',
+              bgcolor: 'text.disabled',
+              opacity: 0.5,
+              animation: 'ping 1.4s ease-out infinite',
+              '@keyframes ping': {
+                '0%':   { transform: 'scale(1)',   opacity: 0.5 },
+                '100%': { transform: 'scale(2.8)', opacity: 0   },
+              },
+            }}
+          />
+        </Box>
+
+        {/* Syncing message */}
+        <Typography
+          sx={{
+            fontSize: '0.875rem',
+            fontWeight: 450,
+            flex: 1,
+            color: 'text.disabled',
+            overflow: 'hidden',
+            textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap',
+            fontStyle: 'italic',
+          }}
+        >
+          Task created — syncing with project board…
+        </Typography>
+      </Box>
+    );
+  }
+
   return (
     <>
       <Box
@@ -55,32 +125,41 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
           cursor: 'pointer',
           borderRadius: 1.25,
           border: '1px solid',
-          borderColor: popupOpen
-            ? 'primary.main'
-            : isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)',
-          ...(section.borderColor && {
+          borderColor: isFailed
+            ? 'error.main'
+            : popupOpen
+              ? 'primary.main'
+              : isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)',
+          ...(isFailed && {
+            borderLeft: '3px solid',
+            borderLeftColor: 'error.main',
+          }),
+          ...(!isFailed && section.borderColor && {
             borderLeft: '3px solid',
             borderLeftColor: section.borderColor,
           }),
-          ...(section.isPrimary && {
+          ...(!isFailed && section.isPrimary && {
             borderLeft: '3px solid',
             borderLeftColor: 'primary.main',
           }),
-          bgcolor: 'background.paper',
+          bgcolor: isFailed ? (t) => alpha(t.palette.error.main, 0.04) : 'background.paper',
           transition: 'border-color 0.15s, background-color 0.15s',
           '&:hover': {
-            borderColor: popupOpen
-              ? 'primary.main'
-              : isDark ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.13)',
-            bgcolor: isDark ? 'rgba(255,255,255,0.015)' : 'rgba(0,0,0,0.01)',
+            borderColor: isFailed
+              ? 'error.dark'
+              : popupOpen
+                ? 'primary.main'
+                : isDark ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.13)',
+            bgcolor: isFailed
+              ? (t) => alpha(t.palette.error.main, 0.07)
+              : isDark ? 'rgba(255,255,255,0.015)' : 'rgba(0,0,0,0.01)',
           },
         }}
       >
         {/* Status dot */}
         <Box sx={{ flexShrink: 0, width: 8, height: 8, position: 'relative' }}>
-          {section.dotColor && (
+          {section.dotColor && !isFailed && (
             <>
-              {/* Solid dot */}
               <Box
                 sx={{
                   width: 8,
@@ -91,7 +170,6 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
                   zIndex: 1,
                 }}
               />
-              {/* Ping ring */}
               {section.isPrimary && (
                 <Box
                   aria-hidden
@@ -119,7 +197,7 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
             fontSize: '0.875rem',
             fontWeight: 450,
             flex: 1,
-            color: 'text.primary',
+            color: isFailed ? 'error.main' : 'text.primary',
             overflow: 'hidden',
             textOverflow: 'ellipsis',
             whiteSpace: 'nowrap',
@@ -135,8 +213,14 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
           </Box>
         )}
 
-        {/* GitHub link */}
-        {task.url && (
+        {/* GitHub link or issue-failed indicator */}
+        {isFailed ? (
+          <Tooltip title="GitHub issue creation failed">
+            <Box sx={{ display: 'flex', color: 'error.main', p: 0.5 }}>
+              <OctagonAlert size={14} />
+            </Box>
+          </Tooltip>
+        ) : task.url ? (
           <Tooltip title="Open in GitHub">
             <IconButton
               component="a"
@@ -150,7 +234,7 @@ function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
               <Github size={14} />
             </IconButton>
           </Tooltip>
-        )}
+        ) : null}
 
         {/* Chevron indicator */}
         <Box sx={{ flexShrink: 0 }}>
@@ -267,7 +351,20 @@ export default function ProjectTasksPage() {
     handleGenerate,
     handleStartImplementation,
     clearActionError,
+    generateBanner,
+    hideGenerateButton,
+    clearGenerateBanner,
   } = useProjectBoard(orgId, projectId);
+
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (generateBanner?.autoDismiss) {
+      const t = setTimeout(() => clearGenerateBanner(), 5000);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [generateBanner, clearGenerateBanner]);
 
 
   if (isLoading) {
@@ -313,9 +410,91 @@ export default function ProjectTasksPage() {
         isGenerating={isGenerating}
         isDispatching={isDispatching}
         githubProjectUrl={board.url}
+        hideGenerateButton={hideGenerateButton}
         onGenerate={handleGenerate}
         onStartImplementation={handleStartImplementation}
       />
+
+      {generateBanner && (
+        <Box
+          sx={{
+            display: 'flex',
+            alignItems: 'center',
+            gap: 1.5,
+            px: 2,
+            py: 1.5,
+            mb: 2,
+            borderRadius: 1.25,
+            bgcolor: (t) =>
+              generateBanner.variant === 'info'    ? alpha(t.palette.info.main,    0.08) :
+              generateBanner.variant === 'warning' ? alpha(t.palette.warning.main, 0.08) :
+              generateBanner.variant === 'success' ? alpha(t.palette.success.main, 0.08) :
+                                                     alpha(t.palette.error.main,   0.08),
+            border: '1px solid',
+            borderColor: (t) =>
+              generateBanner.variant === 'info'    ? alpha(t.palette.info.main,    0.2) :
+              generateBanner.variant === 'warning' ? alpha(t.palette.warning.main, 0.2) :
+              generateBanner.variant === 'success' ? alpha(t.palette.success.main, 0.2) :
+                                                     alpha(t.palette.error.main,   0.2),
+          }}
+        >
+          <Box
+            sx={{
+              flexShrink: 0,
+              display: 'flex',
+              color:
+                generateBanner.variant === 'info'    ? 'info.main' :
+                generateBanner.variant === 'warning' ? 'warning.main' :
+                generateBanner.variant === 'success' ? 'success.main' : 'error.main',
+            }}
+          >
+            {generateBanner.variant === 'info'    ? <CircularProgress size={16} sx={{ color: 'info.main' }} /> :
+             generateBanner.variant === 'success' ? <CheckCircle size={16} /> :
+                                                    <AlertTriangle size={16} />}
+          </Box>
+
+          <Box sx={{ flex: 1 }}>
+            <Typography
+              variant="body2"
+              sx={{
+                color:
+                  generateBanner.variant === 'info'    ? 'info.main' :
+                  generateBanner.variant === 'warning' ? 'warning.main' :
+                  generateBanner.variant === 'success' ? 'success.main' : 'error.main',
+                lineHeight: 1.3,
+              }}
+            >
+              {generateBanner.message}
+            </Typography>
+          </Box>
+
+          {generateBanner.action && (
+            <Button
+              size="small"
+              variant="outlined"
+              color={generateBanner.variant === 'warning' ? 'warning' : 'error'}
+              onClick={() => navigate(generateBanner.action!.path)}
+              sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+            >
+              {generateBanner.action.label}
+            </Button>
+          )}
+
+          <IconButton
+            size="small"
+            onClick={clearGenerateBanner}
+            sx={{
+              p: 0.5,
+              color:
+                generateBanner.variant === 'info'    ? 'info.main' :
+                generateBanner.variant === 'warning' ? 'warning.main' :
+                generateBanner.variant === 'success' ? 'success.main' : 'error.main',
+            }}
+          >
+            ×
+          </IconButton>
+        </Box>
+      )}
 
       {actionError && (
         <Box
