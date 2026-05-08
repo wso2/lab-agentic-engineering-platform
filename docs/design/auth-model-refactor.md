@@ -130,7 +130,7 @@ Use the same field names. The console (`useUserClaims.ts`) and Thunder both alre
 - Replace `middleware/jwt/jwt.go:ParseUnverified` with JWKS-backed validation. Port `agent-manager-service/middleware/jwtassertion/auth.go` verbatim, adjust package paths.
 - Rename `Claims.ProductType` → `ClientID`. Drop the stale "API gateway validates tokens" comment.
 - Add an `AuthProvider` per outbound client, modeled on `agent-manager-service/clients/openchoreosvc/auth/auth.go`. Used for git-service, agents-service, remote-worker calls.
-- Add a `TaskTokenManager` modeled on `agent-manager-service/services/agent_token_manager.go`. Loads RSA private key from `BFF_TASK_SIGNING_KEY_PATH`, signs Task JWTs with `kid` header, supports key rotation.
+- Add a `TaskTokenManager` modeled on `agent-manager-service/services/agent_token_manager.go`. Loads RSA private key from the `BFF_TASK_SIGNING_KEY` env var (PEM contents), signs Task JWTs with `kid` header, supports key rotation.
 - Expose `GET /auth/external/jwks.json` (no auth) returning the public key. Mirror `agent-manager-service/api/agent_token_routes.go:33-36`.
 - Drop `INTERNAL_SHARED_SECRET` plumbing. `middleware/internal_only.go` and the matching env var go away.
 - Drop the `git-service → BFF /internal/tasks/{taskId}/org` callback handler (no longer needed once Task JWT carries verifiable `ocOrgId`).
@@ -167,13 +167,13 @@ Use the same field names. The console (`useUserClaims.ts`) and Thunder both alre
 
 ## Key & secret plumbing
 
-- BFF Task JWT private key: mounted as a file (`BFF_TASK_SIGNING_KEY_PATH=/app/keys/task-signing.pem`). Not in env. Same convention as agent-manager (`config_loader.go:148`, default `keys/private.pem`).
+- BFF Task JWT private key: passed as the PEM contents in the `BFF_TASK_SIGNING_KEY` env var (cloud: from `app-factory-api-credentials` secret; local: rendered via envsubst from `keys/task-signing.pem`).
 - BFF exposes `GET /auth/external/jwks.json` (no auth) so git-service can fetch the public key. Same path as agent-manager.
 - New env (added):
   - `JWKS_URL` (Thunder) — every service. Mirrors agent-manager's `KEY_MANAGER_JWKS_URL`.
   - `SERVICE_AUTH_AUDIENCE` — per service (`asdlc-bff`, `git-service`, `agents-service`, `remote-worker`).
   - `SERVICE_AUTH_TOKEN_URL`, `SERVICE_AUTH_CLIENT_ID`, `SERVICE_AUTH_CLIENT_SECRET` — already present in BFF; replicate to any service that becomes an outbound caller.
-  - `BFF_TASK_SIGNING_KEY_PATH` — BFF only.
+  - `BFF_TASK_SIGNING_KEY` — BFF only (PEM contents of the RSA private key).
   - `BFF_JWKS_URL` — git-service only (for Task JWT verification).
   - `REMOTE_WORKER_MAX_CONCURRENT_TASKS` — remote-worker.
 - Env removed: `INTERNAL_SHARED_SECRET` (both services), `BEARER_SIGNING_KEY` (both services), `ASDLC_API_INTERNAL_URL` (git-service).

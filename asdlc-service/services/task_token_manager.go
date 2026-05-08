@@ -8,7 +8,6 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
-	"os"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -17,11 +16,11 @@ import (
 // TaskTokenManager issues RS256-signed Task JWTs that authenticate
 // per-task workspace agents to git-service /credentials/refresh.
 //
-// The signing key is loaded once at boot from BFF_TASK_SIGNING_KEY_PATH.
+// The signing key is loaded once at boot from the BFF_TASK_SIGNING_KEY env var.
 // Verifiers (currently git-service) fetch the public key via the BFF's
-// /auth/external/jwks.json endpoint; rotation works by replacing the key
-// file on disk and restarting the BFF — verifiers pick up the new kid
-// automatically via JWKS kid-miss-refresh.
+// /auth/external/jwks.json endpoint; rotation works by updating the env var
+// and restarting the BFF — verifiers pick up the new kid automatically via
+// JWKS kid-miss-refresh.
 type TaskTokenManager struct {
 	keyID      string
 	algorithm  string
@@ -36,9 +35,9 @@ type TaskTokenManager struct {
 
 // TaskTokenConfig configures the manager.
 type TaskTokenConfig struct {
-	// PrivateKeyPath is the path to a PEM-encoded RSA private key
-	// (PKCS#1 or PKCS#8). Required.
-	PrivateKeyPath string
+	// PrivateKey is the PEM-encoded RSA private key (PKCS#1 or PKCS#8).
+	// Passed as the BFF_TASK_SIGNING_KEY env var. Required.
+	PrivateKey string
 	// Issuer is the iss claim value (e.g., "asdlc-bff").
 	Issuer string
 	// Audience is the aud claim value (always "git-service" today).
@@ -55,11 +54,11 @@ type TaskClaims struct {
 	ProjectID string `json:"projectId,omitempty"`
 }
 
-// NewTaskTokenManager loads the signing key and returns a ready manager.
-// Returns an error if the key file is missing, malformed, or not RSA.
+// NewTaskTokenManager parses the signing key and returns a ready manager.
+// Returns an error if the key is missing, malformed, or not RSA.
 func NewTaskTokenManager(cfg TaskTokenConfig) (*TaskTokenManager, error) {
-	if cfg.PrivateKeyPath == "" {
-		return nil, fmt.Errorf("BFF_TASK_SIGNING_KEY_PATH not configured")
+	if cfg.PrivateKey == "" {
+		return nil, fmt.Errorf("BFF_TASK_SIGNING_KEY not configured")
 	}
 	if cfg.Issuer == "" {
 		return nil, fmt.Errorf("issuer not configured")
@@ -71,13 +70,9 @@ func NewTaskTokenManager(cfg TaskTokenConfig) (*TaskTokenManager, error) {
 		return nil, fmt.Errorf("TTL must be positive")
 	}
 
-	privBytes, err := os.ReadFile(cfg.PrivateKeyPath)
-	if err != nil {
-		return nil, fmt.Errorf("read private key: %w", err)
-	}
-	block, _ := pem.Decode(privBytes)
+	block, _ := pem.Decode([]byte(cfg.PrivateKey))
 	if block == nil {
-		return nil, fmt.Errorf("decode PEM block from %s", cfg.PrivateKeyPath)
+		return nil, fmt.Errorf("decode PEM block from BFF_TASK_SIGNING_KEY")
 	}
 
 	priv, err := parseRSAPrivateKey(block.Bytes)

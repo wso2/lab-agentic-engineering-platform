@@ -37,8 +37,8 @@ env:
     value: "asdlc-bff-to-remote-worker"
   - key: SERVICE_AUTH_RW_CLIENT_SECRET
     value: "asdlc-bff-to-remote-worker-secret"
-  - key: BFF_TASK_SIGNING_KEY_PATH
-    value: "/app/keys/task-signing.pem"
+  - key: BFF_TASK_SIGNING_KEY
+    value: "${BFF_TASK_SIGNING_KEY}"
   - key: BFF_TASK_TOKEN_ISSUER
     value: "asdlc-bff"
   - key: BFF_TASK_TOKEN_AUDIENCE
@@ -47,10 +47,3 @@ env:
     value: "${OAUTH_STATE_SIGNING_KEY}"
   - key: GITHUB_WEBHOOK_SECRET
     value: "${GITHUB_WEBHOOK_SECRET}"
-files:
-  - key: task-signing.pem
-    mountPath: /app/keys
-    valueFrom:
-      secretKeyRef:
-        name: app-factory-task-signing-key
-        key: task-signing.pem
