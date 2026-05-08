@@ -1,22 +1,12 @@
-import { useRef, useState } from 'react';
-import { useParams } from 'react-router-dom';
-import { Accordion, AccordionDetails, AccordionSummary, alpha, Box, CircularProgress, IconButton, PageContent, Tooltip, Typography, useTheme } from '@wso2/oxygen-ui';
-import { ChevronDown, ChevronRight, Github } from '@wso2/oxygen-ui-icons-react';
+import { useEffect, useRef } from 'react';
+import { useParams, useNavigate } from 'react-router-dom';
+import { alpha, Box, Button, CircularProgress, IconButton, PageContent, Typography } from '@wso2/oxygen-ui';
+import { AlertTriangle, CheckCircle, ChevronRight, Info, X } from '@wso2/oxygen-ui-icons-react';
 import { useProjectBoard } from '../hooks/useProjectBoard';
+import { AnimatedBanner } from '../components/tasks/AnimatedBanner';
+import { TaskSection } from '../components/tasks/TaskSection';
 import { TasksPageHeader } from '../components/tasks/TasksPageHeader';
-import { TaskDetailPopup } from '../components/tasks/TaskDetailPopup';
-import { LabelList } from '../components/tasks/LabelList';
-import type { Task } from '../services/api';
-
-// ── Section config ──────────────────────────────────────────────────────────
-
-interface SectionConfig {
-  key: 'inProgress' | 'todo' | 'done' | 'onHold' | 'failed';
-  label: string;
-  isPrimary: boolean;
-  dotColor: string | null;
-  borderColor: string | null;
-}
+import type { SectionConfig } from '../components/tasks/types';
 
 const SECTIONS: SectionConfig[] = [
   { key: 'inProgress', label: 'In Progress', isPrimary: true,  dotColor: 'primary',    borderColor: null         },
@@ -26,234 +16,9 @@ const SECTIONS: SectionConfig[] = [
   { key: 'failed',     label: 'Failed',       isPrimary: false, dotColor: 'error.main', borderColor: 'error.main' },
 ];
 
-// ── TaskRow ─────────────────────────────────────────────────────────────────
-
-interface TaskRowProps {
-  task: Task;
-  section: SectionConfig;
-  orgId: string;
-  projectId: string;
-}
-
-function TaskRow({ task, section, orgId, projectId }: TaskRowProps) {
-  const theme = useTheme();
-  const isDark = theme.palette.mode === 'dark';
-  const rowRef = useRef<HTMLDivElement>(null);
-  const [popupOpen, setPopupOpen] = useState(false);
-
-  return (
-    <>
-      <Box
-        ref={rowRef}
-        onClick={() => setPopupOpen(p => !p)}
-        sx={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: 1.5,
-          px: 2,
-          py: 1.5,
-          cursor: 'pointer',
-          borderRadius: 1.25,
-          border: '1px solid',
-          borderColor: popupOpen
-            ? 'primary.main'
-            : isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)',
-          ...(section.borderColor && {
-            borderLeft: '3px solid',
-            borderLeftColor: section.borderColor,
-          }),
-          ...(section.isPrimary && {
-            borderLeft: '3px solid',
-            borderLeftColor: 'primary.main',
-          }),
-          bgcolor: 'background.paper',
-          transition: 'border-color 0.15s, background-color 0.15s',
-          '&:hover': {
-            borderColor: popupOpen
-              ? 'primary.main'
-              : isDark ? 'rgba(255,255,255,0.13)' : 'rgba(0,0,0,0.13)',
-            bgcolor: isDark ? 'rgba(255,255,255,0.015)' : 'rgba(0,0,0,0.01)',
-          },
-        }}
-      >
-        {/* Status dot */}
-        <Box sx={{ flexShrink: 0, width: 8, height: 8, position: 'relative' }}>
-          {section.dotColor && (
-            <>
-              {/* Solid dot */}
-              <Box
-                sx={{
-                  width: 8,
-                  height: 8,
-                  borderRadius: '50%',
-                  bgcolor: section.isPrimary ? 'primary.main' : section.dotColor,
-                  position: 'relative',
-                  zIndex: 1,
-                }}
-              />
-              {/* Ping ring */}
-              {section.isPrimary && (
-                <Box
-                  aria-hidden
-                  sx={{
-                    position: 'absolute',
-                    inset: 0,
-                    borderRadius: '50%',
-                    bgcolor: 'primary.main',
-                    opacity: 0.6,
-                    animation: 'ping 1.4s ease-out infinite',
-                    '@keyframes ping': {
-                      '0%':    { transform: 'scale(1)',   opacity: 0.6 },
-                      '100%':  { transform: 'scale(2.8)', opacity: 0   },
-                    },
-                  }}
-                />
-              )}
-            </>
-          )}
-        </Box>
-
-        {/* Title */}
-        <Typography
-          sx={{
-            fontSize: '0.875rem',
-            fontWeight: 450,
-            flex: 1,
-            color: 'text.primary',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {task.title}
-        </Typography>
-
-        {/* Labels */}
-        {task.labels && task.labels.length > 0 && (
-          <Box sx={{ flexShrink: 0 }}>
-            <LabelList labels={task.labels} />
-          </Box>
-        )}
-
-        {/* GitHub link */}
-        {task.url && (
-          <Tooltip title="Open in GitHub">
-            <IconButton
-              component="a"
-              href={task.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              size="small"
-              onClick={(e: React.MouseEvent) => e.stopPropagation()}
-              sx={{ p: 0.5, color: 'text.disabled', '&:hover': { color: 'text.secondary' } }}
-            >
-              <Github size={14} />
-            </IconButton>
-          </Tooltip>
-        )}
-
-        {/* Chevron indicator */}
-        <Box sx={{ flexShrink: 0 }}>
-          {popupOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
-        </Box>
-      </Box>
-
-      <TaskDetailPopup
-        open={popupOpen}
-        anchorEl={rowRef.current}
-        task={task}
-        isInTodo={section.key === 'todo'}
-        orgId={orgId}
-        projectId={projectId}
-        onClose={() => setPopupOpen(false)}
-      />
-    </>
-  );
-}
-
-// ── Section ─────────────────────────────────────────────────────────────────
-
-interface TaskSectionProps {
-  section: SectionConfig;
-  tasks: Task[];
-  orgId: string;
-  projectId: string;
-  initiallyExpanded: boolean;
-}
-
-function TaskSection({ section, tasks, orgId, projectId, initiallyExpanded }: TaskSectionProps) {
-  const theme = useTheme();
-  const [expanded, setExpanded] = useState(initiallyExpanded);
-
-  const filteredTasks = tasks;
-
-  const labelColor = section.isPrimary ? theme.palette.primary.main : theme.palette.text.secondary;
-
-  return (
-    <Accordion
-      expanded={expanded}
-      onChange={(_, val) => setExpanded(val)}
-      disableGutters
-      elevation={0}
-      sx={{
-        mb: 0.75,
-        border: '1px solid',
-        borderColor: 'divider',
-        borderRadius: 1.25,
-        '&:before': { display: 'none' },
-        overflow: 'hidden',
-      }}
-    >
-      <AccordionSummary
-        expandIcon={<ChevronDown size={14} style={{ color: labelColor }} />}
-        sx={{
-          minHeight: 40,
-          px: 1.75,
-          py: 0,
-          '& .MuiAccordionSummary-content': { my: 1, alignItems: 'center', gap: 0.75 },
-        }}
-      >
-        <Typography
-          sx={{ fontSize: '0.72rem', fontWeight: 700, color: labelColor, textTransform: 'uppercase', letterSpacing: '0.06em' }}
-        >
-          {section.label}
-        </Typography>
-        <Typography
-          sx={{ fontSize: '0.72rem', fontWeight: 500, color: labelColor, opacity: 0.7 }}
-        >
-          {tasks.length}
-        </Typography>
-      </AccordionSummary>
-
-      <AccordionDetails sx={{ p: 1.25, display: 'flex', flexDirection: 'column', gap: 0.75 }}>
-        {/* Task rows */}
-        {filteredTasks.length > 0 ? (
-          filteredTasks.map(task => (
-            <TaskRow
-              key={task.id}
-              task={task}
-              section={section}
-              orgId={orgId}
-              projectId={projectId}
-            />
-          ))
-        ) : (
-          <Box sx={{ py: 2, display: 'flex', justifyContent: 'center' }}>
-            <Typography sx={{ fontSize: '0.75rem', color: 'text.disabled' }}>
-              {tasks.length > 0 ? 'No matching tasks' : 'No tasks'}
-            </Typography>
-          </Box>
-        )}
-      </AccordionDetails>
-    </Accordion>
-  );
-}
-
-// ── Page ─────────────────────────────────────────────────────────────────────
-
 export default function ProjectTasksPage() {
   const { orgId, projectId } = useParams<{ orgId: string; projectId: string }>();
-
+  const navigate = useNavigate();
   const failedRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -267,8 +32,24 @@ export default function ProjectTasksPage() {
     handleGenerate,
     handleStartImplementation,
     clearActionError,
+    generateBanner,
+    hideGenerateButton,
+    clearGenerateBanner,
   } = useProjectBoard(orgId, projectId);
 
+  // Snapshot last non-null values so banners can render during their exit animation
+  const lastGenerateBanner = useRef(generateBanner);
+  if (generateBanner) lastGenerateBanner.current = generateBanner;
+  const lastActionError = useRef(actionError);
+  if (actionError) lastActionError.current = actionError;
+
+  useEffect(() => {
+    if (generateBanner?.autoDismiss) {
+      const t = setTimeout(() => clearGenerateBanner(), 5000);
+      return () => clearTimeout(t);
+    }
+    return undefined;
+  }, [generateBanner, clearGenerateBanner]);
 
   if (isLoading) {
     return (
@@ -291,163 +72,157 @@ export default function ProjectTasksPage() {
     );
   }
 
-  const failedCount    = board.failed.length;
+  const failedCount     = board.failed.length;
   const inProgressCount = board.inProgress.length;
-  const todoCount      = board.todo.length;
+  const todoCount       = board.todo.length;
 
-  // Determine which banner to show (mutually exclusive, priority order).
   type BannerVariant = 'failed' | 'in_progress' | 'all_done' | null;
   let bannerVariant: BannerVariant = null;
   if (totalTasks > 0) {
-    if (failedCount > 0)               bannerVariant = 'failed';
-    else if (inProgressCount > 0)      bannerVariant = 'in_progress';
-    else if (todoCount === 0)          bannerVariant = 'all_done';
+    if (failedCount > 0)          bannerVariant = 'failed';
+    else if (inProgressCount > 0) bannerVariant = 'in_progress';
+    else if (todoCount === 0)     bannerVariant = 'all_done';
   }
 
   return (
     <PageContent sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
       <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
-      <TasksPageHeader
-        projectId={projectId ?? ''}
-        totalTasks={totalTasks}
-        isGenerating={isGenerating}
-        isDispatching={isDispatching}
-        githubProjectUrl={board.url}
-        onGenerate={handleGenerate}
-        onStartImplementation={handleStartImplementation}
-      />
 
-      {actionError && (
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1.5,
-            px: 2,
-            py: 1.5,
-            mb: 2,
-            borderRadius: 1.25,
-            bgcolor: (t) => alpha(t.palette.error.main, 0.08),
-            border: '1px solid',
-            borderColor: (t) => alpha(t.palette.error.main, 0.2),
-          }}
-        >
-          <Box sx={{ flex: 1 }}>
-            <Typography variant="body2" sx={{ color: 'error.main', lineHeight: 1.3 }}>
-              {actionError}
-            </Typography>
-          </Box>
-          <IconButton
-            size="small"
-            onClick={clearActionError}
-            sx={{ color: 'error.main', p: 0.5 }}
+        <TasksPageHeader
+          projectId={projectId ?? ''}
+          totalTasks={totalTasks}
+          isGenerating={isGenerating}
+          isDispatching={isDispatching}
+          githubProjectUrl={board.url}
+          hideGenerateButton={hideGenerateButton}
+          onGenerate={handleGenerate}
+          onStartImplementation={handleStartImplementation}
+        />
+
+        {/* Generate / action banners */}
+        <AnimatedBanner show={!!generateBanner}>
+          {(() => {
+            const banner = lastGenerateBanner.current;
+            if (!banner) return null;
+            const color =
+              banner.variant === 'info'    ? 'info.main'    :
+              banner.variant === 'warning' ? 'warning.main' :
+              banner.variant === 'success' ? 'success.main' : 'error.main';
+            return (
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1.5,
+                  px: 2,
+                  py: 1.5,
+                  mb: 2,
+                  borderRadius: 1.25,
+                  bgcolor: (t) =>
+                    banner.variant === 'info'    ? alpha(t.palette.info.main,    0.08) :
+                    banner.variant === 'warning' ? alpha(t.palette.warning.main, 0.08) :
+                    banner.variant === 'success' ? alpha(t.palette.success.main, 0.08) :
+                                                   alpha(t.palette.error.main,   0.08),
+                  border: '1px solid',
+                  borderColor: (t) =>
+                    banner.variant === 'info'    ? alpha(t.palette.info.main,    0.2) :
+                    banner.variant === 'warning' ? alpha(t.palette.warning.main, 0.2) :
+                    banner.variant === 'success' ? alpha(t.palette.success.main, 0.2) :
+                                                   alpha(t.palette.error.main,   0.2),
+                }}
+              >
+                <Box sx={{ flexShrink: 0, display: 'flex', color }}>
+                  {banner.variant === 'info'    ? <CircularProgress size={16} sx={{ color }} /> :
+                   banner.variant === 'success' ? <CheckCircle size={16} /> :
+                                                  <AlertTriangle size={16} />}
+                </Box>
+                <Typography variant="body2" sx={{ flex: 1, color, lineHeight: 1.3 }}>
+                  {banner.message}
+                </Typography>
+                {banner.action && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    color={banner.variant === 'warning' ? 'warning' : 'error'}
+                    onClick={() => navigate(banner.action!.path)}
+                    sx={{ flexShrink: 0, whiteSpace: 'nowrap' }}
+                  >
+                    {banner.action.label}
+                  </Button>
+                )}
+                <IconButton size="small" onClick={clearGenerateBanner} sx={{ p: 0.5, color }}>
+                  <X size={14} />
+                </IconButton>
+              </Box>
+            );
+          })()}
+        </AnimatedBanner>
+
+        <AnimatedBanner show={!!actionError}>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              px: 2,
+              py: 1.5,
+              mb: 2,
+              borderRadius: 1.25,
+              bgcolor: (t) => alpha(t.palette.error.main, 0.08),
+              border: '1px solid',
+              borderColor: (t) => alpha(t.palette.error.main, 0.2),
+            }}
           >
-            ×
-          </IconButton>
-        </Box>
-      )}
+            <Typography variant="body2" sx={{ flex: 1, color: 'error.main', lineHeight: 1.3 }}>
+              {lastActionError.current}
+            </Typography>
+            <IconButton size="small" onClick={clearActionError} sx={{ p: 0.5, color: 'error.main' }}>
+              <X size={14} />
+            </IconButton>
+          </Box>
+        </AnimatedBanner>
 
-      {/* Contextual banner */}
-      {bannerVariant === 'failed' && (
-        <Box
-          onClick={() => failedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1.5,
-            px: 2,
-            py: 1.5,
-            mb: 2,
-            borderRadius: 1.25,
-            bgcolor: (t) => alpha(t.palette.error.main, 0.08),
-            border: '1px solid',
-            borderColor: (t) => alpha(t.palette.error.main, 0.2),
-            cursor: 'pointer',
-            transition: 'all 0.15s',
-            '&:hover': {
-              bgcolor: (t) => alpha(t.palette.error.main, 0.12),
-              borderColor: (t) => alpha(t.palette.error.main, 0.3),
-            },
-          }}
-        >
-          <Box sx={{ flexShrink: 0, color: 'error.main', display: 'flex' }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L1 21h22L12 2zm0 3.5L20.5 19H3.5L12 5.5zM11 10v4h2v-4h-2zm0 6v2h2v-2h-2z"/></svg>
+        {/* Contextual status banners */}
+        <AnimatedBanner show={bannerVariant === 'failed'}>
+          <Box
+            onClick={() => failedRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })}
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              px: 2,
+              py: 1.5,
+              mb: 2,
+              borderRadius: 1.25,
+              bgcolor: (t) => alpha(t.palette.error.main, 0.08),
+              border: '1px solid',
+              borderColor: (t) => alpha(t.palette.error.main, 0.2),
+              cursor: 'pointer',
+              transition: 'all 0.15s',
+              '&:hover': {
+                bgcolor: (t) => alpha(t.palette.error.main, 0.12),
+                borderColor: (t) => alpha(t.palette.error.main, 0.3),
+              },
+            }}
+          >
+            <Box sx={{ flexShrink: 0, display: 'flex', color: 'error.main' }}>
+              <AlertTriangle size={16} />
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main', lineHeight: 1.3 }}>
+                {failedCount} task{failedCount !== 1 ? 's' : ''} failed
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'error.dark', lineHeight: 1.3 }}>
+                Click to review failed tasks
+              </Typography>
+            </Box>
+            <Box sx={{ flexShrink: 0, color: 'error.main', display: 'flex' }}>
+              <ChevronRight size={16} />
+            </Box>
           </Box>
-          <Box sx={{ flex: 1 }}>
-            <Typography variant="body2" sx={{ fontWeight: 700, color: 'error.main', lineHeight: 1.3 }}>
-              {failedCount} task{failedCount !== 1 ? 's' : ''} failed
-            </Typography>
-            <Typography variant="caption" sx={{ color: 'error.dark', lineHeight: 1.3 }}>
-              Click to review failed tasks
-            </Typography>
-          </Box>
-          <Box sx={{ flexShrink: 0, color: 'error.main', display: 'flex' }}>
-            <ChevronRight size={16} />
-          </Box>
-        </Box>
-      )}
+        </AnimatedBanner>
 
-      {bannerVariant === 'in_progress' && (
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1.5,
-            px: 2,
-            py: 1.5,
-            mb: 2,
-            borderRadius: 1.25,
-            bgcolor: (t) => alpha(t.palette.info.main, 0.08),
-            border: '1px solid',
-            borderColor: (t) => alpha(t.palette.info.main, 0.2),
-          }}
-        >
-          <Box sx={{ flexShrink: 0, display: 'flex' }}>
-            <CircularProgress size={16} sx={{ color: 'info.main' }} />
-          </Box>
-          <Box sx={{ flex: 1 }}>
-            <Typography variant="body2" sx={{ fontWeight: 700, color: 'info.main', lineHeight: 1.3 }}>
-              {inProgressCount} task{inProgressCount !== 1 ? 's' : ''} in progress
-            </Typography>
-            <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
-              All tasks are dispatched to the agents and they are working on it
-            </Typography>
-          </Box>
-        </Box>
-      )}
-
-      {bannerVariant === 'all_done' && (
-        <Box
-          sx={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 1.5,
-            px: 2,
-            py: 1.5,
-            mb: 2,
-            borderRadius: 1.25,
-            bgcolor: (t) => alpha(t.palette.success.main, 0.08),
-            border: '1px solid',
-            borderColor: (t) => alpha(t.palette.success.main, 0.2),
-          }}
-        >
-          <Box sx={{ flexShrink: 0, color: 'success.main', display: 'flex' }}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M9 16.17L4.83 12l-1.42 1.41L9 19 21 7l-1.41-1.41L9 16.17z"/></svg>
-          </Box>
-          <Box sx={{ flex: 1 }}>
-            <Typography variant="body2" sx={{ fontWeight: 700, color: 'success.main', lineHeight: 1.3 }}>
-              All pending tasks are complete
-            </Typography>
-            <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
-              All tasks have been completed successfully
-            </Typography>
-          </Box>
-        </Box>
-      )}
-
-      {/* Task sections */}
-      <Box sx={{ flex: 1, overflowY: 'auto', pr: 0.25 }}>
-        {totalTasks === 0 && (
+        <AnimatedBanner show={bannerVariant === 'in_progress'}>
           <Box
             sx={{
               display: 'flex',
@@ -462,34 +237,93 @@ export default function ProjectTasksPage() {
               borderColor: (t) => alpha(t.palette.info.main, 0.2),
             }}
           >
-            <Box sx={{ flexShrink: 0, display: 'flex', color: 'info.main' }}>
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
-              </svg>
+            <Box sx={{ flexShrink: 0, display: 'flex' }}>
+              <CircularProgress size={16} sx={{ color: 'info.main' }} />
             </Box>
             <Box sx={{ flex: 1 }}>
               <Typography variant="body2" sx={{ fontWeight: 700, color: 'info.main', lineHeight: 1.3 }}>
-                No tasks generated yet
+                {inProgressCount} task{inProgressCount !== 1 ? 's' : ''} in progress
               </Typography>
               <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
-                Tasks haven't been generated for this project. Generate tasks to get started.
+                All tasks are dispatched to the agents and they are working on it
               </Typography>
             </Box>
           </Box>
-        )}
+        </AnimatedBanner>
 
-        {SECTIONS.map(section => (
-          <Box key={section.key} ref={section.key === 'failed' ? failedRef : undefined}>
-            <TaskSection
-              section={section}
-              tasks={board[section.key]}
-              orgId={orgId ?? ''}
-              projectId={projectId ?? ''}
-              initiallyExpanded={section.key === 'todo' || section.key === 'inProgress'}
-            />
+        <AnimatedBanner show={bannerVariant === 'all_done'}>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              px: 2,
+              py: 1.5,
+              mb: 2,
+              borderRadius: 1.25,
+              bgcolor: (t) => alpha(t.palette.success.main, 0.08),
+              border: '1px solid',
+              borderColor: (t) => alpha(t.palette.success.main, 0.2),
+            }}
+          >
+            <Box sx={{ flexShrink: 0, display: 'flex', color: 'success.main' }}>
+              <CheckCircle size={16} />
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="body2" sx={{ fontWeight: 700, color: 'success.main', lineHeight: 1.3 }}>
+                All pending tasks are complete
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
+                All tasks have been completed successfully
+              </Typography>
+            </Box>
           </Box>
-        ))}
-      </Box>
+        </AnimatedBanner>
+
+        {/* Task sections */}
+        <Box sx={{ flex: 1, overflowY: 'auto', pr: 0.25 }}>
+          {totalTasks === 0 && (
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.5,
+                px: 2,
+                py: 1.5,
+                mb: 2,
+                borderRadius: 1.25,
+                bgcolor: (t) => alpha(t.palette.info.main, 0.08),
+                border: '1px solid',
+                borderColor: (t) => alpha(t.palette.info.main, 0.2),
+              }}
+            >
+              <Box sx={{ flexShrink: 0, display: 'flex', color: 'info.main' }}>
+                <Info size={16} />
+              </Box>
+              <Box sx={{ flex: 1 }}>
+                <Typography variant="body2" sx={{ fontWeight: 700, color: 'info.main', lineHeight: 1.3 }}>
+                  No tasks generated yet
+                </Typography>
+                <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
+                  Tasks haven't been generated for this project. Generate tasks to get started.
+                </Typography>
+              </Box>
+            </Box>
+          )}
+
+          {SECTIONS.map(section => (
+            <Box key={section.key} ref={section.key === 'failed' ? failedRef : undefined}>
+              <TaskSection
+                section={section}
+                tasks={board[section.key]}
+                orgId={orgId ?? ''}
+                projectId={projectId ?? ''}
+                initiallyExpanded={section.key === 'todo' || section.key === 'inProgress'}
+              />
+            </Box>
+          ))}
+        </Box>
+
       </Box>
     </PageContent>
   );

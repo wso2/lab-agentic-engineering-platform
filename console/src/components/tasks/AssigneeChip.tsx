@@ -1,4 +1,4 @@
-import { Chip, useTheme } from '@wso2/oxygen-ui';
+import { alpha, Chip } from '@wso2/oxygen-ui';
 import { Bot, User } from '@wso2/oxygen-ui-icons-react';
 
 interface AssigneeChipProps {
@@ -6,14 +6,15 @@ interface AssigneeChipProps {
 }
 
 export function AssigneeChip({ assignee }: AssigneeChipProps) {
-  const theme = useTheme();
   const sx = {
     height: 20,
     fontSize: '0.65rem',
     fontWeight: 600,
-    bgcolor: `${theme.palette.primary.main}22`,
-    borderColor: `${theme.palette.primary.main}55`,
-    color: theme.palette.primary.main,
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    bgcolor: (t: any) => alpha(t.palette.primary.main, 0.13),
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    borderColor: (t: any) => alpha(t.palette.primary.main, 0.33),
+    color: 'primary.main',
     border: '1px solid',
     '& .MuiChip-label': { px: 0.75 },
     '& .MuiChip-icon': { ml: 0.5, color: 'inherit' },
