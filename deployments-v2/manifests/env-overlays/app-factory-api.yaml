@@ -44,8 +44,8 @@ env:
   # setup.sh needs to discover this dynamically.
   - key: AGENT_GIT_SERVICE_URL
     value: "http://app-factory-git-service.dp-wso2cloud-app-factory-development-bad5f211.svc.cluster.local:3300"
-  - key: BFF_TASK_SIGNING_KEY_PATH
-    value: "/app/keys/task-signing.pem"
+  - key: BFF_TASK_SIGNING_KEY
+    value: "${BFF_TASK_SIGNING_KEY}"
   - key: BFF_TASK_TOKEN_ISSUER
     value: "asdlc-bff"
   - key: BFF_TASK_TOKEN_AUDIENCE
@@ -77,10 +77,3 @@ env:
   # Argo schedules pods (so this maps to k8s ns `workflows-asdlc-user-projects`).
   - key: WORKFLOW_PLANE_NAMESPACE
     value: "asdlc-user-projects"
-files:
-  - key: task-signing.pem
-    mountPath: /app/keys
-    valueFrom:
-      secretKeyRef:
-        name: app-factory-task-signing-key
-        key: task-signing.pem

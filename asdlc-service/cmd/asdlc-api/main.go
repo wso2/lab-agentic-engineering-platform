@@ -207,12 +207,12 @@ func main() {
 	// Task JWT manager — RS256, 24h TTL. Public key is published on the
 	// JWKS endpoint and verified by git-service /credentials/refresh.
 	var taskTokens *services.TaskTokenManager
-	if cfg.TaskTokenSigningKeyPath != "" {
+	if cfg.TaskTokenSigningKey != "" {
 		mgr, err := services.NewTaskTokenManager(services.TaskTokenConfig{
-			PrivateKeyPath: cfg.TaskTokenSigningKeyPath,
-			Issuer:         cfg.TaskTokenIssuer,
-			Audience:       cfg.TaskTokenAudience,
-			TTL:            24 * time.Hour,
+			PrivateKey: cfg.TaskTokenSigningKey,
+			Issuer:     cfg.TaskTokenIssuer,
+			Audience:   cfg.TaskTokenAudience,
+			TTL:        24 * time.Hour,
 		})
 		if err != nil {
 			slog.Error("task token manager init failed", "error", err)
@@ -221,7 +221,7 @@ func main() {
 		taskTokens = mgr
 		slog.Info("Task token manager", "kid", mgr.KeyID(), "issuer", cfg.TaskTokenIssuer, "audience", cfg.TaskTokenAudience)
 	} else {
-		slog.Warn("BFF_TASK_SIGNING_KEY_PATH not set — task dispatch will fail")
+		slog.Warn("BFF_TASK_SIGNING_KEY not set — task dispatch will fail")
 	}
 
 	// Token injector for OC API calls from inside dispatch, webhook handlers,

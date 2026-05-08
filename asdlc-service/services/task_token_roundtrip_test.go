@@ -16,13 +16,12 @@ import (
 // JWKSCache → verify through Authenticator. This is the integration test
 // that none of the per-component unit tests cover.
 func TestTaskTokenRoundtrip(t *testing.T) {
-	dir := t.TempDir()
-	keyPath, _ := writeTestKey(t, dir, "pkcs1")
+	pemKey, _ := writeTestKey(t, "pkcs1")
 	mgr, err := NewTaskTokenManager(TaskTokenConfig{
-		PrivateKeyPath: keyPath,
-		Issuer:         "asdlc-bff",
-		Audience:       "git-service",
-		TTL:            10 * time.Minute,
+		PrivateKey: pemKey,
+		Issuer:     "asdlc-bff",
+		Audience:   "git-service",
+		TTL:        10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("NewTaskTokenManager: %v", err)
@@ -80,12 +79,10 @@ func TestTaskTokenRoundtrip(t *testing.T) {
 // signing key, a verifier holding a stale JWKS cache will hit the kid-miss
 // refresh path and pick up the new key without restart.
 func TestTaskTokenRoundtrip_KidRotation(t *testing.T) {
-	dir := t.TempDir()
-
 	// First key — initially serves JWKS.
-	keyPath1, _ := writeTestKey(t, dir, "pkcs1")
+	pemKey1, _ := writeTestKey(t, "pkcs1")
 	mgr1, err := NewTaskTokenManager(TaskTokenConfig{
-		PrivateKeyPath: keyPath1, Issuer: "asdlc-bff", Audience: "git-service", TTL: 10 * time.Minute,
+		PrivateKey: pemKey1, Issuer: "asdlc-bff", Audience: "git-service", TTL: 10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("mgr1: %v", err)
@@ -123,9 +120,9 @@ func TestTaskTokenRoundtrip_KidRotation(t *testing.T) {
 
 	// Rotate: a fresh key takes over. Cache still holds mgr1's keys; new
 	// token's kid is unknown to the cached JWKS, which must trigger refresh.
-	keyPath2, _ := writeTestKey(t, dir, "pkcs1")
+	pemKey2, _ := writeTestKey(t, "pkcs1")
 	mgr2, err := NewTaskTokenManager(TaskTokenConfig{
-		PrivateKeyPath: keyPath2, Issuer: "asdlc-bff", Audience: "git-service", TTL: 10 * time.Minute,
+		PrivateKey: pemKey2, Issuer: "asdlc-bff", Audience: "git-service", TTL: 10 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("mgr2: %v", err)
@@ -148,10 +145,9 @@ func TestTaskTokenRoundtrip_KidRotation(t *testing.T) {
 // TestTaskTokenRoundtrip_WrongAudience confirms a token signed for one
 // audience is rejected when the verifier expects a different one.
 func TestTaskTokenRoundtrip_WrongAudience(t *testing.T) {
-	dir := t.TempDir()
-	keyPath, _ := writeTestKey(t, dir, "pkcs1")
+	pemKey, _ := writeTestKey(t, "pkcs1")
 	mgr, _ := NewTaskTokenManager(TaskTokenConfig{
-		PrivateKeyPath: keyPath, Issuer: "asdlc-bff", Audience: "git-service", TTL: 10 * time.Minute,
+		PrivateKey: pemKey, Issuer: "asdlc-bff", Audience: "git-service", TTL: 10 * time.Minute,
 	})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -184,10 +180,9 @@ func TestTaskTokenRoundtrip_WrongAudience(t *testing.T) {
 // rejected. Uses a 1ms TTL and a small sleep — the manager constructor
 // requires positive TTL, so we can't pre-bake a negative exp.
 func TestTaskTokenRoundtrip_ExpiredToken(t *testing.T) {
-	dir := t.TempDir()
-	keyPath, _ := writeTestKey(t, dir, "pkcs1")
+	pemKey, _ := writeTestKey(t, "pkcs1")
 	mgr, err := NewTaskTokenManager(TaskTokenConfig{
-		PrivateKeyPath: keyPath, Issuer: "asdlc-bff", Audience: "git-service", TTL: 1 * time.Millisecond,
+		PrivateKey: pemKey, Issuer: "asdlc-bff", Audience: "git-service", TTL: 1 * time.Millisecond,
 	})
 	if err != nil {
 		t.Fatalf("NewTaskTokenManager: %v", err)

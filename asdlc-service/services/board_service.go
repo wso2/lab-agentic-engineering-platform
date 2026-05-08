@@ -19,6 +19,7 @@ type BoardTask struct {
 	Assignee        string                 `json:"assignee,omitempty"`
 	ComponentTaskID string                 `json:"componentTaskId,omitempty"`
 	Labels          []gitservice.LabelInfo `json:"labels,omitempty"`
+	LifecycleStatus string                 `json:"lifecycleStatus,omitempty"`
 }
 
 // ProjectBoard holds tasks grouped by their kanban column.
@@ -64,15 +65,27 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 		return nil, fmt.Errorf("get board from git-service: %w", err)
 	}
 
-	// Build a map of issue URL -> component task ID to enrich board items.
-	issueURLToTaskID := map[string]string{}
+	// Load DB tasks for enrichment.
+	type taskDBMeta struct {
+		id              string
+		lifecycleStatus string
+	}
+	issueURLToMeta := map[string]taskDBMeta{}
 	var allComponentTasks []models.ComponentTask
+	// unissuedTasks are tasks with no IssueURL (gh_issue_waiting or gh_issue_failed).
+	// They never appear on the GitHub Project board and must be surfaced separately.
+	var unissuedTasks []models.ComponentTask
 	if s.taskRepo != nil {
 		if componentTasks, err := s.taskRepo.ListByProjectID(ctx, orgID, projectID); err == nil {
 			allComponentTasks = componentTasks
 			for _, ct := range componentTasks {
 				if ct.IssueURL != "" {
-					issueURLToTaskID[ct.IssueURL] = ct.ID
+					issueURLToMeta[ct.IssueURL] = taskDBMeta{
+						id:              ct.ID,
+						lifecycleStatus: ct.LifecycleStatus,
+					}
+				} else {
+					unissuedTasks = append(unissuedTasks, ct)
 				}
 			}
 		}
@@ -80,15 +93,17 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 
 	for _, item := range result.Items {
 		task := BoardTask{
-			ID:          item.ID,
-			Title:       item.Title,
-			URL:         item.URL,
-			Description: item.Body,
-			Assignee:    item.Assignee,
-			Labels:      item.Labels,
+			ID:              item.ID,
+			Title:           item.Title,
+			URL:             item.URL,
+			Description:     item.Body,
+			Assignee:        item.Assignee,
+			Labels:          item.Labels,
+			LifecycleStatus: string(models.TaskLifecycleGhIssueCreated),
 		}
-		if id, ok := issueURLToTaskID[item.URL]; ok {
-			task.ComponentTaskID = id
+		if meta, ok := issueURLToMeta[item.URL]; ok {
+			task.ComponentTaskID = meta.id
+			task.LifecycleStatus = meta.lifecycleStatus
 		}
 		switch normalizeStatus(item.Status) {
 		case "in progress":
@@ -105,12 +120,20 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 	}
 	board.URL = result.URL
 
-	// Fallback: when the GitHub board has no items, show component tasks from DB.
+	// Fallback: when the GitHub board has no items, show all component tasks from DB.
 	if len(result.Items) == 0 && len(allComponentTasks) > 0 {
 		for _, ct := range allComponentTasks {
 			labels := make([]gitservice.LabelInfo, 0, len(ct.Labels))
 			for _, l := range ct.Labels {
 				labels = append(labels, gitservice.LabelInfo{Name: l})
+			}
+			// Board has 0 items — GitHub Project hasn't synced yet.
+			// Override gh_issue_created → gh_issue_syncing in the response so
+			// the frontend shows a skeleton instead of a labelless task card.
+			// This value is never written to DB.
+			lifecycleStatus := ct.LifecycleStatus
+			if lifecycleStatus == string(models.TaskLifecycleGhIssueCreated) {
+				lifecycleStatus = string(models.TaskLifecycleGhIssueSyncing)
 			}
 			task := BoardTask{
 				ID:              ct.ID,
@@ -119,6 +142,7 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 				Description:     ct.Body,
 				ComponentTaskID: ct.ID,
 				Labels:          labels,
+				LifecycleStatus: lifecycleStatus,
 			}
 			switch ct.Status {
 			case "in_progress":
@@ -130,6 +154,24 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			default:
 				board.Todo = append(board.Todo, task)
 			}
+		}
+		return board, nil
+	}
+
+	// Always surface unissued tasks (gh_issue_waiting / gh_issue_failed) even
+	// when the primary path is active. These have no IssueURL and are invisible
+	// to the GitHub Project board.
+	for _, ct := range unissuedTasks {
+		task := BoardTask{
+			ID:              ct.ID,
+			Title:           ct.Title,
+			ComponentTaskID: ct.ID,
+			LifecycleStatus: ct.LifecycleStatus,
+		}
+		if ct.LifecycleStatus == string(models.TaskLifecycleGhIssueFailed) {
+			board.Failed = append(board.Failed, task)
+		} else {
+			board.Todo = append(board.Todo, task)
 		}
 	}
 

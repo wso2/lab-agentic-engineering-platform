@@ -11,6 +11,18 @@ KEYS_DIR="${KEYS_DIR:-$ROOT_DIR/deployments-v2/keys}"
 ensure_env_loaded() {
   [ -f "$ENV_FILE" ] || die "$ENV_FILE missing — run setup.sh first"
   set -a; source "$ENV_FILE"; set +a
+  _export_task_signing_key
+}
+
+# Export PEM contents as BFF_TASK_SIGNING_KEY for envsubst into the BFF
+# env-overlay. Newlines are escaped to literal \n; YAML double-quoted
+# scalars decode them back to newlines, giving Go a multi-line PEM via
+# os.Getenv. No-op if the PEM hasn't been generated yet.
+_export_task_signing_key() {
+  if [ -f "$KEYS_DIR/task-signing.pem" ]; then
+    export BFF_TASK_SIGNING_KEY
+    BFF_TASK_SIGNING_KEY=$(awk 'NR>1{printf "\\n"} {printf "%s", $0} END{printf "\\n"}' "$KEYS_DIR/task-signing.pem")
+  fi
 }
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -205,6 +217,7 @@ ensure_env() {
 
   # ── source the finalized .env to export everything ─────────────────────────
   set -a; source "$ENV_FILE"; set +a
+  _export_task_signing_key
 
   # Shell exports override .env (user might export vars on the CLI).
   local _shell_val

@@ -277,6 +277,8 @@ export interface LabelInfo {
   color: string; // hex without #, e.g. "0075ca"
 }
 
+export type TaskLifecycleStatus = 'gh_issue_waiting' | 'gh_issue_syncing' | 'gh_issue_created' | 'gh_issue_failed';
+
 export interface Task {
   id: string;
   title: string;
@@ -285,6 +287,7 @@ export interface Task {
   assignee?: string;
   componentTaskId?: string;
   labels?: LabelInfo[];
+  lifecycleStatus?: TaskLifecycleStatus;
 }
 
 export interface ProjectBoard {

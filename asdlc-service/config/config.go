@@ -25,7 +25,7 @@ type Config struct {
 	// OAuthStateSigningKey is the HS256 key used to sign the connect-state
 	// JWT that rides the GitHub App OAuth `state` query param (CSRF
 	// protection on the connect callback). Task JWTs use RS256 via
-	// TaskTokenSigningKeyPath; this key has no other use.
+	// TaskTokenSigningKey; this key has no other use.
 	OAuthStateSigningKey string
 
 	// Phase 2 PR B — GitHub App connect surface.
@@ -35,10 +35,9 @@ type Config struct {
 	// the App-mode redirect after callback (302 → console settings page).
 	BFFPublicURL string
 
-	// TaskTokenSigningKeyPath is the path to the BFF's RSA private key used
-	// to sign Task JWTs. The matching public key is published at
-	// /auth/external/jwks.json.
-	TaskTokenSigningKeyPath string
+	// TaskTokenSigningKey is the PEM-encoded RSA private key used to sign
+	// Task JWTs. The matching public key is published at /auth/external/jwks.json.
+	TaskTokenSigningKey string
 	// TaskTokenIssuer is the iss claim on issued Task JWTs (e.g. "asdlc-bff").
 	TaskTokenIssuer string
 	// TaskTokenAudience is the aud claim — fixed to "git-service" today, the
@@ -66,10 +65,10 @@ type Config struct {
 	// JWKS settings for inbound JWT verification — Thunder publishes the
 	// User JWT and Service JWT signing key at JWKSURL; verifiers refresh
 	// on kid miss. Issuer and audience configure RFC 7519 claim checks.
-	JWKSURL                  string
-	JWTAllowedIssuer         string
-	JWTAllowedAudience       string
-	JWTResourceMetadataURL   string
+	JWKSURL                string
+	JWTAllowedIssuer       string
+	JWTAllowedAudience     string
+	JWTResourceMetadataURL string
 
 	// Per-target Service JWT clients used for outbound auth. Each one
 	// corresponds to a distinct Thunder OAuth2 client whose audience is

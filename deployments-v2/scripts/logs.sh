@@ -9,7 +9,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-source "${SCRIPT_DIR}/lib/utils.sh" 2>/dev/null || true
+# shellcheck disable=SC1091
+[ -f "${SCRIPT_DIR}/lib/utils.sh" ] && source "${SCRIPT_DIR}/lib/utils.sh" || true
 
 # ── colour helpers (inline so script is self-contained) ─────────────────────
 

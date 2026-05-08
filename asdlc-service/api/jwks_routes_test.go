@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -21,13 +19,13 @@ import (
 // signing key in the standard JWK shape verifiers expect.
 func TestJWKSRoute_PublishesActiveKey(t *testing.T) {
 	priv := mustGenerateRSAKey(t)
-	keyPath := writeRSAPrivateKey(t, priv)
+	pemKey := string(encodePKCS1(t, priv))
 
 	mgr, err := services.NewTaskTokenManager(services.TaskTokenConfig{
-		PrivateKeyPath: keyPath,
-		Issuer:         "test-iss",
-		Audience:       "test-aud",
-		TTL:            time.Hour,
+		PrivateKey: pemKey,
+		Issuer:     "test-iss",
+		Audience:   "test-aud",
+		TTL:        time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("NewTaskTokenManager: %v", err)
@@ -74,13 +72,13 @@ func TestJWKSRoute_PublishesActiveKey(t *testing.T) {
 // otherwise deadlock against itself.
 func TestJWKSRoute_NotGatedByJWT(t *testing.T) {
 	priv := mustGenerateRSAKey(t)
-	keyPath := writeRSAPrivateKey(t, priv)
+	pemKey := string(encodePKCS1(t, priv))
 
 	mgr, err := services.NewTaskTokenManager(services.TaskTokenConfig{
-		PrivateKeyPath: keyPath,
-		Issuer:         "iss",
-		Audience:       "aud",
-		TTL:            time.Hour,
+		PrivateKey: pemKey,
+		Issuer:     "iss",
+		Audience:   "aud",
+		TTL:        time.Hour,
 	})
 	if err != nil {
 		t.Fatalf("NewTaskTokenManager: %v", err)
@@ -115,15 +113,4 @@ func mustGenerateRSAKey(t *testing.T) *rsa.PrivateKey {
 		t.Fatalf("rsa.GenerateKey: %v", err)
 	}
 	return priv
-}
-
-func writeRSAPrivateKey(t *testing.T, priv *rsa.PrivateKey) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "key.pem")
-	pem := encodePKCS1(t, priv)
-	if err := os.WriteFile(path, pem, 0o600); err != nil {
-		t.Fatalf("write key: %v", err)
-	}
-	return path
 }
