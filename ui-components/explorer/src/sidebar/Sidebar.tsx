@@ -50,20 +50,12 @@ interface DocInfo {
 }
 
 function computeDocInfo(path: string, markdown: string): DocInfo {
+  // Always show the filename (without the .md/.markdown extension) as the
+  // sidebar title — file identity beats document title here. The full TOC
+  // (including any H1) stays expandable underneath.
   const parsed = parseToc(markdown);
-  const firstH1Idx = parsed.findIndex((e) => e.level === 1);
-
-  let title: string;
-  let toc: TocEntry[];
-  if (firstH1Idx >= 0 && parsed[firstH1Idx]!.text) {
-    title = parsed[firstH1Idx]!.text;
-    toc = parsed.filter((_, i) => i !== firstH1Idx);
-  } else {
-    title = path.replace(/\.(md|markdown)$/i, '');
-    toc = parsed;
-  }
-
-  return { title, toc, headingCount: parsed.length };
+  const title = path.replace(/\.(md|markdown)$/i, '');
+  return { title, toc: parsed, headingCount: parsed.length };
 }
 
 export function Sidebar({
