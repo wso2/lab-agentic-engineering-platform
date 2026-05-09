@@ -1,13 +1,12 @@
 import express from "express";
 import { jwtAuthMiddleware } from "../middleware/jwt.js";
 import { correlationIdMiddleware } from "../middleware/correlation.js";
-import { registerBusinessAnalyst } from "./routes/business-analyst.js";
+import { registerDocumentGeneration } from "./routes/document-generation.js";
 import { registerArchitect } from "./routes/architect.js";
 import {
   registerTechLeadPlan,
   registerTechLeadDetail,
 } from "./routes/tech-lead.js";
-import { registerWireframe } from "./routes/wireframe.js";
 
 const port = parseInt(process.env.PORT || "3400", 10);
 
@@ -47,11 +46,10 @@ if (!jwksUrl) {
   );
 }
 
-registerBusinessAnalyst(app);
+registerDocumentGeneration(app);
 registerArchitect(app);
 registerTechLeadPlan(app);
 registerTechLeadDetail(app);
-registerWireframe(app);
 
 app.listen(port, () => {
   console.log(`agents-service listening on :${port}`);

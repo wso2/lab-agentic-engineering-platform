@@ -5,10 +5,9 @@ import {
   useRef,
   useState,
 } from 'react';
-import { Box, IconButton, Stack, Tooltip } from '@wso2/oxygen-ui';
-import { ArrowRight } from '@wso2/oxygen-ui-icons-react';
+import { Box, Stack } from '@wso2/oxygen-ui';
 import type { MdEditorRef } from '@asdlc/md-editor';
-import type { FileMap, MdExplorerProps, MdExplorerRef } from './types.js';
+import type { FileMap, ExplorerProps, ExplorerRef } from './types.js';
 import { useFileBuffers } from './hooks/useFileBuffers.js';
 import { Sidebar } from './sidebar/Sidebar.js';
 import { ActiveFileEditor } from './editor/ActiveFileEditor.js';
@@ -20,7 +19,7 @@ function generateDefaultFilename(existing: Set<string>): string {
   return `Untitled ${n}.md`;
 }
 
-export function MdExplorer({
+export function Explorer({
   files,
   defaultFiles,
   onFileChange,
@@ -28,17 +27,18 @@ export function MdExplorer({
   defaultActivePath,
   onActivePathChange,
   onAddFile,
+  addFileMenu,
   onRename,
   onDelete,
   searchPlaceholder = 'Search documents',
   sidebarWidth = 280,
-  minHeight = 400,
+  minHeight,
   maxHeight,
   className,
   emptyState,
   editorProps,
   editorRef,
-}: MdExplorerProps) {
+}: ExplorerProps) {
   const buffers = useFileBuffers({ files, defaultFiles });
   const {
     savedMap,
@@ -117,9 +117,9 @@ export function MdExplorer({
     [onDelete, deleteBuffer, activePath, paths, setActive],
   );
 
-  const handleAddFile = useCallback(() => {
+  const handleAddFile = useCallback((typeId?: string) => {
     if (!onAddFile) return;
-    const returned = onAddFile();
+    const returned = onAddFile(typeId);
     if (typeof returned === 'string' && returned) {
       setActive(returned);
       return;
@@ -154,7 +154,7 @@ export function MdExplorer({
 
   useImperativeHandle(
     editorRef,
-    (): MdExplorerRef => ({
+    (): ExplorerRef => ({
       getBuffer,
       getAllBuffers,
       isDirty,
@@ -167,8 +167,6 @@ export function MdExplorer({
     }),
     [getBuffer, getAllBuffers, isDirty, setActive, resetBuffer, scrollActiveToHeading],
   );
-
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const activeContent: string | undefined =
     activePath !== null && activePath !== undefined ? getBuffer(activePath) : undefined;
@@ -192,17 +190,16 @@ export function MdExplorer({
       className={className}
       sx={{
         width: '100%',
-        minHeight: `${minHeight}px`,
+        height: '100%',
+        flex: 1,
+        minHeight: minHeight ? `${minHeight}px` : 0,
         maxHeight: maxHeight ? `${maxHeight}px` : undefined,
-        height: maxHeight ? `${maxHeight}px` : '100%',
         border: '1px solid',
         borderColor: 'divider',
-        borderRadius: 2,
         overflow: 'hidden',
         bgcolor: 'background.paper',
       }}
     >
-      {/* Sidebar stays mounted so its internal collapse/rename state survives hide/show. */}
       <Box
         sx={{
           width: `${sidebarWidth}px`,
@@ -210,7 +207,7 @@ export function MdExplorer({
           borderRight: '1px solid',
           borderColor: 'divider',
           bgcolor: 'background.default',
-          display: sidebarCollapsed ? 'none' : 'flex',
+          display: 'flex',
           flexDirection: 'column',
         }}
       >
@@ -224,32 +221,12 @@ export function MdExplorer({
           onActivate={setActive}
           onTocClick={handleTocClick}
           onAddFile={onAddFile ? handleAddFile : undefined}
+          addFileMenu={addFileMenu}
           onRename={onRename || !isControlled ? handleRename : undefined}
           onDelete={onDelete || !isControlled ? handleDelete : undefined}
-          onCollapseSidebar={() => setSidebarCollapsed(true)}
           validateRename={validateRename}
         />
       </Box>
-      {sidebarCollapsed && (
-        <Stack
-          direction="column"
-          alignItems="center"
-          sx={{
-            width: 40,
-            py: 1,
-            flexShrink: 0,
-            borderRight: '1px solid',
-            borderColor: 'divider',
-            bgcolor: 'background.default',
-          }}
-        >
-          <Tooltip title="Show sidebar">
-            <IconButton size="small" aria-label="Show sidebar" onClick={() => setSidebarCollapsed(false)}>
-              <ArrowRight size={18} />
-            </IconButton>
-          </Tooltip>
-        </Stack>
-      )}
       <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         {activePath && activeContent !== undefined ? (
           <ActiveFileEditor

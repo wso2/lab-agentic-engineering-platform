@@ -126,7 +126,7 @@ func main() {
 	agentsAuth := buildAuthProvider("agents-service", cfg.ServiceAuthAgentsService)
 	rwAuth := buildAuthProvider("remote-worker", cfg.ServiceAuthRemoteWorker)
 
-	// Agents service client (AI SDK v6 — BA, architect, task-generator, wireframe)
+	// Agents service client (AI SDK v6 — BA, architect, tech-lead)
 	agentsClient := agents.NewClient(cfg.AgentsService.BaseURL, agentsAuth)
 	slog.Info("Agents service", "baseURL", cfg.AgentsService.BaseURL)
 
@@ -153,7 +153,7 @@ func main() {
 	projectService := services.NewProjectService(projectClient, gitClient, secretRefClient, artifactStore, taskRepo)
 	organizationService := services.NewOrganizationService(db, namespaceClient)
 	componentService := services.NewComponentService(componentClient, observClient, configService, cfg.PlatformAPI.BuildRegistry)
-	specService := services.NewSpecService(artifactStore, agentsClient, gitClient)
+	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
 
 	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, gitClient, agentsClient, dbClient)
@@ -286,7 +286,7 @@ func main() {
 		ProjectController:      controllers.NewProjectController(projectService),
 		OrganizationController: controllers.NewOrganizationController(organizationService),
 		ComponentController:    controllers.NewComponentController(componentService, taskService),
-		SpecController:         controllers.NewSpecController(specService),
+		RequirementsController: controllers.NewRequirementsController(requirementsService),
 		DesignController:       controllers.NewDesignController(designService),
 		TaskController:         controllers.NewTaskController(taskService, remoteWorkerSvc),
 		BoardController:        controllers.NewBoardController(boardService),
@@ -308,7 +308,7 @@ func main() {
 		Addr:              fmt.Sprintf("%s:%d", cfg.ServerHost, cfg.ServerPort),
 		Handler:           handler,
 		ReadHeaderTimeout: 15 * time.Second,
-		WriteTimeout:      15 * time.Minute, // AI design + wireframe generation can take up to 10 min
+		WriteTimeout:      15 * time.Minute, // AI design generation can take up to 10 min
 		IdleTimeout:       60 * time.Second,
 	}
 

@@ -10,7 +10,7 @@ WORKDIR /repo
 COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY console/package.json ./console/
 COPY ui-components/md-editor/package.json ./ui-components/md-editor/
-COPY ui-components/md-explorer/package.json ./ui-components/md-explorer/
+COPY ui-components/explorer/package.json ./ui-components/explorer/
 COPY ui-components/project-status/package.json ./ui-components/project-status/
 RUN pnpm install --frozen-lockfile
 

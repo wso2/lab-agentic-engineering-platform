@@ -1,7 +1,7 @@
 export { api, ApiError } from './client';
 export type {
   Project,
-  Spec,
+  RequirementsBundle,
   Design,
   DesignComponent,
   ComponentDefinition,

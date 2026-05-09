@@ -9,7 +9,7 @@ asdlc/
 ├── console/                → React frontend (Vite + Oxygen UI)
 ├── asdlc-service/          → Go backend API (BFF) + GitHub webhook receiver
 ├── git-service/            → Go microservice for git operations (clone, commit, push, tag)
-├── agents/                 → TypeScript agents service (Vercel AI SDK; BA, Architect, TaskGen, Wireframe)
+├── agents/                 → TypeScript agents service (Vercel AI SDK; BA, Architect, TaskGen)
 ├── remote-worker/          → TS service that runs Claude Agent SDK agents per component (containerised on cluster)
 ├── deployments-v2/         → CANONICAL local setup — k3d + WSO2 Cloud (OpenChoreo + Thunder + OpenBao + ESO + kgateway)
 │   ├── README.md           → Quick-start, env reference, troubleshooting
@@ -37,7 +37,7 @@ asdlc/
 - `architecture.md` — Overall system architecture, service diagram, data ownership
 - `console.md` — Frontend component design (React + Oxygen UI)
 - `api-service.md` — Go backend API service design (BFF, PostgreSQL, OC proxy)
-- `agent-orchestrator.md` — TypeScript AI agents-service (Vercel AI SDK; BA, Architect, TaskGen, Wireframe)
+- `agent-orchestrator.md` — TypeScript AI agents-service (Vercel AI SDK; BA, Architect, TaskGen)
 - `git-integration.md` — Git provider integration design
 - `openchoreo-client.md` — OpenChoreo client layer design
 - `testing.md` — Testing strategy (Playwright E2E + API integration; runs against the cluster brought up by `deployments-v2/scripts/setup.sh`)
@@ -68,7 +68,7 @@ the end of `setup.sh` and printed in the login banner.
 | `app-factory-console` | React, Oxygen UI, nginx | 8080 | Frontend SPA (Thunder auth via PKCE) |
 | `app-factory-api` | Go, GORM, PostgreSQL | 8080 | BFF — CRUD, OC proxy, GitHub webhook receiver, build trigger |
 | `app-factory-git-service` | Go, GORM, PostgreSQL | 3300 | Git operations — clone, commit, push, tag; resolves per-org credentials from OpenBao |
-| `app-factory-agents-service` | TypeScript, Vercel AI SDK | 3400 | AI agents: BusinessAnalyst (spec), Architect (design), TaskGenerator, Wireframe |
+| `app-factory-agents-service` | TypeScript, Vercel AI SDK | 3400 | AI agents: BusinessAnalyst (spec), Architect (design), TaskGenerator |
 | `app-factory-remote-worker` | TypeScript, Claude Agent SDK | 3200 | Runs an Agent SDK `query()` per component in an isolated workspace. Containerised on cluster; authed via `ANTHROPIC_API_KEY` from OpenBao. |
 | `app-factory-postgresql` | PostgreSQL 16 | 5432 | Component tasks, git repository records (`wso2cloud` namespace) |
 | `thunder` | WSO2 Thunder IDP | 8080/8090 | Identity provider; user auth (PKCE) + service-to-service `client_credentials`. Browser URL: `http://thunder.openchoreo.localhost:8080` |
@@ -161,7 +161,7 @@ In-cluster service DNS (k3d, namespace `default` for asdlc workloads, `wso2cloud
 
 #### Agents service (`agents/`)
 
-The TypeScript AI service backing every BFF AI flow. Built on the **Vercel AI SDK v6** (`ai` + `@ai-sdk/anthropic`) and runs in Docker on port **3400**. Authenticates with `ANTHROPIC_API_KEY` (standard API key — no Claude CLI / keychain dependency). Exposes one route per agent: business-analyst (SSE streaming spec generation), architect (SSE streaming design), task-generator (JSON), wireframe (JSON).
+The TypeScript AI service backing every BFF AI flow. Built on the **Vercel AI SDK v6** (`ai` + `@ai-sdk/anthropic`) and runs in Docker on port **3400**. Authenticates with `ANTHROPIC_API_KEY` (standard API key — no Claude CLI / keychain dependency). Exposes one route per agent: business-analyst (SSE streaming spec generation), architect (SSE streaming design), task-generator (JSON).
 
 Structure:
 - `src/shared/` — `createAgent` factory wrapping `streamText`, shared config and types
@@ -198,23 +198,27 @@ State transitions are declarative (single transition table in `services/task_sta
 
 #### Artifact storage and versioning
 
-Specs and designs are stored as files in the `.asdlc/` directory within each project's cloned git repo (not in PostgreSQL). The file layout per project is:
-- `.asdlc/spec.md` — Specification content
+Specs and designs are stored as files in the `.asdlc/` directory within each project's cloned git repo (not in PostgreSQL). The layout per project is:
+- `.asdlc/requirements/` — multi-document requirements directory
+  - `requirements.md` — main requirements doc (always present, cannot be deleted)
+  - `functional-requirements.md`, `non-functional-requirements.md`, `user-stories.md` — optional sibling docs derived from `requirements.md` via document-generation skills
 - `.asdlc/design.json` — Architecture design (components, overview, requirements)
 
 The BFF reads/writes these files via `ArtifactStore` and commits/pushes changes via `git-service`. `ComponentTask` and `ComponentConfig` live in PostgreSQL; generated tasks also surface as GitHub issues on the project repo.
 
-**Git tag-based versioning**: Artifact versions are tracked via annotated git tags instead of a status file. Each artifact type has a tag prefix (`spec-v`, `design-v`). When a user clicks "Save & Proceed", the BFF commits the artifact, pushes, then creates an annotated tag (e.g., `spec-v1`, `design-v3`) and pushes it. A new tag is only created if the working copy differs from the content at the latest tag. Status is derived: if any tag exists for the artifact, it is "approved"; otherwise "draft". The versioning logic lives in `asdlc-service/services/versioning.go`.
+**Git tag-based versioning**: Artifact versions are tracked via annotated git tags. The scheme is:
+- Requirements: `v<N>` (`v1`, `v2`, …). One save bumps to the next version and tags the whole `.asdlc/requirements/` directory snapshot.
+- Design: `v<N>-<M>` where N is the source requirements version and M is the design revision under that N (`v1-1`, `v1-2`, `v2-1`). Saving design requires a `v<N>` tag to exist (otherwise 409). The lineage of a design version is encoded in its tag name itself — no `source-*:` annotation lines.
 
-**Lineage tracking**: Downstream artifacts record which upstream version they were generated from. When a design is tagged, its tag message includes `source-spec: spec-v2`. This enables the UI to show provenance (e.g., "from spec-v2") and detect when upstream artifacts have changed since the downstream was generated.
+A new tag is only created if the working tree differs from the content at the latest tag. Status is derived: if any tag exists for the artifact, it is "approved"; otherwise "draft". Versioning helpers live in `git-service/services/artifact_versioning.go`.
 
-**Version API endpoints** (per artifact: spec, design):
-- `POST .../save` — commit, push, and tag the artifact
-- `POST .../discard` — revert working copy to last tagged version
-- `GET .../versions` — list all versions
-- `GET .../versions/{version}` — retrieve content at a specific version
+**Document-generation skills**: Each non-main requirement type (functional / NFR / user stories) has an associated agents-service skill that generates its content from sibling files. Skills are isolated under `agents/src/skills/document-generation/<id>.ts` so the prompts are easy to tweak. The doc-type registry on the console (`console/src/lib/documentTypes.ts`) maps each type to a `generationSkillId` + `generationSourceFiles`; the BFF route `POST /requirements/files/{name}/generate` resolves the skill, fetches sources from the working tree, posts to agents-service, and writes the streamed result back.
 
-**Console components**: `VersionSelector` (dropdown to browse/switch versions, shows unsaved-changes warning with discard option) and `LineageLabel` (chip showing upstream artifact versions, e.g., "from spec-v2, design-v1").
+**Version API endpoints**:
+- Requirements: `GET/PUT/DELETE /requirements/files/{name}`, `POST /requirements/save|discard`, `GET /requirements/versions`, `GET /requirements/versions/{tag}` (e.g. `tag=v2`).
+- Design: `GET/PUT /design`, `POST /design/save|discard`, `GET /design/versions`, `GET /design/versions/{tag}` (e.g. `tag=v1-2`).
+
+**Console components**: `VersionSelector` (dropdown to browse/switch versions, shows unsaved-changes warning with discard option) and `LineageLabel` (chip showing upstream artifact versions, e.g., "Based on requirements v2" — decoded from the design tag name).
 
 #### Colima restart caveat (k3d IP swap)
 

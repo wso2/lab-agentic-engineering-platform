@@ -1,7 +1,6 @@
 // Package agents is the client for the asdlc-agents-service (AI SDK v6-based,
 // ANTHROPIC_API_KEY auth). Streams AI SDK UI Message Stream SSE responses for
-// the streaming agents (business-analyst, architect) and returns plain JSON for
-// the non-streaming agents (task-generator, wireframe).
+// the streaming agents (business-analyst, architect, tech-lead).
 package agents
 
 import (
@@ -19,31 +18,33 @@ import (
 
 // Client calls the asdlc-agents-service.
 type Client interface {
-	// StreamBusinessAnalyst POSTs the composed prompt to /v1/agents/business-analyst
-	// and returns the raw SSE response body. Caller must close.
-	StreamBusinessAnalyst(ctx context.Context, prompt string) (io.ReadCloser, error)
+	// StreamDocumentGeneration POSTs to /v1/agents/document-generation/{skillId}
+	// to run a registered document-generation skill (e.g. requirements bootstrap,
+	// functional-requirements derivation). The skillID selects the skill; sources
+	// are the sibling files passed as context (filename → content); prompt is the
+	// optional user prompt for bootstrap-style skills. Returns the raw SSE response
+	// body. Caller must close.
+	StreamDocumentGeneration(ctx context.Context, skillID string, req DocumentGenerationRequest) (io.ReadCloser, error)
 
-	// StreamArchitect POSTs the spec (and optional previous design) to
-	// /v1/agents/architect and returns the raw SSE response body. The stream
+	// StreamArchitect POSTs the requirements bundle (and optional previous design)
+	// to /v1/agents/architect and returns the raw SSE response body. The stream
 	// emits structured custom events (data-overview, data-requirements,
 	// data-component, data-finish) as the architecture is generated.
 	// Caller must close.
 	StreamArchitect(ctx context.Context, req ArchitectRequest) (io.ReadCloser, error)
 
 	// StreamTechLeadPlan POSTs the planner input to /v1/agents/tech-lead/plan
-	// and returns the raw SSE response body. Emits data-plan-item events
-	// followed by data-plan-complete (or error). Caller must close.
+	// and returns the raw SSE response body.
 	StreamTechLeadPlan(ctx context.Context, req TechLeadPlanRequest) (io.ReadCloser, error)
 
-	// StreamTechLeadDetail POSTs N issued tasks to /v1/agents/tech-lead/detail
-	// and returns the raw SSE response body. The route fans out per-task
-	// streamText runs (bounded concurrency) and emits coalesced
-	// data-task-body-delta + data-task-body-complete events. Caller must close.
+	// StreamTechLeadDetail POSTs N issued tasks to /v1/agents/tech-lead/detail.
 	StreamTechLeadDetail(ctx context.Context, req TechLeadDetailRequest) (io.ReadCloser, error)
+}
 
-	// GenerateWireframe calls /v1/agents/wireframe to produce an HTML wireframe
-	// from a project specification. Non-streaming; returns the full HTML document.
-	GenerateWireframe(ctx context.Context, req WireframeRequest) (*WireframeResult, error)
+// DocumentGenerationRequest is the body sent to the generic skill endpoint.
+type DocumentGenerationRequest struct {
+	Sources map[string]string `json:"sources,omitempty"` // sibling files: filename → content
+	Prompt  string            `json:"prompt,omitempty"`  // optional user prompt
 }
 
 // ArchitectRequest is the body sent to the architect endpoint.
@@ -116,17 +117,6 @@ type TechLeadExistingTitle struct {
 	Status string `json:"status"`
 }
 
-// WireframeRequest is the body sent to /v1/agents/wireframe.
-type WireframeRequest struct {
-	Spec         string `json:"spec"`
-	PreviousSpec string `json:"previousSpec,omitempty"`
-}
-
-// WireframeResult is the response from /v1/agents/wireframe.
-type WireframeResult struct {
-	Content string `json:"content"`
-}
-
 type client struct {
 	baseURL    string
 	httpClient *http.Client
@@ -146,36 +136,8 @@ func NewClient(baseURL string, provider *auth.AuthProvider) Client {
 	}
 }
 
-type businessAnalystRequest struct {
-	Prompt string `json:"prompt"`
-}
-
-func (c *client) StreamBusinessAnalyst(ctx context.Context, prompt string) (io.ReadCloser, error) {
-	body, err := json.Marshal(businessAnalystRequest{Prompt: prompt})
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	url := c.baseURL + "/v1/agents/business-analyst"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "text/event-stream")
-
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("agents service request: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		defer resp.Body.Close()
-		msg, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("agents service error (status %d): %s", resp.StatusCode, string(msg))
-	}
-
-	return resp.Body, nil
+func (c *client) StreamDocumentGeneration(ctx context.Context, skillID string, req DocumentGenerationRequest) (io.ReadCloser, error) {
+	return c.streamSSE(ctx, "/v1/agents/document-generation/"+skillID, req)
 }
 
 func (c *client) StreamArchitect(ctx context.Context, req ArchitectRequest) (io.ReadCloser, error) {
@@ -241,38 +203,3 @@ func (c *client) streamSSE(ctx context.Context, path string, body any) (io.ReadC
 	return resp.Body, nil
 }
 
-func (c *client) GenerateWireframe(ctx context.Context, req WireframeRequest) (*WireframeResult, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	url := c.baseURL + "/v1/agents/wireframe"
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("agents service request: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("agents service error (status %d): %s", resp.StatusCode, string(respBody))
-	}
-
-	var result WireframeResult
-	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, fmt.Errorf("decode response: %w", err)
-	}
-
-	return &result, nil
-}

@@ -15,10 +15,10 @@ import (
 // AppParams holds all dependencies needed to build the HTTP handler.
 type AppParams struct {
 	Config                 config.Config
-	ProjectController      controllers.ProjectController
-	ComponentController    controllers.ComponentController
-	SpecController         controllers.SpecController
-	DesignController       controllers.DesignController
+	ProjectController       controllers.ProjectController
+	ComponentController     controllers.ComponentController
+	RequirementsController  controllers.RequirementsController
+	DesignController        controllers.DesignController
 	TaskController         controllers.TaskController
 	BoardController        controllers.BoardController
 	ConfigController       controllers.ConfigController
@@ -66,8 +66,8 @@ func NewHandler(params AppParams) http.Handler {
 	if params.ComponentController != nil {
 		registerComponentRoutes(apiMux, params.ComponentController)
 	}
-	if params.SpecController != nil {
-		registerSpecRoutes(apiMux, params.SpecController)
+	if params.RequirementsController != nil {
+		registerRequirementsRoutes(apiMux, params.RequirementsController)
 	}
 	if params.DesignController != nil {
 		registerDesignRoutes(apiMux, params.DesignController)

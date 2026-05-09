@@ -16,7 +16,5 @@ var (
 	ErrBuildNotFound     = errors.New("build not found")
 	ErrDeploymentFailed  = errors.New("deployment failed")
 	ErrLogsUnavailable   = errors.New("observability service not configured")
-	ErrTaskNotFound           = errors.New("task not found")
-	ErrWireframeNotGenerated  = errors.New("wireframe not yet generated")
-	ErrWireframeGenerating    = errors.New("wireframe generation in progress")
+	ErrTaskNotFound      = errors.New("task not found")
 )

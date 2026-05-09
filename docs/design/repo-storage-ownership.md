@@ -1,5 +1,13 @@
 # Repo Storage Ownership — git-service as Sole Owner of `/data/repos`
 
+> **Note (post-v4.1):** the wireframes feature has since been removed from the platform end-to-end. References to `.asdlc/wireframes/*`, `WriteWireframe`, the `wireframes` artifact endpoints, and the spec-save extra-staging logic in this document are historical only.
+
+> **Note (multi-document requirements refactor):** the spec artifact has since been renamed and restructured. There is **no longer** a `.asdlc/spec.md`; requirements are stored as a directory of markdown files at `.asdlc/requirements/{requirements.md, functional-requirements.md, non-functional-requirements.md, user-stories.md}`. The tag scheme has changed from per-artifact prefixes (`spec-v*`, `design-v*`) to:
+> - Requirements: `v<N>` — one save tags the whole `.asdlc/requirements/` directory snapshot.
+> - Design: `v<N>-<M>` — N is the source requirements version, M is the design revision under that N. Saving design without an existing `v<N>` returns 409.
+>
+> Lineage is now encoded in the design tag name itself (no `source-spec:` annotation lines); the `Lineage` request/response field has been removed. Any references in this document to `.asdlc/spec.md`, `spec-v*`, `design-v*`, `parseLineage`, `buildLineageMessage`, or `Lineage` are historical context for the v4.1 design — see `git-service/services/artifact_service.go` and `artifact_versioning.go` for current behaviour.
+
 > **Status: v4.1 (final)** — extends v3.1 with the local-developer flow fix; fourth review pass landed "ship after fixes" with all items folded in here. v4.1 deletes the dead `hostRepoBase` plumbing and extends the issue body with a "Local Developer Setup" section sourced from `GitRepository.RepoURL` + `task.BranchName` + `task.AppPath`. The section is gated on `BranchName != ""` (it's only rendered at dispatch-time re-render, not at first issue creation), the existing "How To Submit" preamble is rephrased to remove the contradiction the reviewer caught, the auth block is `gh auth status || gh auth login` with the write-access scope spelled out, and the skill (`SKILL.md:8`) gets a one-line edit pointing local-flow developers at the issue body's setup section. Both code and skill changes ride PR 2.
 
 ## Problem

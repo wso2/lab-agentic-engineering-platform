@@ -83,10 +83,6 @@ type ComponentTask struct {
 	SourceDesignVersion string  `gorm:"type:text" json:"sourceDesignVersion,omitempty"`
 	SourceSpecVersion   string  `gorm:"type:text" json:"sourceSpecVersion,omitempty"`
 
-	// WireframePath stays — wireframe artefacts are still per-task, not
-	// derived from design.json.
-	WireframePath string `gorm:"type:text" json:"wireframePath,omitempty"`
-
 	// Execution
 	Order         int    `json:"order"` // 1-indexed; surfaces as a stable display order
 	Status        string `gorm:"default:pending;index" json:"status"`

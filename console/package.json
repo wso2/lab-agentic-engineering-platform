@@ -17,7 +17,7 @@
   },
   "dependencies": {
     "@asdlc/md-editor": "workspace:*",
-    "@asdlc/md-explorer": "workspace:*",
+    "@asdlc/explorer": "workspace:*",
     "@asdlc/project-status": "workspace:*",
     "@asgardeo/react": "^0.20.0",
     "@emotion/react": "11.14.0",

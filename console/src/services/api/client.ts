@@ -5,7 +5,7 @@
 export { restApi as api, ApiError } from './rest';
 export type {
   Project,
-  Spec,
+  RequirementsBundle,
   Design,
   DesignComponent,
   ComponentDefinition,

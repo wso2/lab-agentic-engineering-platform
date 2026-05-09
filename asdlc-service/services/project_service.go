@@ -181,21 +181,18 @@ func (s *projectService) GetProjectStatus(ctx context.Context, orgName, projectN
 		return status, nil
 	}
 
-	// Check spec
-	specContent, err := s.store.ReadSpec(ctx, orgName, projectName)
+	// Check requirements (any markdown doc under .asdlc/requirements/ counts).
+	files, err := s.store.ListRequirements(ctx, orgName, projectName)
 	if err != nil && !IsNotFound(err) {
-		return nil, fmt.Errorf("read spec: %w", err)
+		return nil, fmt.Errorf("list requirements: %w", err)
 	}
-	status.HasSpec = specContent != ""
+	status.HasSpec = len(files) > 0
 
-	// Derive artifact statuses from typed version listings (PR 2: BFF no
-	// longer constructs tag-prefix strings; the artifact endpoints filter
-	// by type server-side).
 	if s.gitClient != nil {
-		specVersions, _ := s.gitClient.ListSpecVersions(ctx, orgName, projectName)
+		reqVersions, _ := s.gitClient.ListRequirementsVersions(ctx, orgName, projectName)
 		designVersions, _ := s.gitClient.ListDesignVersions(ctx, orgName, projectName)
 
-		if len(specVersions) > 0 {
+		if len(reqVersions) > 0 {
 			status.SpecStatus = "approved"
 		} else if status.HasSpec {
 			status.SpecStatus = "draft"

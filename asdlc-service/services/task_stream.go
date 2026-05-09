@@ -77,13 +77,19 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 		return fmt.Errorf("acquire lock: %w", lockErr)
 	}
 
-	// T2: load inputs.
-	specContent, err := s.store.ReadSpec(ctx, orgID, projectID)
+	// T2: load inputs. Requirements are now a multi-file bundle; concatenate
+	// every doc as one corpus so the tech-lead agent sees the same content
+	// regardless of how the project organised its requirement files.
+	reqFiles, err := s.store.ListRequirements(ctx, orgID, projectID)
 	if err != nil {
-		if IsNotFound(err) {
-			return ErrSpecNotFound
-		}
-		return fmt.Errorf("read spec: %w", err)
+		return fmt.Errorf("list requirements: %w", err)
+	}
+	if len(reqFiles) == 0 {
+		return ErrSpecNotFound
+	}
+	specContent := concatRequirementBundle(reqFiles)
+	if specContent == "" {
+		return ErrSpecNotFound
 	}
 	design, err := s.store.ReadDesign(ctx, orgID, projectID)
 	if err != nil {
@@ -152,8 +158,10 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 			}
 		}
 		if s.gitClient != nil && baseline.SourceSpecVersion != "" {
-			if raw, err := s.gitClient.GetFileAtTag(ctx, orgID, projectID, baseline.SourceSpecVersion, ".asdlc/spec.md"); err == nil {
-				prevSpec = raw
+			// Pull every requirement file at the baseline tag and concatenate.
+			// The tag is a `v<N>` requirements tag; missing files are tolerated.
+			if files, err := s.gitClient.GetRequirementsAtTag(ctx, orgID, projectID, baseline.SourceSpecVersion); err == nil {
+				prevSpec = concatRequirementBundle(files)
 			}
 		}
 	}
@@ -676,10 +684,11 @@ func (s *taskService) RegenerateTaskBody(ctx context.Context, taskID string, out
 	if task == nil {
 		return ErrTaskNotFound
 	}
-	specContent, err := s.store.ReadSpec(ctx, task.OrgID, task.ProjectID)
+	reqFiles, err := s.store.ListRequirements(ctx, task.OrgID, task.ProjectID)
 	if err != nil {
-		return fmt.Errorf("read spec: %w", err)
+		return fmt.Errorf("list requirements: %w", err)
 	}
+	specContent := concatRequirementBundle(reqFiles)
 	design, err := s.store.ReadDesign(ctx, task.OrgID, task.ProjectID)
 	if err != nil || design == nil {
 		return fmt.Errorf("read design: %w", err)
@@ -723,7 +732,7 @@ func (s *taskService) currentArtifactVersions(ctx context.Context, orgID, projec
 	if s.gitClient == nil {
 		return "", ""
 	}
-	if vs, err := s.gitClient.ListSpecVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {
+	if vs, err := s.gitClient.ListRequirementsVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {
 		specV = vs[0].Tag
 	}
 	if vs, err := s.gitClient.ListDesignVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {

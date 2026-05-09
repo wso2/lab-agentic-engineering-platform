@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import type { Meta, StoryObj } from '@storybook/react-vite';
-import { MdExplorer } from './MdExplorer.js';
+import { Explorer } from './Explorer.js';
 import type { FileMap } from './types.js';
 
 const meta = {
-  title: 'Components/MdExplorer',
-  component: MdExplorer,
+  title: 'Components/Explorer',
+  component: Explorer,
   parameters: { layout: 'padded' },
   argTypes: {
     sidebarWidth: { control: { type: 'number', min: 180, max: 500 } },
@@ -13,7 +13,7 @@ const meta = {
     maxHeight: { control: { type: 'number', min: 200, max: 900 } },
     searchPlaceholder: { control: 'text' },
   },
-} satisfies Meta<typeof MdExplorer>;
+} satisfies Meta<typeof Explorer>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
@@ -123,7 +123,7 @@ export const Controlled: Story = {
 
     return (
       <div style={{ display: 'flex', gap: 16, flexDirection: 'column' }}>
-        <MdExplorer
+        <Explorer
           files={files}
           activePath={active}
           onActivePathChange={setActive}
@@ -218,7 +218,7 @@ export const WithAddFile: Story = {
     docs: {
       description: {
         story:
-          'The "+" button shows in the sidebar header when onAddFile is passed. In uncontrolled mode, returning undefined lets MdExplorer auto-generate an "Untitled N.md" file.',
+          'The "+" button shows in the sidebar header when onAddFile is passed. In uncontrolled mode, returning undefined lets Explorer auto-generate an "Untitled N.md" file.',
       },
     },
   },

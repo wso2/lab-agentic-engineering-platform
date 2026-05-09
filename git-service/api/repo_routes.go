@@ -7,19 +7,9 @@ import (
 )
 
 // registerRepoOnlyRoutes wires every Service-JWT-gated repo / git-ops
-// endpoint. Credentials-refresh moved to its own taskMux in app.go so the
-// two muxes don't share auth semantics.
-//
-// PR 1 of the repo-storage-ownership refactor:
-//   - Adds the typed artifact endpoints (`/artifacts/{spec,design,wireframes}/...`)
-//     served by the new ArtifactController + ArtifactService.
-//   - Drops the legacy `{projectId}`-only routes that PR 0 left as compat
-//     shims. The BFF has been on the `{orgId}/{projectId}` shape since PR 0
-//     so this is safe; orgScope-on-old-routes is no longer needed.
-//
-// orgScope may be nil in dev/test setups where the middleware is disabled
-// (no RepoRepository wired); the routes degrade to no-op middleware while
-// keeping their handler bindings.
+// endpoint. orgScope may be nil in dev/test setups where the middleware is
+// disabled (no RepoRepository wired); the routes degrade to no-op middleware
+// while keeping their handler bindings.
 func registerRepoOnlyRoutes(
 	mux *http.ServeMux,
 	rc controllers.RepoController,
@@ -71,26 +61,23 @@ func registerRepoOnlyRoutes(
 	mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/webhooks", wrap(wc.Register))
 	mux.Handle("DELETE /api/v1/repos/{orgId}/{projectId}/webhooks", wrap(wc.Deregister))
 
-	// ---- Artifacts: spec ----
+	// ---- Artifacts: requirements (multi-file directory, tagged v<N>) ----
 	if ac != nil {
-		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/spec", wrap(ac.GetSpec))
-		mux.Handle("PUT /api/v1/repos/{orgId}/{projectId}/artifacts/spec", wrap(ac.PutSpec))
-		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/spec/save", wrap(ac.SaveSpec))
-		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/spec/discard", wrap(ac.DiscardSpec))
-		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/spec/versions", wrap(ac.ListSpecVersions))
-		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/spec/versions/{version}", wrap(ac.GetSpecVersion))
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements", wrap(ac.ListRequirements))
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/files/{name}", wrap(ac.GetRequirementFile))
+		mux.Handle("PUT /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/files/{name}", wrap(ac.PutRequirementFile))
+		mux.Handle("DELETE /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/files/{name}", wrap(ac.DeleteRequirementFile))
+		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/save", wrap(ac.SaveRequirements))
+		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/discard", wrap(ac.DiscardRequirements))
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/versions", wrap(ac.ListRequirementsVersions))
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/versions/{tag}", wrap(ac.GetRequirementsVersion))
 
-		// ---- Artifacts: design ----
+		// ---- Artifacts: design (single file, tagged v<N>-<M>) ----
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design", wrap(ac.GetDesign))
 		mux.Handle("PUT /api/v1/repos/{orgId}/{projectId}/artifacts/design", wrap(ac.PutDesign))
 		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/design/save", wrap(ac.SaveDesign))
 		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/design/discard", wrap(ac.DiscardDesign))
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design/versions", wrap(ac.ListDesignVersions))
-		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design/versions/{version}", wrap(ac.GetDesignVersion))
-
-		// ---- Artifacts: wireframes (no version stream — committed by spec save) ----
-		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/wireframes", wrap(ac.ListWireframes))
-		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/wireframes/{name}", wrap(ac.GetWireframe))
-		mux.Handle("PUT /api/v1/repos/{orgId}/{projectId}/artifacts/wireframes/{name}", wrap(ac.PutWireframe))
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design/versions/{tag}", wrap(ac.GetDesignVersion))
 	}
 }

@@ -2,130 +2,197 @@ package services
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strconv"
-	"strings"
 )
 
-// Tag prefix constants. One source of truth for the versioning conventions
-// (mirrored on the BFF side for *referencing* tags by name; the format itself
-// is enforced here). PR 1 of the repo-storage-ownership refactor moved these
-// from the BFF when versioning logic became git-service's responsibility.
-const (
-	specTagPrefix   = "spec-v"
-	designTagPrefix = "design-v"
+// Tag scheme:
+//   - Requirements: `v<N>` (e.g. `v1`, `v2`)
+//   - Design:       `v<N>-<M>` where N is the source requirements version and
+//     M is the design revision under that N (e.g. `v1-1`, `v2-3`)
+//
+// Lineage is encoded in the tag name itself — there are no `source-*:`
+// annotation lines. The annotation body is a free-text save message.
+
+var (
+	requirementsTagRE = regexp.MustCompile(`^v(\d+)$`)
+	designTagRE       = regexp.MustCompile(`^v(\d+)-(\d+)$`)
 )
 
-// Lineage carries upstream-version metadata about an artifact tag. Stored as
-// `source-spec: spec-vN` / `source-design: design-vM` lines in the tag's
-// annotated message; structured here so the API can return it without the
-// BFF having to parse tag bodies.
-type Lineage struct {
-	SourceSpec   string `json:"sourceSpec,omitempty"`
-	SourceDesign string `json:"sourceDesign,omitempty"`
+// requirementsTagFor returns the canonical tag name for a requirements
+// version (e.g. requirementsTagFor(2) == "v2").
+func requirementsTagFor(version int) string {
+	return fmt.Sprintf("v%d", version)
 }
 
-// nextVersion inspects a list of tags with the given prefix (e.g. "spec-v")
-// and returns the next version number and full tag name.
-func nextVersion(tags []TagInfo, prefix string) (int, string) {
-	max := latestTagVersion(tags, prefix)
-	next := max + 1
-	return next, fmt.Sprintf("%s%d", prefix, next)
+// designTagFor returns the canonical tag name for a design (parent, revision)
+// pair (e.g. designTagFor(1, 2) == "v1-2").
+func designTagFor(parentVersion, revision int) string {
+	return fmt.Sprintf("v%d-%d", parentVersion, revision)
 }
 
-// latestTagVersion returns the highest version number for tags with the
-// given prefix, or 0 if none match.
-func latestTagVersion(tags []TagInfo, prefix string) int {
-	maxVersion := 0
+// parseRequirementsTag returns the version number for a `v<N>` tag, or
+// (0, false) if the name doesn't match.
+func parseRequirementsTag(name string) (int, bool) {
+	m := requirementsTagRE.FindStringSubmatch(name)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n < 1 {
+		return 0, false
+	}
+	return n, true
+}
+
+// parseDesignTag returns (parentVersion, revision) for a `v<N>-<M>` tag, or
+// (0, 0, false) if the name doesn't match.
+func parseDesignTag(name string) (int, int, bool) {
+	m := designTagRE.FindStringSubmatch(name)
+	if m == nil {
+		return 0, 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil || n < 1 {
+		return 0, 0, false
+	}
+	r, err := strconv.Atoi(m[2])
+	if err != nil || r < 1 {
+		return 0, 0, false
+	}
+	return n, r, true
+}
+
+// latestRequirementsVersion returns the highest N from any `v<N>` tag, or 0
+// if none match.
+func latestRequirementsVersion(tags []TagInfo) int {
+	max := 0
 	for _, t := range tags {
-		if !strings.HasPrefix(t.Name, prefix) {
-			continue
-		}
-		numStr := strings.TrimPrefix(t.Name, prefix)
-		if n, err := strconv.Atoi(numStr); err == nil && n > maxVersion {
-			maxVersion = n
+		if n, ok := parseRequirementsTag(t.Name); ok && n > max {
+			max = n
 		}
 	}
-	return maxVersion
+	return max
 }
 
-// latestTagName returns the highest-versioned tag's full name for the given
-// prefix, or "" when no tag matches.
-func latestTagName(tags []TagInfo, prefix string) string {
-	max := latestTagVersion(tags, prefix)
+// nextRequirementsTag returns the next `v<N+1>` tag name and its version.
+func nextRequirementsTag(tags []TagInfo) (int, string) {
+	next := latestRequirementsVersion(tags) + 1
+	return next, requirementsTagFor(next)
+}
+
+// latestDesignRevision returns the highest M for any `v<parentVersion>-<M>`
+// tag, or 0 if none match.
+func latestDesignRevision(tags []TagInfo, parentVersion int) int {
+	max := 0
+	for _, t := range tags {
+		n, r, ok := parseDesignTag(t.Name)
+		if !ok || n != parentVersion {
+			continue
+		}
+		if r > max {
+			max = r
+		}
+	}
+	return max
+}
+
+// nextDesignTag returns the next `v<parentVersion>-<M+1>` tag name and its
+// revision number for the supplied parent requirements version.
+func nextDesignTag(tags []TagInfo, parentVersion int) (int, string) {
+	next := latestDesignRevision(tags, parentVersion) + 1
+	return next, designTagFor(parentVersion, next)
+}
+
+// latestRequirementsTag returns the full tag name of the highest-versioned
+// `v<N>` tag, or "" when none exist.
+func latestRequirementsTag(tags []TagInfo) string {
+	max := latestRequirementsVersion(tags)
 	if max == 0 {
 		return ""
 	}
-	return fmt.Sprintf("%s%d", prefix, max)
+	return requirementsTagFor(max)
 }
 
-// parseLineage extracts the structured upstream metadata from an annotated
-// tag's body. The on-tag format is private to git-service — callers consume
-// the typed Lineage via the API.
-func parseLineage(message string) Lineage {
-	var l Lineage
-	for _, line := range strings.Split(message, "\n") {
-		line = strings.TrimSpace(line)
-		switch {
-		case strings.HasPrefix(line, "source-spec:"):
-			l.SourceSpec = strings.TrimSpace(strings.TrimPrefix(line, "source-spec:"))
-		case strings.HasPrefix(line, "source-design:"):
-			l.SourceDesign = strings.TrimSpace(strings.TrimPrefix(line, "source-design:"))
-		}
-	}
-	return l
-}
-
-// buildLineageMessage assembles a tag annotation body: the human-readable
-// description on the first line, then any non-empty lineage fields as
-// `source-X: <tag>` lines. Symmetric with parseLineage above.
-func buildLineageMessage(description string, l Lineage) string {
-	var sb strings.Builder
-	sb.WriteString(description)
-	if l.SourceSpec != "" {
-		sb.WriteString("\nsource-spec: ")
-		sb.WriteString(l.SourceSpec)
-	}
-	if l.SourceDesign != "" {
-		sb.WriteString("\nsource-design: ")
-		sb.WriteString(l.SourceDesign)
-	}
-	return sb.String()
-}
-
-// VersionInfo is the wire shape the API returns for each annotated tag in a
-// versions list.
-type VersionInfo struct {
-	Tag        string  `json:"tag"`
-	Version    int     `json:"version"`
-	CommitHash string  `json:"commitHash"`
-	Message    string  `json:"message"`
-	Lineage    Lineage `json:"lineage"`
-}
-
-// tagsToVersions converts a list of TagInfo into sorted VersionInfo
-// (descending by version) for a given prefix.
-func tagsToVersions(tags []TagInfo, prefix string) []VersionInfo {
-	versions := make([]VersionInfo, 0, len(tags))
+// latestDesignTag returns the highest-revision `v<N>-<M>` tag (across any
+// parent N) by lexical (N, M) order, or "" when none exist.
+func latestDesignTag(tags []TagInfo) string {
+	bestN, bestR := 0, 0
 	for _, t := range tags {
-		if !strings.HasPrefix(t.Name, prefix) {
+		n, r, ok := parseDesignTag(t.Name)
+		if !ok {
 			continue
 		}
-		numStr := strings.TrimPrefix(t.Name, prefix)
-		n, err := strconv.Atoi(numStr)
-		if err != nil {
+		if n > bestN || (n == bestN && r > bestR) {
+			bestN, bestR = n, r
+		}
+	}
+	if bestN == 0 {
+		return ""
+	}
+	return designTagFor(bestN, bestR)
+}
+
+// RequirementsVersionInfo is the wire shape returned for each `v<N>` tag.
+type RequirementsVersionInfo struct {
+	Tag        string `json:"tag"`
+	Version    int    `json:"version"`
+	CommitHash string `json:"commitHash"`
+	Message    string `json:"message"`
+}
+
+// DesignVersionInfo is the wire shape returned for each `v<N>-<M>` tag.
+type DesignVersionInfo struct {
+	Tag                 string `json:"tag"`
+	RequirementsVersion int    `json:"requirementsVersion"`
+	DesignRevision      int    `json:"designRevision"`
+	CommitHash          string `json:"commitHash"`
+	Message             string `json:"message"`
+}
+
+// tagsToRequirementsVersions filters + sorts a tag list into the
+// requirements-only version list (descending by N).
+func tagsToRequirementsVersions(tags []TagInfo) []RequirementsVersionInfo {
+	out := make([]RequirementsVersionInfo, 0, len(tags))
+	for _, t := range tags {
+		n, ok := parseRequirementsTag(t.Name)
+		if !ok {
 			continue
 		}
-		versions = append(versions, VersionInfo{
+		out = append(out, RequirementsVersionInfo{
 			Tag:        t.Name,
 			Version:    n,
 			CommitHash: t.CommitHash,
 			Message:    t.Message,
-			Lineage:    parseLineage(t.Message),
 		})
 	}
-	sort.Slice(versions, func(i, j int) bool {
-		return versions[i].Version > versions[j].Version
+	sort.Slice(out, func(i, j int) bool { return out[i].Version > out[j].Version })
+	return out
+}
+
+// tagsToDesignVersions filters + sorts a tag list into the design-only
+// version list (descending by (N, M)).
+func tagsToDesignVersions(tags []TagInfo) []DesignVersionInfo {
+	out := make([]DesignVersionInfo, 0, len(tags))
+	for _, t := range tags {
+		n, r, ok := parseDesignTag(t.Name)
+		if !ok {
+			continue
+		}
+		out = append(out, DesignVersionInfo{
+			Tag:                 t.Name,
+			RequirementsVersion: n,
+			DesignRevision:      r,
+			CommitHash:          t.CommitHash,
+			Message:             t.Message,
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].RequirementsVersion != out[j].RequirementsVersion {
+			return out[i].RequirementsVersion > out[j].RequirementsVersion
+		}
+		return out[i].DesignRevision > out[j].DesignRevision
 	})
-	return versions
+	return out
 }

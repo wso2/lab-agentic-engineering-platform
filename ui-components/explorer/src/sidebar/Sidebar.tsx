@@ -15,7 +15,6 @@ import {
   Typography,
 } from '@wso2/oxygen-ui';
 import {
-  ArrowLeft,
   ChevronRight,
   FileText,
   MoreVertical,
@@ -25,7 +24,7 @@ import {
   Trash2,
   X,
 } from '@wso2/oxygen-ui-icons-react';
-import type { TocEntry } from '../types.js';
+import type { AddFileMenuItem, TocEntry } from '../types.js';
 import { parseToc } from '../toc/parseToc.js';
 
 export interface SidebarProps {
@@ -37,10 +36,10 @@ export interface SidebarProps {
   dirtyPaths: Set<string>;
   onActivate: (path: string) => void;
   onTocClick: (path: string, headingIndex: number) => void;
-  onAddFile?: () => void;
+  onAddFile?: (typeId?: string) => void;
+  addFileMenu?: { items: AddFileMenuItem[] };
   onRename?: (oldPath: string, newPath: string) => void;
   onDelete?: (path: string) => void;
-  onCollapseSidebar?: () => void;
   validateRename?: (oldPath: string, newPath: string) => string | null;
 }
 
@@ -77,9 +76,9 @@ export function Sidebar({
   onActivate,
   onTocClick,
   onAddFile,
+  addFileMenu,
   onRename,
   onDelete,
-  onCollapseSidebar,
   validateRename,
 }: SidebarProps) {
   const [query, setQuery] = useState('');
@@ -89,6 +88,7 @@ export function Sidebar({
     null,
   );
   const [collapsedDocs, setCollapsedDocs] = useState<Set<string>>(() => new Set());
+  const [addMenuAnchor, setAddMenuAnchor] = useState<HTMLElement | null>(null);
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const docInfoByPath = useMemo(() => {
@@ -153,13 +153,6 @@ export function Sidebar({
         alignItems="center"
         sx={{ px: 1, pt: 1.25, pb: 1, flexShrink: 0 }}
       >
-        {onCollapseSidebar && (
-          <Tooltip title="Hide sidebar">
-            <IconButton size="small" onClick={onCollapseSidebar} aria-label="Hide sidebar">
-              <ArrowLeft size={18} />
-            </IconButton>
-          </Tooltip>
-        )}
         <InputBase
           fullWidth
           value={query}
@@ -203,11 +196,55 @@ export function Sidebar({
           }}
         />
         {onAddFile && (
-          <Tooltip title="Add file">
-            <IconButton size="small" onClick={onAddFile} aria-label="Add file">
-              <Plus size={18} />
-            </IconButton>
-          </Tooltip>
+          <>
+            <Tooltip title="Add file">
+              <IconButton
+                size="small"
+                aria-label="Add file"
+                onClick={(e) => {
+                  if (addFileMenu && addFileMenu.items.length > 0) {
+                    setAddMenuAnchor(e.currentTarget);
+                  } else {
+                    onAddFile();
+                  }
+                }}
+              >
+                <Plus size={18} />
+              </IconButton>
+            </Tooltip>
+            {addFileMenu && (
+              <Menu
+                anchorEl={addMenuAnchor}
+                open={Boolean(addMenuAnchor)}
+                onClose={() => setAddMenuAnchor(null)}
+                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+              >
+                {addFileMenu.items.map((item) => (
+                  <MenuItem
+                    key={item.id}
+                    disabled={item.disabled}
+                    onClick={() => {
+                      setAddMenuAnchor(null);
+                      onAddFile(item.id);
+                    }}
+                    sx={{ minWidth: 220 }}
+                  >
+                    <Stack direction="column" sx={{ py: 0.25 }}>
+                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
+                        {item.label}
+                      </Typography>
+                      {item.description && (
+                        <Typography variant="caption" color="text.secondary">
+                          {item.description}
+                        </Typography>
+                      )}
+                    </Stack>
+                  </MenuItem>
+                ))}
+              </Menu>
+            )}
+          </>
         )}
       </Stack>
 

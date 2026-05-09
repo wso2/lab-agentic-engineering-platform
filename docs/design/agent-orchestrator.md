@@ -86,8 +86,7 @@ agents/
 │   │   └── routes/            → Per-agent HTTP routes
 │   │       ├── business-analyst.ts  → SSE streaming spec generation
 │   │       ├── architect.ts         → SSE streaming design
-│   │       ├── task-generator.ts    → JSON task generation
-│   │       └── wireframe.ts         → JSON wireframe generation
+│   │       └── task-generator.ts    → JSON task generation
 │   ├── agents/                → One directory per agent (schema, prompt, index)
 │   ├── shared/                → createAgent factory, config, types
 │   ├── tools/                 → Shared tools (readFile, listDirectory)

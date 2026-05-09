@@ -4,6 +4,14 @@ import type { MdEditorProps } from '@asdlc/md-editor';
 /** Flat map: file id -> markdown content. The key is the display name (no folder semantics). */
 export type FileMap = Record<string, string>;
 
+/** One choice in the "+" button's add-file menu. */
+export interface AddFileMenuItem {
+  id: string;
+  label: string;
+  description?: string;
+  disabled?: boolean;
+}
+
 /** A heading entry parsed from a markdown document. */
 export interface TocEntry {
   /** Heading depth, 1..6. */
@@ -14,7 +22,7 @@ export interface TocEntry {
   index: number;
 }
 
-export type MdExplorerEditorProps = Partial<
+export type ExplorerEditorProps = Partial<
   Pick<
     MdEditorProps,
     | 'readOnly'
@@ -28,7 +36,7 @@ export type MdExplorerEditorProps = Partial<
   >
 >;
 
-export interface MdExplorerProps {
+export interface ExplorerProps {
   // --- file data (controlled / uncontrolled) ---
   /** Controlled saved-content map keyed by file name/id. */
   files?: FileMap;
@@ -44,11 +52,19 @@ export interface MdExplorerProps {
 
   // --- file operations ---
   /**
-   * When set, a "+" button is shown in the sidebar header. The callback
-   * should return a brand new, unique file id/name and add the file to the
-   * file map (controlled) or let the component add it internally (uncontrolled).
+   * When set, a "+" button is shown in the sidebar header. If `addFileMenu`
+   * is also set, the button anchors a menu and the callback receives the
+   * selected item's `id`; otherwise the callback is invoked directly.
+   * Should return a brand new, unique file id/name (controlled) or let the
+   * component add it internally (uncontrolled).
    */
-  onAddFile?: () => string | undefined | void;
+  onAddFile?: (typeId?: string) => string | undefined | void;
+  /**
+   * When provided, the "+" button opens a menu of choices instead of
+   * invoking `onAddFile()` directly. The selected item's id is passed to
+   * `onAddFile(typeId)` so callers can compute the right filename per type.
+   */
+  addFileMenu?: { items: AddFileMenuItem[] };
   onRename?: (oldPath: string, newPath: string) => void;
   onDelete?: (path: string) => void;
 
@@ -67,13 +83,13 @@ export interface MdExplorerProps {
   emptyState?: React.ReactNode;
 
   /** Props forwarded to the underlying MdEditor. */
-  editorProps?: MdExplorerEditorProps;
+  editorProps?: ExplorerEditorProps;
 
   /** Imperative ref. */
-  editorRef?: React.Ref<MdExplorerRef>;
+  editorRef?: React.Ref<ExplorerRef>;
 }
 
-export interface MdExplorerRef {
+export interface ExplorerRef {
   /** Current in-memory buffer for a path (may be dirty). */
   getBuffer(path: string): string | undefined;
   /** All buffers, keyed by path. */

@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/agents"
@@ -46,7 +47,7 @@ func toK8sName(name string) string {
 
 type DesignService interface {
 	GetDesign(ctx context.Context, orgID, projectID string) (*models.Design, error)
-	GetDesignAtVersion(ctx context.Context, orgID, projectID string, version int) (*models.Design, error)
+	GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*models.Design, error)
 	StreamGenerateDesign(ctx context.Context, orgID, projectID string, out io.Writer, flush func()) error
 	SaveAndProceed(ctx context.Context, orgID, projectID string) (*models.Design, error)
 	DiscardChanges(ctx context.Context, orgID, projectID string) (*models.Design, error)
@@ -62,7 +63,7 @@ type designService struct {
 
 // DesignServiceWithTaskHook lets the construction wire-up surface the
 // reconciliation hook setter without polluting the public DesignService
-// interface (it's a one-off internal need).
+// interface.
 type DesignServiceWithTaskHook interface {
 	DesignService
 	SetTaskService(taskSvc TaskService)
@@ -80,9 +81,6 @@ func NewDesignService(
 	}
 }
 
-// SetTaskService wires the task service for the SaveAndProceed reconciliation
-// hook. Done as a setter (rather than a constructor arg) to avoid the
-// design ↔ task circular dependency at construction time in main.go.
 func (s *designService) SetTaskService(taskSvc TaskService) {
 	s.taskSvc = taskSvc
 }
@@ -99,7 +97,9 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 		return nil, nil
 	}
 
-	version := 0
+	tag := ""
+	revision := 0
+	parentReq := ""
 	status := "draft"
 	var versions []models.ArtifactVersion
 
@@ -108,36 +108,34 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 		if err != nil {
 			slog.WarnContext(ctx, "failed to list design versions", "error", err)
 		} else {
-			versions = mapArtifactVersions(v)
+			versions = mapDesignVersions(v)
 			if len(v) > 0 {
-				version = v[0].Version
+				tag = v[0].Tag
+				revision = v[0].DesignRevision
+				parentReq = fmt.Sprintf("v%d", v[0].RequirementsVersion)
 				status = "approved"
 			}
 		}
 	}
 
-	// hasUnsavedChanges: compare working-tree raw bytes to latest tag's
-	// raw bytes. The BFF used to do this via parseLineage + ReadRawFile;
-	// now both halves come over HTTP with structured shapes.
+	// has-unsaved-changes: working-tree raw bytes vs latest-tag bytes.
 	unsaved := false
-	if version > 0 && s.gitClient != nil {
+	if tag != "" && s.gitClient != nil {
 		raw, err := s.store.ReadRawDesign(ctx, orgID, projectID)
 		if err == nil {
-			tagged, err := s.gitClient.GetDesignVersion(ctx, orgID, projectID, version)
+			tagged, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
 			if err == nil && strings.TrimSpace(tagged.Content) != strings.TrimSpace(raw) {
 				unsaved = true
 			}
 		}
 	}
 
-	// Lineage resolution. The file's SourceSpec reflects the current
-	// working copy (set at stream/write time); the latest tag's SourceSpec
-	// reflects the last approved snapshot. When the working copy has
-	// diverged from the last tag we report the file's lineage; otherwise
-	// fall back to the latest version's structured lineage.
+	// SourceSpec resolution. The file's SourceSpec reflects the current working
+	// copy (set at stream time); the latest tag's parent requirements version
+	// reflects the last approved snapshot.
 	sourceSpec := designFile.SourceSpec
-	if sourceSpec == "" && len(versions) > 0 {
-		sourceSpec = versions[0].SourceSpec
+	if sourceSpec == "" {
+		sourceSpec = parentReq
 	}
 
 	return &models.Design{
@@ -147,29 +145,32 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 		Requirements:      designFile.Requirements,
 		Components:        designFile.Components,
 		Status:            status,
-		Version:           version,
+		Version:           revision,
 		Versions:          versions,
 		HasUnsavedChanges: unsaved,
 		SourceSpec:        sourceSpec,
 	}, nil
 }
 
-func (s *designService) GetDesignAtVersion(ctx context.Context, orgID, projectID string, version int) (*models.Design, error) {
+func (s *designService) GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*models.Design, error) {
 	if s.gitClient == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-
-	res, err := s.gitClient.GetDesignVersion(ctx, orgID, projectID, version)
+	res, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
 	if err != nil {
 		if errors.Is(err, gitservice.ErrArtifactNotFound) {
 			return nil, ErrDesignNotFound
 		}
-		return nil, fmt.Errorf("get design at version %d: %w", version, err)
+		return nil, fmt.Errorf("get design at %s: %w", tag, err)
 	}
-
 	designFile, err := ParseDesignJSON(res.Content)
 	if err != nil {
-		return nil, fmt.Errorf("parse design at version %d: %w", version, err)
+		return nil, fmt.Errorf("parse design at %s: %w", tag, err)
+	}
+
+	parent := ""
+	if parentN, _, ok := decodeDesignTag(tag); ok {
+		parent = fmt.Sprintf("v%d", parentN)
 	}
 
 	return &models.Design{
@@ -179,8 +180,7 @@ func (s *designService) GetDesignAtVersion(ctx context.Context, orgID, projectID
 		Requirements: designFile.Requirements,
 		Components:   designFile.Components,
 		Status:       "approved",
-		Version:      version,
-		SourceSpec:   res.Lineage.SourceSpec,
+		SourceSpec:   parent,
 	}, nil
 }
 
@@ -195,31 +195,33 @@ type streamArchitectFinishData struct {
 }
 
 func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, projectID string, out io.Writer, flush func()) error {
-	specContent, err := s.store.ReadSpec(ctx, orgID, projectID)
+	// Pull every requirement document and concatenate as one input bundle —
+	// the architect agent treats the whole corpus as the source of truth.
+	files, err := s.store.ListRequirements(ctx, orgID, projectID)
 	if err != nil {
-		if IsNotFound(err) {
-			return ErrSpecNotFound
-		}
-		return fmt.Errorf("read spec: %w", err)
+		return fmt.Errorf("list requirements: %w", err)
 	}
+	if len(files) == 0 {
+		return ErrSpecNotFound
+	}
+	specContent := concatRequirementBundle(files)
 	if specContent == "" {
 		return ErrSpecNotFound
 	}
 
-	// Check spec is tagged (approved) — at least one spec-v* version must exist.
-	var sourceSpecTag string
+	// Require an approved (tagged) requirements version before generating design.
+	var sourceTag string
 	if s.gitClient != nil {
-		specVersions, err := s.gitClient.ListSpecVersions(ctx, orgID, projectID)
+		versions, err := s.gitClient.ListRequirementsVersions(ctx, orgID, projectID)
 		if err != nil {
-			slog.WarnContext(ctx, "failed to check spec versions", "error", err)
-		} else if len(specVersions) == 0 {
+			slog.WarnContext(ctx, "failed to check requirements versions", "error", err)
+		} else if len(versions) == 0 {
 			return ErrSpecNotApproved
 		} else {
-			sourceSpecTag = specVersions[0].Tag
+			sourceTag = versions[0].Tag
 		}
 	}
 
-	// Read existing design to pass as context for incremental regeneration.
 	var previousDesign *agents.ArchitectDesign
 	existingDesign, err := s.store.ReadDesign(ctx, orgID, projectID)
 	if err != nil && !IsNotFound(err) {
@@ -253,7 +255,6 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 
 	for scanner.Scan() {
 		line := scanner.Bytes()
-
 		if _, err := out.Write(line); err != nil {
 			return fmt.Errorf("write downstream: %w", err)
 		}
@@ -269,7 +270,6 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 		if bytes.Equal(payload, []byte("[DONE]")) {
 			continue
 		}
-
 		var head struct {
 			Type      string `json:"type"`
 			ErrorText string `json:"errorText"`
@@ -295,7 +295,6 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 	if err := scanner.Err(); err != nil {
 		return fmt.Errorf("read upstream: %w", err)
 	}
-
 	if streamErr != "" {
 		return fmt.Errorf("agents service error: %s", streamErr)
 	}
@@ -307,7 +306,7 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 		Overview:     finalDesign.Design.Overview,
 		Requirements: finalDesign.Design.Requirements,
 		Components:   finalDesign.Design.Components,
-		SourceSpec:   sourceSpecTag,
+		SourceSpec:   sourceTag,
 	}
 
 	if _, err := s.store.WriteDesign(ctx, orgID, projectID, designFile); err != nil {
@@ -319,10 +318,10 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 	return nil
 }
 
-// SaveAndProceed collapses to a single SaveDesign call. Lineage from the
-// in-file SourceSpec (set at stream-time) is passed in the request — git-service
-// uses it as authoritative for the tag annotation. The in-file
-// SourceSpec is otherwise ignored by the save handler.
+// SaveAndProceed persists the working-tree design.json as the next
+// `v<N>-<M>` tag where N is the latest requirements version. Surfaces
+// ErrSpecNotApproved (rendered as 409 by the controller) when no
+// requirements tag exists yet.
 func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID string) (*models.Design, error) {
 	if s.gitClient == nil {
 		return nil, fmt.Errorf("git client not configured")
@@ -339,28 +338,16 @@ func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID str
 		return nil, ErrDesignNotFound
 	}
 
-	raw, err := s.store.ReadRawDesign(ctx, orgID, projectID)
-	if err != nil {
-		return nil, fmt.Errorf("read raw design: %w", err)
-	}
-
-	// Lineage: prefer in-file SourceSpec (set during streaming generation);
-	// fall back to the current latest spec tag if the file's lineage is
-	// empty.
-	sourceSpecTag := designFile.SourceSpec
-	if sourceSpecTag == "" {
-		specVersions, _ := s.gitClient.ListSpecVersions(ctx, orgID, projectID)
-		if len(specVersions) > 0 {
-			sourceSpecTag = specVersions[0].Tag
-		}
-	}
-
 	res, err := s.gitClient.SaveDesign(ctx, orgID, projectID, gitservice.SaveArtifactRequest{
-		Content: raw,
-		Message: "Add ASDLC architecture design",
-		Lineage: gitservice.ArtifactLineage{SourceSpec: sourceSpecTag},
+		Message: "Update design",
 	})
 	if err != nil {
+		// Translate the git-service "no requirements baseline" 409 into the
+		// BFF's existing not-approved sentinel so callers + UIs render the
+		// same message they already do for spec-not-approved.
+		if strings.Contains(err.Error(), "no requirements baseline") {
+			return nil, ErrSpecNotApproved
+		}
 		return nil, fmt.Errorf("save design: %w", err)
 	}
 
@@ -372,9 +359,6 @@ func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID str
 	slog.InfoContext(ctx, "design save completed",
 		"project", projectID, "tag", res.Tag, "status", res.Status)
 
-	// Reconciliation hook (docs/design/tech-lead-agent.md §10.4): close any
-	// pending tasks whose components were just removed from the design.
-	// Best-effort — a failure here doesn't fail the save.
 	if s.taskSvc != nil {
 		if rerr := s.taskSvc.ReconcilePendingForDesignChange(ctx, orgID, projectID); rerr != nil {
 			slog.WarnContext(ctx, "task reconciliation after design save failed", "error", rerr)
@@ -388,9 +372,9 @@ func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID str
 		Requirements: designFile.Requirements,
 		Components:   designFile.Components,
 		Status:       "approved",
-		Version:      res.Version,
-		Versions:     mapArtifactVersions(versions),
-		SourceSpec:   res.Lineage.SourceSpec,
+		Version:      res.DesignRevision,
+		Versions:     mapDesignVersions(versions),
+		SourceSpec:   fmt.Sprintf("v%d", res.RequirementsVersion),
 	}, nil
 }
 
@@ -398,24 +382,64 @@ func (s *designService) DiscardChanges(ctx context.Context, orgID, projectID str
 	if s.gitClient == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-
 	if _, err := s.gitClient.DiscardDesign(ctx, orgID, projectID); err != nil {
 		if errors.Is(err, gitservice.ErrArtifactNotFound) {
 			return nil, fmt.Errorf("no saved version to revert to")
 		}
 		return nil, fmt.Errorf("discard design: %w", err)
 	}
-
 	return s.GetDesign(ctx, orgID, projectID)
 }
 
 func (s *designService) ListDesignVersions(ctx context.Context, orgID, projectID string) ([]models.ArtifactVersion, error) {
 	if s.gitClient == nil {
-		return []models.ArtifactVersion{}, nil
+		return nil, nil
 	}
 	v, err := s.gitClient.ListDesignVersions(ctx, orgID, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list design versions: %w", err)
 	}
-	return mapArtifactVersions(v), nil
+	return mapDesignVersions(v), nil
+}
+
+// concatRequirementBundle joins all requirement files into a single corpus
+// for agent input. Files are emitted in alphabetical order with a heading
+// prefix so the LLM sees consistent boundaries between documents.
+func concatRequirementBundle(files map[string]string) string {
+	if len(files) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(files))
+	for k := range files {
+		names = append(names, k)
+	}
+	sort.Strings(names)
+	var sb strings.Builder
+	for i, name := range names {
+		if i > 0 {
+			sb.WriteString("\n\n")
+		}
+		sb.WriteString(fmt.Sprintf("# %s\n\n", name))
+		sb.WriteString(files[name])
+	}
+	return sb.String()
+}
+
+// decodeDesignTag parses a `v<N>-<M>` design tag and returns (parent, revision, ok).
+// Lives in this file so callers don't have to import the git-service helpers.
+var designTagPattern = regexp.MustCompile(`^v(\d+)-(\d+)$`)
+
+func decodeDesignTag(tag string) (int, int, bool) {
+	m := designTagPattern.FindStringSubmatch(tag)
+	if m == nil {
+		return 0, 0, false
+	}
+	var n, r int
+	if _, err := fmt.Sscanf(m[1], "%d", &n); err != nil || n < 1 {
+		return 0, 0, false
+	}
+	if _, err := fmt.Sscanf(m[2], "%d", &r); err != nil || r < 1 {
+		return 0, 0, false
+	}
+	return n, r, true
 }

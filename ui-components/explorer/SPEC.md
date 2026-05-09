@@ -1,4 +1,4 @@
-# MdExplorer Component Specification
+# Explorer Component Specification
 
 ## Overview
 
@@ -9,7 +9,7 @@ component parses the markdown's headings and renders a **live Table of
 Contents (ToC)** tree nested under that file. Clicking a ToC entry scrolls
 the editor to that heading.
 
-`MdExplorer` composes `MdEditor` — it does not reimplement the editor
+`Explorer` composes `MdEditor` — it does not reimplement the editor
 surface.
 
 ### Design Principles
@@ -31,13 +31,13 @@ surface.
 
 ## Component API
 
-### MdExplorer Props
+### Explorer Props
 
 ```typescript
 /** Flat map: filename -> markdown content. */
 type FileMap = Record<string, string>;
 
-interface MdExplorerProps {
+interface ExplorerProps {
   // --- file data (controlled / uncontrolled) ---
   files?: FileMap;
   defaultFiles?: FileMap;
@@ -69,14 +69,14 @@ interface MdExplorerProps {
   editorProps?: Partial<Pick<MdEditorProps,
     'readOnly' | 'placeholder' | 'showToolbar' | 'toolbarGroups'>>;
 
-  editorRef?: React.Ref<MdExplorerRef>;
+  editorRef?: React.Ref<ExplorerRef>;
 }
 ```
 
 ### Imperative Ref
 
 ```typescript
-interface MdExplorerRef {
+interface ExplorerRef {
   getBuffer(path: string): string | undefined;
   getAllBuffers(): FileMap;
   isDirty(path: string): boolean;
@@ -127,7 +127,7 @@ function parseToc(markdown: string): TocEntry[];
 - **Active file**: rounded-pill background (blue tint), heading-count badge, kebab menu button
 - **Inactive files**: plain text with document icon; hover shows a faint background
 - **ToC** under every file, always visible — indented by heading level (`paddingLeft = 16 + (level-1) * 14` px)
-- **Left guide rail** (thin vertical line) runs through each file's ToC section (CSS `::before` on `.md-explorer-toc`)
+- **Left guide rail** (thin vertical line) runs through each file's ToC section (CSS `::before` on `.explorer-toc`)
 
 ### Count Badge
 
@@ -181,7 +181,7 @@ isn't active, the editor switches to it (remounts via `key={activePath}`),
 then after two `requestAnimationFrame` ticks scrolls to the Nth heading via
 `editor.view.nodeDOM(pos).scrollIntoView()`.
 
-For programmatic use, `MdExplorerRef.scrollToHeading(index)` does the same
+For programmatic use, `ExplorerRef.scrollToHeading(index)` does the same
 for the currently-active file.
 
 ---
@@ -208,8 +208,8 @@ protection on external saved-content updates.
 src/
   index.ts                       # public exports
   types.ts                       # all interfaces
-  MdExplorer.tsx                 # composes sidebar + editor + CSS injection
-  MdExplorer.stories.tsx
+  Explorer.tsx                 # composes sidebar + editor + CSS injection
+  Explorer.stories.tsx
   hooks/
     useFileBuffers.ts            # controlled/uncontrolled buffer map + dirty tracking
   sidebar/

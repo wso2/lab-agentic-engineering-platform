@@ -1,6 +1,6 @@
 import { useEffect, useImperativeHandle, useRef } from 'react';
 import { MdEditor, type MdEditorRef } from '@asdlc/md-editor';
-import type { MdExplorerEditorProps } from '../types.js';
+import type { ExplorerEditorProps } from '../types.js';
 
 interface ActiveFileEditorProps {
   /** Current markdown content. Mount-time value seeds the uncontrolled editor;
@@ -8,7 +8,7 @@ interface ActiveFileEditorProps {
    * SSE streaming updates) are pushed in via setMarkdown. */
   initialContent: string;
   onChange: (md: string) => void;
-  editorProps?: MdExplorerEditorProps;
+  editorProps?: ExplorerEditorProps;
   editorRef?: React.Ref<MdEditorRef>;
 }
 

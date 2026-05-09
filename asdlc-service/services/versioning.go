@@ -1,38 +1,55 @@
 package services
 
 import (
+	"fmt"
+
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
-// PR 2 of the repo-storage-ownership refactor: this file used to host the
-// BFF's tag-message parsing and version-bumping logic. Both moved into
-// git-service (which now returns structured Lineage in API responses), so
-// what remains here is a thin adapter that maps the wire shape to the BFF's
-// existing models.ArtifactVersion struct used by spec/design/UI code.
+// Tag scheme:
+//   - Requirements: `v<N>` (versioned independently)
+//   - Design:       `v<N>-<M>` where N is the source requirements version and
+//     M is the design revision under that N. The "lineage" of a design
+//     version is encoded in its tag name — no annotation parsing required.
 //
-// Specifically deleted in this PR (do not bring back):
-//   - parseLineage / buildTagMessage (tag-body format is private to git-service)
-//   - hasChangedSinceLastTag (the save endpoint computes this server-side)
-//   - nextVersion / latestTagVersion / latestTagName (server-side)
-//   - tagsToVersions (replaced by mapArtifactVersions below — same idea, different input type)
+// The BFF's models.ArtifactVersion is a flat shape used by both UIs. For
+// design versions we surface the parent requirements tag in `SourceSpec` so
+// the lineage label on the architecture page can render "Based on
+// requirements v<N>" without duplicating the decode logic frontend-side.
 
-// mapArtifactVersions converts the gitservice client wire shape to the BFF's
-// existing models.ArtifactVersion. Both shapes are descending-by-version
-// already; we just rename fields. Lineage flows through as flat
-// SourceSpec/SourceDesign strings that the UI displays as chips.
-func mapArtifactVersions(versions []gitservice.ArtifactVersionInfo) []models.ArtifactVersion {
+// mapRequirementsVersions converts the git-service requirements version
+// list to the BFF's flat ArtifactVersion shape.
+func mapRequirementsVersions(versions []gitservice.RequirementsVersionInfo) []models.ArtifactVersion {
 	if len(versions) == 0 {
 		return nil
 	}
 	out := make([]models.ArtifactVersion, 0, len(versions))
 	for _, v := range versions {
 		out = append(out, models.ArtifactVersion{
-			Version:      v.Version,
-			TagName:      v.Tag,
-			CommitHash:   v.CommitHash,
-			SourceSpec:   v.Lineage.SourceSpec,
-			SourceDesign: v.Lineage.SourceDesign,
+			Version:    v.Version,
+			TagName:    v.Tag,
+			CommitHash: v.CommitHash,
+		})
+	}
+	return out
+}
+
+// mapDesignVersions converts the git-service design version list. The
+// per-row Version field carries the design revision number (M); the
+// SourceSpec field exposes the parent requirements tag (`v<N>`) so the UI
+// can render lineage without re-parsing tag names.
+func mapDesignVersions(versions []gitservice.DesignVersionInfo) []models.ArtifactVersion {
+	if len(versions) == 0 {
+		return nil
+	}
+	out := make([]models.ArtifactVersion, 0, len(versions))
+	for _, v := range versions {
+		out = append(out, models.ArtifactVersion{
+			Version:    v.DesignRevision,
+			TagName:    v.Tag,
+			CommitHash: v.CommitHash,
+			SourceSpec: fmt.Sprintf("v%d", v.RequirementsVersion),
 		})
 	}
 	return out

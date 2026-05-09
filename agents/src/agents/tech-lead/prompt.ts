@@ -136,7 +136,11 @@ implementation. Over-specifying internals wastes tokens and constrains better
 solutions.
 
 The agent has access to:
-  - The full project specification at \`.asdlc/spec.md\`.
+  - The full set of requirements documents under \`.asdlc/requirements/\` —
+    at minimum \`requirements.md\` (the high-level sketch); often also
+    \`functional-requirements.md\`, \`non-functional-requirements.md\`, and
+    \`user-stories.md\`. The agent should consult whichever of these are
+    relevant to its task.
   - The architecture at \`.asdlc/design.json\` — every component's type, language,
     appPath, dependsOn, and (for services) the full OpenAPI contract under
     \`components[name=<componentName>].openAPISpec\`.
@@ -221,8 +225,9 @@ Section rules:
     \`.asdlc/design.json → components[name="<componentName>"]\` and its
     \`openAPISpec\` sub-field — do NOT repeat those generic pointers here.
     Use References for things the agent might otherwise miss:
-      * Specific spec sections in \`.asdlc/spec.md\` that constrain this task
-        (only when the task hinges on product context).
+      * Specific sections in \`.asdlc/requirements/requirements.md\` (or any
+        of the sibling requirement docs) that constrain this task —
+        only when the task hinges on product context.
       * Names of sibling components this task integrates with, when the
         integration shape isn't obvious from dependsOn alone (the agent will
         look them up in design.json).
@@ -231,8 +236,6 @@ Section rules:
         this component", "the todo-list rendering logic"). You do NOT have a
         view of the working tree — describe areas/responsibilities, do not
         invent specific file paths.
-      * If the component design entry has \`wireframePath\` (frontend tasks),
-        point at it: "Wireframes: \`<wireframePath>\` — read before implementing UI."
     If there is nothing task-specific to point at, write "None.".
     Never inline OpenAPI YAML or design.json blobs. Never enumerate endpoints
     or schemas in prose — point at \`openAPISpec\` and stop.

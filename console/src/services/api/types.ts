@@ -24,11 +24,11 @@ export interface Project {
   updatedAt: string;
 }
 
-export interface Spec {
+export interface RequirementsBundle {
   projectId: string;
-  content: string;
+  files: Record<string, string>;
   status: SpecStatus;
-  version: number;
+  version?: number;
   versions?: ArtifactVersion[];
   hasUnsavedChanges?: boolean;
 }
@@ -55,7 +55,6 @@ export interface DesignComponent {
   // BFF always has a non-empty string here.
   openAPISpec?: string;
   componentAgentInstructions: string;
-  wireframePath?: string;
 }
 
 export interface Design {
