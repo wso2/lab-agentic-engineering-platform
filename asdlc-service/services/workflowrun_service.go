@@ -59,7 +59,6 @@ type CodingAgentTrigger struct {
 	Prompt        string
 	Bearer        string
 	GitServiceURL string
-	CorrelationID string
 }
 
 // TriggeredRun is the (component, runName) pair returned per build created.
@@ -276,7 +275,6 @@ func (s *workflowRunService) TriggerCodingAgent(ctx context.Context, p CodingAge
 		TaskID:        p.Task.ID,
 		BranchName:    p.Task.BranchName,
 		Prompt:        p.Prompt,
-		CorrelationID: p.CorrelationID,
 		RepoURL:       p.RepoURL,
 		IdentityName:  p.IdentityName,
 		IdentityEmail: p.IdentityEmail,

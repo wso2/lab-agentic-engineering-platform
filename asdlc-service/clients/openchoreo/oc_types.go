@@ -118,7 +118,6 @@ type ocCodingAgentTask struct {
 	ComponentName string `json:"componentName"`
 	BranchName    string `json:"branchName"`
 	Prompt        string `json:"prompt"`
-	CorrelationID string `json:"correlationId,omitempty"`
 }
 
 type ocCodingAgentBFF struct {
@@ -162,6 +161,17 @@ type ocComponentList struct {
 }
 
 // -- WorkflowRun (builds) ----------------------------------------------------
+
+// WorkflowRun condition Reasons. Mirrors OC's
+// internal/controller/workflowrun/controller_conditions.go reason constants.
+// `normalizeWorkflowRun` lifts the WorkflowCompleted condition's Reason
+// into models.WorkflowRun.Status; classifiers compare against these
+// constants instead of substring-matching the reason string.
+const (
+	ReasonWorkflowSucceeded = "WorkflowSucceeded"
+	ReasonWorkflowFailed    = "WorkflowFailed"
+	ReasonWorkflowRunning   = "WorkflowRunning"
+)
 
 // ocTask is the OC CRD-canonical projection of WorkflowRun.Status.Tasks[i].
 // Per openchoreo/api/v1alpha1/workflowrun_types.go:80-109, OC surfaces only

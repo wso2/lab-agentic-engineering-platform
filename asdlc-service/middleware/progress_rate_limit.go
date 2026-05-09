@@ -19,13 +19,12 @@ import (
 // pattern; if the orgHandle is empty the limiter falls through (the
 // route was misconfigured — let the handler 404).
 func ProgressRateLimit(rps rate.Limit, burst int) func(http.Handler) http.Handler {
-	if rps <= 0 {
-		rps = 100
-	}
-	if burst <= 0 {
-		burst = 200
-	}
 	store := newLimiterStore(rps, burst)
+	retryAfter := int(time.Second / time.Duration(rps))
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	retryAfterHeader := fmt.Sprintf("%d", retryAfter)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			org := r.PathValue("orgHandle")
@@ -35,11 +34,7 @@ func ProgressRateLimit(rps rate.Limit, burst int) func(http.Handler) http.Handle
 			}
 			lim := store.get(org)
 			if !lim.Allow() {
-				retryAfter := int(time.Second / time.Duration(rps))
-				if retryAfter < 1 {
-					retryAfter = 1
-				}
-				w.Header().Set("Retry-After", fmt.Sprintf("%d", retryAfter))
+				w.Header().Set("Retry-After", retryAfterHeader)
 				http.Error(w, `{"error":"rate limit exceeded"}`, http.StatusTooManyRequests)
 				return
 			}

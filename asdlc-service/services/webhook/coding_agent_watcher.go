@@ -3,7 +3,6 @@ package webhook
 import (
 	"context"
 	"log/slog"
-	"strings"
 	"time"
 
 	"gorm.io/gorm"
@@ -105,12 +104,7 @@ func (w *CodingAgentWatcher) sweep(ctx context.Context) {
 		event, errMsg := classifyCodingAgentRun(run)
 		if event == "" {
 			// Still in-flight, or succeeded (success rides the GitHub
-			// pr.ready_for_review webhook). If the controller reported
-			// completion successfully, flip the state label so the §6.3
-			// list-call filter excludes it; otherwise leave it pending.
-			if run.Completed && !isCodingAgentFailure(run) {
-				w.flipStateLabel(ctx, t.OrgID, t.LastCodingAgentRunName, "succeeded")
-			}
+			// pr.ready_for_review webhook).
 			continue
 		}
 		if err := w.projector.ApplyBuildResult(ctx, t.ID, event, errMsg); err != nil {
@@ -120,19 +114,6 @@ func (w *CodingAgentWatcher) sweep(ctx context.Context) {
 		}
 		slog.WarnContext(ctx, "coding-agent watcher: applied terminal failure",
 			"task", t.ID, "run", t.LastCodingAgentRunName, "status", run.Status)
-		w.flipStateLabel(ctx, t.OrgID, t.LastCodingAgentRunName, "failed")
-	}
-}
-
-// flipStateLabel patches `app-factory.openchoreo.dev/state` on the run.
-// Best-effort — failure to patch does not gate the projector update.
-func (w *CodingAgentWatcher) flipStateLabel(ctx context.Context, orgID, runName, value string) {
-	if runName == "" {
-		return
-	}
-	if err := w.ocClient.PatchWorkflowRunLabel(ctx, orgID, runName, "app-factory.openchoreo.dev/state", value); err != nil {
-		slog.WarnContext(ctx, "coding-agent watcher: state label patch failed",
-			"run", runName, "value", value, "error", err)
 	}
 }
 
@@ -145,16 +126,8 @@ func classifyCodingAgentRun(run *models.WorkflowRun) (event services.TaskEvent, 
 	if run == nil || !run.Completed {
 		return "", ""
 	}
-	if isCodingAgentFailure(run) {
+	if run.Status != openchoreo.ReasonWorkflowSucceeded {
 		return services.TaskEventCodingAgentFailed, "coding-agent failed: " + run.Status
 	}
 	return "", ""
-}
-
-func isCodingAgentFailure(run *models.WorkflowRun) bool {
-	if run == nil {
-		return false
-	}
-	s := strings.ToLower(run.Status)
-	return strings.Contains(s, "failed") || strings.Contains(s, "error")
 }

@@ -137,7 +137,6 @@ func (w *BuildWatcher) sweep(ctx context.Context) {
 			} else {
 				slog.WarnContext(ctx, "build watcher: auth retry budget exhausted",
 					"task", t.ID, "attempts", t.BuildAuthRetryCount, "budget", w.authBudget)
-				w.flipStateLabel(ctx, t.OrgID, t.LastBuildRunName, "failed")
 			}
 			continue
 		}
@@ -149,25 +148,6 @@ func (w *BuildWatcher) sweep(ctx context.Context) {
 				"task", t.ID, "event", event, "error", err)
 			continue
 		}
-		labelValue := "failed"
-		if event == services.TaskEventBuildSucceeded {
-			labelValue = "succeeded"
-		}
-		w.flipStateLabel(ctx, t.OrgID, t.LastBuildRunName, labelValue)
-	}
-}
-
-// flipStateLabel patches `app-factory.openchoreo.dev/state` on the
-// WorkflowRun. Best-effort — log on failure but don't gate the projector
-// on it. The label is read by the future §6.3 list-call filter; the BFF DB
-// remains the authoritative source for task state.
-func (w *BuildWatcher) flipStateLabel(ctx context.Context, orgID, runName, value string) {
-	if runName == "" {
-		return
-	}
-	if err := w.ocClient.PatchWorkflowRunLabel(ctx, orgID, runName, "app-factory.openchoreo.dev/state", value); err != nil {
-		slog.WarnContext(ctx, "build watcher: state label patch failed",
-			"run", runName, "value", value, "error", err)
 	}
 }
 
@@ -221,9 +201,10 @@ var authFailureMarkers = []string{
 // classifyRun maps an OC WorkflowRun status to a TaskEvent. Terminal-state
 // decision is gated on `run.Completed` — the canonical
 // Status.Conditions[type=WorkflowCompleted, status=True] signal from the OC
-// controller (controller_conditions.go:151-152). Once terminal, the Status
-// string's Reason ("WorkflowSucceeded", "WorkflowFailed", etc.) drives the
-// success-vs-failure split.
+// controller (controller_conditions.go:151-152). The Status string is the
+// WorkflowCompleted condition's Reason (lifted by normalizeWorkflowRun);
+// it is one of openchoreo.ReasonWorkflowSucceeded / ReasonWorkflowFailed
+// when terminal.
 //
 // Phase 2 PR D §9.3 — when the run failed AND the checkout-source task's
 // Phase ∈ {Failed, Error} with a Message matching an auth marker, returns
@@ -233,12 +214,10 @@ func classifyRun(run *models.WorkflowRun) (event services.TaskEvent, errMsg stri
 	if run == nil || !run.Completed {
 		return "", "", false
 	}
-	s := strings.ToLower(run.Status)
-	if strings.Contains(s, "succeeded") || strings.Contains(s, "completed") {
+	if run.Status == openchoreo.ReasonWorkflowSucceeded {
 		return services.TaskEventBuildSucceeded, "", false
 	}
-	// Treat anything else as failure once Completed=True. Failed/Error
-	// reasons surface here; legacy substring matching is kept defensive.
+	// Anything not Succeeded once Completed=True is a failure.
 	if isGitCloneAuthFailure(run) {
 		return "", "", true
 	}

@@ -51,15 +51,16 @@ type progressService struct {
 	observerClient observer.Client
 
 	// Singleflight collapses N concurrent viewers of the same
-	// (runName, sinceMillis-bucket) into one Observer call. 1500ms wait
-	// cap ensures a slow Observer doesn't pile up callers; on timeout
-	// we fall through to a direct call.
+	// (runName, sinceMillis-bucket) into one Observer call. The leader
+	// owns the upstream context with a 10s cap; followers wait on the
+	// channel.
 	sf singleflight.Group
 
 	// In-memory cache of last-seen per-step phase used to compute
-	// build_step deltas. Keyed by `(runName, stepName)`.
+	// build_step deltas. Outer key = taskID (so eviction on terminal
+	// task status drops the whole tree); inner key = stepName.
 	mu       sync.Mutex
-	stepSeen map[string]string
+	stepSeen map[string]map[string]string
 
 	// Monotonic seq for synthetic build_step events. Only used to break
 	// ties on identical timestamps.
@@ -84,7 +85,7 @@ func NewProgressService(
 		taskSvc:        taskSvc,
 		ocClient:       ocClient,
 		observerClient: observerClient,
-		stepSeen:       map[string]string{},
+		stepSeen:       map[string]map[string]string{},
 	}
 }
 
@@ -156,12 +157,15 @@ func (s *progressService) GetBuildProgress(ctx context.Context, taskID string, s
 		return nil, fmt.Errorf("get build run: %w", err)
 	}
 
-	events := s.diffBuildSteps(run, sinceMillis)
+	events := s.diffBuildSteps(task.ID, run, sinceMillis)
 	resp.Lines = events
 	resp.CursorMillis = nextCursor(events, sinceMillis)
 	resp.Phase = lastPhase(events)
 	if run.Completed {
 		resp.Final = true
+		// Once the run is terminal there will be no more diffs; clear
+		// the per-task entry so the map doesn't accumulate forever.
+		s.evictStepSeen(task.ID)
 	}
 	return resp, nil
 }
@@ -169,20 +173,25 @@ func (s *progressService) GetBuildProgress(ctx context.Context, taskID string, s
 // diffBuildSteps emits a build_step event for each task whose phase
 // changed since the last observation, plus any task whose StartedAt is
 // strictly after sinceMillis. Stateful via stepSeen so the same step is
-// not emitted twice for the same phase.
-func (s *progressService) diffBuildSteps(run *models.WorkflowRun, sinceMillis int64) []observer.ProgressEvent {
+// not emitted twice for the same phase. Per-task entries are evicted
+// when the run reaches terminal state (see GetBuildProgress).
+func (s *progressService) diffBuildSteps(taskID string, run *models.WorkflowRun, sinceMillis int64) []observer.ProgressEvent {
 	if run == nil {
 		return nil
 	}
 	out := make([]observer.ProgressEvent, 0, len(run.Tasks))
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	taskSteps, ok := s.stepSeen[taskID]
+	if !ok {
+		taskSteps = map[string]string{}
+		s.stepSeen[taskID] = taskSteps
+	}
 	for _, step := range run.Tasks {
-		key := run.Name + "/" + step.Name
-		if s.stepSeen[key] == step.Phase {
+		if taskSteps[step.Name] == step.Phase {
 			continue
 		}
-		s.stepSeen[key] = step.Phase
+		taskSteps[step.Name] = step.Phase
 		ts := pickStepTs(step)
 		if ts != "" && sinceMillis > 0 {
 			if t, err := time.Parse(time.RFC3339, ts); err == nil && t.UnixMilli() < sinceMillis {
@@ -206,10 +215,18 @@ func (s *progressService) diffBuildSteps(run *models.WorkflowRun, sinceMillis in
 	return out
 }
 
+func (s *progressService) evictStepSeen(taskID string) {
+	s.mu.Lock()
+	delete(s.stepSeen, taskID)
+	s.mu.Unlock()
+}
+
 // fetchObserverLogs wraps the Observer call in a singleflight bucket so
 // concurrent viewers of the same (runName, sinceMillis-bucket) share
-// one upstream call. The bucket width is 1s to balance collapsing
-// against cursor freshness.
+// one upstream call. The leader owns a detached context with a 10s
+// timeout — followers wait on the channel and don't fall through to a
+// non-deduped direct call (matches agent-manager's singleflight idiom
+// in clients/thundersvc/client.go).
 //
 // ouHandle is the OC org namespace name (== ouHandle); Observer prepends
 // `workflows-` to address the workflow-plane namespace where Argo
@@ -222,8 +239,9 @@ func (s *progressService) fetchObserverLogs(ctx context.Context, runName, ouHand
 		err   error
 	}
 	ch := s.sf.DoChan(key, func() (any, error) {
-		// Use a detached context with a hard cap so a flaky Observer
-		// doesn't trap callers waiting via singleflight.
+		// Detach from the caller's context so a follower cancelling
+		// doesn't kill the leader's upstream call. 10s hard cap keeps
+		// a stuck Observer bounded.
 		callCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		lines, err := s.observerClient.GetWorkflowRunLogs(callCtx, runName, ouHandle, sinceTime, limit)
@@ -244,10 +262,6 @@ func (s *progressService) fetchObserverLogs(ctx context.Context, runName, ouHand
 			return nil, res.err
 		}
 		return res.lines, nil
-	case <-time.After(1500 * time.Millisecond):
-		// Singleflight wait cap — fall through to a direct call so the
-		// caller still gets a response even if the leader is slow.
-		return s.observerClient.GetWorkflowRunLogs(ctx, runName, ouHandle, sinceTime, limit)
 	}
 }
 

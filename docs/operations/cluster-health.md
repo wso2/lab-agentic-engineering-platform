@@ -30,6 +30,14 @@ kubectl get lease -n openchoreo-control-plane 43500532.openchoreo.dev \
 pgrep -f 'webhook-relay\.sh|smee-client' >/dev/null && echo "relay: up" || echo "relay: DOWN"
 lsof -nP -iTCP:18080 -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print "port-forward: up ("$1" pid "$2")"}' \
   | grep -q . || echo "port-forward 18080: DOWN"
+
+# (5) OpenBao seeded? (runs in dev/inmem — every pod restart wipes the
+#     K8s auth role + secret/apps/* data, leaving ESO unable to log in.
+#     Symptom downstream: coding-agent pods stuck in
+#     CreateContainerConfigError, agent never streams, build/agent
+#     ExternalSecrets stay SecretSyncedError.)
+kubectl get clustersecretstore default \
+  -o jsonpath='store={.status.conditions[-1].reason}{"\n"}'
 ```
 
 **Unhealthy if any of:**
@@ -43,6 +51,8 @@ lsof -nP -iTCP:18080 -sTCP:LISTEN 2>/dev/null | awk 'NR==2{print "port-forward: 
   was closed or the laptop slept long enough to drop the smee TCP
   connection, the whole relay is gone and webhook-driven task transitions
   silently stop working.
+- (5) reports anything other than `store=Valid` (typically
+  `InvalidProviderConfig` after an OpenBao pod restart).
 
 ## Recover
 
@@ -73,6 +83,32 @@ nohup bash deployments-v2/scripts/webhook-relay.sh \
   >>deployments-v2/.webhook-relay.log 2>&1 &
 disown
 sleep 3 && pgrep -f 'webhook-relay\.sh' >/dev/null && echo "relay: up"
+
+# (5) Re-seed OpenBao. Idempotent. Re-binds the K8s auth role and
+#     re-puts secret/apps/{anthropic,github-webhook,bff-task-signing-key}
+#     from values in deployments-v2/.env + keys/.
+( set -a; source deployments-v2/.env; set +a
+  PEM_B64=$(base64 < deployments-v2/keys/task-signing.pem | tr -d '\n')
+  kubectl exec -i -n openbao openbao-0 -- env BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root \
+    ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" \
+    GITHUB_WEBHOOK_DELIVERY_URL="$GITHUB_WEBHOOK_DELIVERY_URL" \
+    GITHUB_WEBHOOK_SECRET="$GITHUB_WEBHOOK_SECRET" \
+    PEM_B64="$PEM_B64" sh -s <<'BAO'
+set -e
+bao write auth/kubernetes/role/openchoreo-secret-reader-role \
+  bound_service_account_names="default,external-secrets" \
+  bound_service_account_namespaces="dp*,external-secrets,openchoreo-ci-default,workflows-*" \
+  policies=openchoreo-secret-reader-policy ttl=20m >/dev/null
+bao kv put secret/apps/anthropic      key="$ANTHROPIC_API_KEY" >/dev/null
+bao kv put secret/apps/github-webhook delivery_url="$GITHUB_WEBHOOK_DELIVERY_URL" secret="$GITHUB_WEBHOOK_SECRET" >/dev/null
+printf %s "$PEM_B64" | base64 -d > /tmp/pem
+bao kv put secret/apps/bff-task-signing-key pem=@/tmp/pem >/dev/null
+rm -f /tmp/pem
+BAO
+  kubectl annotate clustersecretstore default force-sync="$(date +%s)" --overwrite >/dev/null )
+# Re-check: should print store=Valid within a few seconds.
+sleep 5 && kubectl get clustersecretstore default \
+  -o jsonpath='store={.status.conditions[-1].reason}{"\n"}'
 ```
 
 ## Why this happens (so future-you can decide whether to fix it upstream)
@@ -86,3 +122,11 @@ leases time out (`renewDeadline=10s` default), and the controller-manager
 exits with `leader election lost`. The proper upstream fix is parameterising
 those probes + leader-election durations in the OC chart values; until then
 this runbook is the workaround.
+
+OpenBao (step 5) is a different root cause: `Storage Type: inmem` (dev mode)
+means every pod restart loses the K8s auth role + the `secret/apps/*` data
+that `setup.sh` and the (since-deleted) Flux seed Job populated. Same
+symptom-pattern, different fix: re-seed instead of bouncing pods. The
+proper upstream fix is folding both halves of the seed into the OpenBao
+HelmRelease's `postStart` block (matching the agent-manager pattern in
+`/Users/wso2/repos/agent-manager/deployments/single-cluster/values-openbao.yaml`).

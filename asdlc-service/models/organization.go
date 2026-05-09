@@ -20,13 +20,6 @@ type Organization struct {
 	CreatedAt   time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"createdAt"`
 }
 
-// CreateOrganizationRequest is the BFF API request body.
-type CreateOrganizationRequest struct {
-	Name        string `json:"name"`
-	DisplayName string `json:"displayName,omitempty"`
-	Description string `json:"description,omitempty"`
-}
-
 // OrganizationView is the API response shape — joins the local UUID with the
 // OC namespace's display fields.
 type OrganizationView struct {

@@ -170,13 +170,11 @@ func (s *dispatchService) dispatchOne(
 	defaultBranch := repoInfo.DefaultBranch
 	res := DispatchResult{TaskID: task.ID, ComponentName: task.ComponentName}
 
-	// Step: ensure GitHub issue.
 	if task.IssueNumber == 0 || task.IssueURL == "" {
 		s.markFailed(ctx, task, "no GitHub issue on task — generation must precede dispatch")
 		return failResult(res, task.ErrorMessage)
 	}
 
-	// Step: ensure feature branch.
 	branchName := task.BranchName
 	if branchName == "" {
 		branchName = computeBranchName(task)
@@ -193,7 +191,6 @@ func (s *dispatchService) dispatchOne(
 		}
 	}
 
-	// Step: seed a placeholder commit on the feature branch.
 	seedPayload := fmt.Sprintf(`{"taskId":"%s","componentName":"%s","issueNumber":%d}`+"\n",
 		task.ID, task.ComponentName, task.IssueNumber)
 	seedMsg := fmt.Sprintf("chore: seed task %s for %s", task.ID, task.ComponentName)
@@ -202,7 +199,6 @@ func (s *dispatchService) dispatchOne(
 		return failResult(res, task.ErrorMessage)
 	}
 
-	// Step: ensure draft PR.
 	if task.PullRequestNumber == 0 {
 		prTitle := fmt.Sprintf("[%s] %s", task.ComponentName, task.Title)
 		prBody := fmt.Sprintf("Implementation for component **%s**.\n\nCloses #%d", task.ComponentName, task.IssueNumber)
@@ -224,7 +220,6 @@ func (s *dispatchService) dispatchOne(
 		}
 	}
 
-	// Step: ensure OC SecretReference + Component exist.
 	if s.componentSvc != nil {
 		if err := s.ensureOCComponent(ctx, task, repoInfo); err != nil {
 			s.markFailed(ctx, task, fmt.Sprintf("ensure OC component: %v", err))
@@ -232,7 +227,6 @@ func (s *dispatchService) dispatchOne(
 		}
 	}
 
-	// Step: issue per-task Task JWT (RS256, 24h).
 	if s.taskTokens == nil {
 		s.markFailed(ctx, task, "task token manager not configured")
 		return failResult(res, task.ErrorMessage)
@@ -243,9 +237,6 @@ func (s *dispatchService) dispatchOne(
 		return failResult(res, task.ErrorMessage)
 	}
 
-	// Step: trigger the coding-agent WorkflowRun. Replaces the legacy POST
-	// to remote-worker /dispatch — the runner image now runs as a one-shot
-	// Argo pod per task (see app-factory-coding-agent ClusterWorkflow).
 	if s.wfRunService == nil {
 		s.markFailed(ctx, task, "workflow run service not configured")
 		return failResult(res, task.ErrorMessage)
@@ -265,7 +256,6 @@ func (s *dispatchService) dispatchOne(
 		return failResult(res, task.ErrorMessage)
 	}
 
-	// Step: persist DispatchedAt + run name + status=in_progress.
 	now := time.Now()
 	task.DispatchedAt = &now
 	task.LastCodingAgentRunName = runName

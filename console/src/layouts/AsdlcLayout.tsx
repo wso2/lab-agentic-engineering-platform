@@ -83,16 +83,10 @@ export default function AsdlcLayout() {
   // routeOrgId resolves the org for the current page. Precedence:
   //   1. `:orgId` URL param — set on every project/component sub-route.
   //   2. JWT claim `ouHandle` — used on org-less pages (e.g. /organizations/new).
-  // If both are missing the user has no resolvable org and we send them
-  // to "/" which renders NoOrganizationPage. This is the fail-loud
-  // counterpart to the dropped `'default'` fallback (§3.3).
+  // If both are missing, App.tsx's `/` route renders NoOrganizationPage;
+  // /organizations/new still works (it's a no-org-required page).
   const resolvedOrgId = orgId ?? claimsOrgId;
   const routeOrgId = resolvedOrgId ?? '';
-  useEffect(() => {
-    if (!resolvedOrgId) {
-      navigate('/', { replace: true });
-    }
-  }, [resolvedOrgId, navigate]);
   const inProjectLevel = Boolean(projectId);
   const inComponentLevel = Boolean(projectId && componentId);
 

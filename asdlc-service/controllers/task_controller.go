@@ -259,11 +259,12 @@ func (c *taskController) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	resp := TaskStatusResponse{Task: task}
-	if task.LastBuildRunName != "" && c.ocClient != nil {
+	// Only fetch build steps while the task is actively building. Once the
+	// run is terminal the steps are frozen — fetching on every poll for a
+	// `deployed`/`failed` task is wasted OC calls.
+	if task.Status == string(models.TaskStatusBuilding) && task.LastBuildRunName != "" && c.ocClient != nil {
 		run, err := c.ocClient.GetWorkflowRun(r.Context(), task.OrgID, task.LastBuildRunName)
 		if err != nil {
-			// Don't fail the whole status call — surface the task without
-			// build steps. The watcher will eventually retry on its tick.
 			slog.WarnContext(r.Context(), "get task status: load build run failed",
 				"error", err, "run", task.LastBuildRunName)
 		} else if run != nil {

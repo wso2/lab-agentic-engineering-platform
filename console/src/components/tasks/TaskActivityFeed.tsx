@@ -1,5 +1,17 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { Box, Stack, Typography, useTheme } from '@wso2/oxygen-ui';
+import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { Box, Stack, Typography } from '@wso2/oxygen-ui';
+import {
+  Circle,
+  CircleCheck,
+  CircleX,
+  FileText,
+  GitBranch,
+  GitCommit,
+  Github,
+  Hammer,
+  Wrench,
+  Workflow,
+} from '@wso2/oxygen-ui-icons-react';
 import type { TaskProgressEvent } from '../../services/api';
 
 interface Props {
@@ -10,17 +22,21 @@ interface Props {
   emptyMessage?: string;
 }
 
-function iconFor(kind: TaskProgressEvent['kind']): string {
-  switch (kind) {
-    case 'phase':       return '⚙️';
-    case 'tool_use':    return '🛠️';
-    case 'git_commit':  return '📦';
-    case 'git_push':    return '🚀';
-    case 'gh_action':   return '🐙';
-    case 'result':      return '✅';
-    case 'build_step':  return '🏗️';
-    case 'log':         return '📝';
-    default:            return '·';
+const ICON_SIZE = 14;
+
+function iconFor(ev: TaskProgressEvent): ReactNode {
+  switch (ev.kind) {
+    case 'phase':      return <Workflow size={ICON_SIZE} />;
+    case 'tool_use':   return <Wrench size={ICON_SIZE} />;
+    case 'git_commit': return <GitCommit size={ICON_SIZE} />;
+    case 'git_push':   return <GitBranch size={ICON_SIZE} />;
+    case 'gh_action':  return <Github size={ICON_SIZE} />;
+    case 'result':     return ev.status === 'failure'
+      ? <CircleX size={ICON_SIZE} />
+      : <CircleCheck size={ICON_SIZE} />;
+    case 'build_step': return <Hammer size={ICON_SIZE} />;
+    case 'log':        return <FileText size={ICON_SIZE} />;
+    default:           return <Circle size={ICON_SIZE} />;
   }
 }
 
@@ -50,26 +66,98 @@ function compareEvents(a: TaskProgressEvent, b: TaskProgressEvent): number {
   return a.ts < b.ts ? -1 : 1;
 }
 
+// Hoisted row styles — emotion hashes these once instead of re-processing
+// the sx object on every row on every render.
+const ROW_SX = {
+  px: 1,
+  py: 0.5,
+  borderRadius: 1,
+  '&:hover': { bgcolor: 'action.hover' },
+} as const;
+
+const TS_SX = {
+  fontFamily: 'monospace',
+  fontSize: '0.72rem',
+  color: 'text.disabled',
+  minWidth: 64,
+  flexShrink: 0,
+} as const;
+
+const ICON_BOX_SX_DEFAULT = {
+  flexShrink: 0,
+  display: 'inline-flex',
+  alignItems: 'center',
+  color: 'text.secondary',
+} as const;
+
+const ICON_BOX_SX_FAILURE = {
+  ...ICON_BOX_SX_DEFAULT,
+  color: 'error.main',
+} as const;
+
+const SUMMARY_SX_DEFAULT = {
+  fontSize: '0.8rem',
+  color: 'text.primary',
+  wordBreak: 'break-word',
+} as const;
+
+const SUMMARY_SX_FAILURE = {
+  ...SUMMARY_SX_DEFAULT,
+  color: 'error.main',
+} as const;
+
+interface RowProps {
+  ev: TaskProgressEvent;
+}
+
+const ActivityRow = memo(function ActivityRow({ ev }: RowProps) {
+  const isFailure = ev.kind === 'result' && ev.status === 'failure';
+  return (
+    <Stack direction="row" spacing={1.5} alignItems="flex-start" sx={ROW_SX}>
+      <Typography component="span" sx={TS_SX}>{formatTs(ev.ts)}</Typography>
+      <Box component="span" sx={isFailure ? ICON_BOX_SX_FAILURE : ICON_BOX_SX_DEFAULT}>
+        {iconFor(ev)}
+      </Box>
+      <Typography component="span" sx={isFailure ? SUMMARY_SX_FAILURE : SUMMARY_SX_DEFAULT}>
+        {summaryFor(ev)}
+      </Typography>
+    </Stack>
+  );
+});
+
+// mergeSorted does a 2-pointer merge of two already-sorted arrays. The
+// inputs from the BFF are sorted by (ts, seq); previously we concatenated
+// and re-sorted on every poll (O(N log N)). The merge is O(N) and the
+// dedup is fold-into-the-walk.
+function mergeSorted(a: TaskProgressEvent[], b: TaskProgressEvent[]): TaskProgressEvent[] {
+  const out: TaskProgressEvent[] = [];
+  out.length = a.length + b.length;
+  let i = 0, j = 0, k = 0;
+  let lastKey = '';
+  const writeIfNew = (ev: TaskProgressEvent) => {
+    const key = `${ev.ts}|${ev.seq}|${ev.kind}`;
+    if (key === lastKey) return;
+    lastKey = key;
+    out[k++] = ev;
+  };
+  while (i < a.length && j < b.length) {
+    if (compareEvents(a[i], b[j]) <= 0) writeIfNew(a[i++]);
+    else writeIfNew(b[j++]);
+  }
+  while (i < a.length) writeIfNew(a[i++]);
+  while (j < b.length) writeIfNew(b[j++]);
+  out.length = k;
+  return out;
+}
+
 export function TaskActivityFeed({ agentLines, buildLines, agentFinal, buildFinal, emptyMessage }: Props) {
-  const theme = useTheme();
   const scrollRef = useRef<HTMLDivElement>(null);
   // Stick-to-bottom: when the user is near the bottom, auto-scroll on new
   // events; if they scroll up to read history, we stop auto-scrolling and
   // surface a "jump to latest" affordance.
   const [stickToBottom, setStickToBottom] = useState(true);
 
-  const merged = useMemo(() => {
-    const seen = new Set<string>();
-    const out: TaskProgressEvent[] = [];
-    for (const ev of [...agentLines, ...buildLines]) {
-      const key = `${ev.ts}|${ev.seq}|${ev.kind}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      out.push(ev);
-    }
-    out.sort(compareEvents);
-    return out;
-  }, [agentLines, buildLines]);
+  const merged = useMemo(() => mergeSorted(agentLines, buildLines), [agentLines, buildLines]);
 
   useEffect(() => {
     if (!stickToBottom) return;
@@ -101,51 +189,14 @@ export function TaskActivityFeed({ agentLines, buildLines, agentFinal, buildFina
       sx={{ position: 'relative', py: 1, maxHeight: 480, overflowY: 'auto' }}
     >
       <Stack spacing={0.5}>
-      {merged.map((ev, i) => (
-        <Stack
-          key={`${ev.ts}-${ev.seq}-${i}`}
-          direction="row"
-          spacing={1.5}
-          alignItems="flex-start"
-          sx={{
-            px: 1,
-            py: 0.5,
-            borderRadius: 1,
-            '&:hover': { bgcolor: theme.palette.action.hover },
-          }}
-        >
-          <Typography
-            component="span"
-            sx={{
-              fontFamily: 'monospace',
-              fontSize: '0.72rem',
-              color: 'text.disabled',
-              minWidth: 64,
-              flexShrink: 0,
-            }}
-          >
-            {formatTs(ev.ts)}
-          </Typography>
-          <Typography component="span" sx={{ fontSize: '0.85rem', flexShrink: 0 }}>
-            {iconFor(ev.kind)}
-          </Typography>
-          <Typography
-            component="span"
-            sx={{
-              fontSize: '0.8rem',
-              color: ev.kind === 'result' && ev.status === 'failure' ? 'error.main' : 'text.primary',
-              wordBreak: 'break-word',
-            }}
-          >
-            {summaryFor(ev)}
-          </Typography>
-        </Stack>
-      ))}
-      {(agentFinal || buildFinal) && (
-        <Box sx={{ px: 1, py: 1, textAlign: 'center' }}>
-          <Typography variant="caption" color="text.disabled">— end of feed —</Typography>
-        </Box>
-      )}
+        {merged.map((ev, i) => (
+          <ActivityRow key={`${ev.ts}-${ev.seq}-${i}`} ev={ev} />
+        ))}
+        {(agentFinal || buildFinal) && (
+          <Box sx={{ px: 1, py: 1, textAlign: 'center' }}>
+            <Typography variant="caption" color="text.disabled">— end of feed —</Typography>
+          </Box>
+        )}
       </Stack>
       {!stickToBottom && (
         <Box
