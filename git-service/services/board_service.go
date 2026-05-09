@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/wso2/asdlc/git-service/pkg/credentials"
 	"github.com/wso2/asdlc/git-service/repositories"
 )
 
@@ -14,13 +15,13 @@ type BoardService interface {
 }
 
 type boardService struct {
-	repo   repositories.RepoRepository
-	github GitHubV2Client
-	pat    string
+	repo     repositories.RepoRepository
+	github   GitHubV2Client
+	resolver credentials.Resolver
 }
 
-func NewBoardService(repo repositories.RepoRepository, github GitHubV2Client, pat string) BoardService {
-	return &boardService{repo: repo, github: github, pat: pat}
+func NewBoardService(repo repositories.RepoRepository, github GitHubV2Client, resolver credentials.Resolver) BoardService {
+	return &boardService{repo: repo, github: github, resolver: resolver}
 }
 
 func (s *boardService) GetBoard(ctx context.Context, projectID string) (*ProjectBoardResult, error) {
@@ -35,7 +36,11 @@ func (s *boardService) GetBoard(ctx context.Context, projectID string) (*Project
 		return &ProjectBoardResult{}, nil
 	}
 
-	return s.github.GetProjectBoard(ctx, gitRepo.GithubProjectID, s.pat)
+	token, err := s.resolveToken(ctx, gitRepo.OrgID)
+	if err != nil {
+		return nil, err
+	}
+	return s.github.GetProjectBoard(ctx, gitRepo.GithubProjectID, token)
 }
 
 func (s *boardService) MoveIssueToStatus(ctx context.Context, projectID, issueURL, targetStatus string) error {
@@ -50,5 +55,21 @@ func (s *boardService) MoveIssueToStatus(ctx context.Context, projectID, issueUR
 		return nil
 	}
 
-	return s.github.MoveProjectItemToStatus(ctx, gitRepo.GithubProjectID, issueURL, targetStatus, s.pat)
+	token, err := s.resolveToken(ctx, gitRepo.OrgID)
+	if err != nil {
+		return err
+	}
+	return s.github.MoveProjectItemToStatus(ctx, gitRepo.GithubProjectID, issueURL, targetStatus, token)
+}
+
+func (s *boardService) resolveToken(ctx context.Context, ocOrgID string) (string, error) {
+	cred, err := s.resolver.Resolve(ctx, ocOrgID)
+	if err != nil {
+		return "", fmt.Errorf("resolve credential for org %q: %w", ocOrgID, err)
+	}
+	token, _, err := cred.Token(ctx)
+	if err != nil {
+		return "", fmt.Errorf("token for org %q: %w", ocOrgID, err)
+	}
+	return token, nil
 }

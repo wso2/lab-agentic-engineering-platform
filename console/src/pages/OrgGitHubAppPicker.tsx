@@ -24,9 +24,18 @@ import { orgGithubApi, type AppInstallationSummary } from '../services/api/orgGi
  */
 export default function OrgGitHubAppPicker() {
   const { orgId } = useParams();
-  const orgHandle = orgId ?? 'default';
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+
+  // The route is `/organizations/:orgId/settings/github/pick`, so an
+  // empty orgId means the URL is malformed — bounce home rather than
+  // silently substituting an org.
+  useEffect(() => {
+    if (!orgId) {
+      navigate('/', { replace: true });
+    }
+  }, [orgId, navigate]);
+  const orgHandle = orgId ?? '';
 
   const [submittingId, setSubmittingId] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);

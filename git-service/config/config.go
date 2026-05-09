@@ -13,24 +13,12 @@ type Config struct {
 
 	// GitHub — platform repo provisioning. Each org connects via the
 	// settings page (App or PAT mode); every code path resolves the
-	// per-org credential through the resolver. No platform-wide PAT.
+	// per-org credential through the resolver. No platform-wide PAT,
+	// no platform-wide repo owner — those come from the per-org
+	// credential surface (Credential.Token + Credential.RepoOwner).
 	GitHubRepoVisibility string
 	GitHubCommitterName  string // committer attribution on platform-driven commits/tags
 	GitHubCommitterEmail string
-
-	// Optional dev-only seed inputs for the "default" org. When set in
-	// DeploymentTier="dev", git-service auto-seeds the configured orgs with
-	// a PAT-mode credential at startup so a fresh deploy is usable
-	// without manual Settings clicks. Empty in production; per-org
-	// connect via the console is the only path.
-	GitHubPlatformPAT string
-	GitHubRepoOwner   string
-
-	// Comma-separated list of OC org handles to auto-seed in dev tier.
-	// Defaults to "default". Set to e.g. "default,admin" to bootstrap
-	// multi-org dev clusters where the IDP returns orgs other than
-	// "default" in the JWT subject claim.
-	GitHubPlatformPATSeedOrgs string
 
 	// Webhook delivery URL the platform registers on each repo. The single
 	// piece of config shared by local and cloud — local points at a smee.io

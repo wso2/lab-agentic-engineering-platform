@@ -14,7 +14,7 @@ import { test, expect } from '@playwright/test';
  *
  * The simulated agent commit / PR ready / human merge path lives in a
  * separate test that runs against the live GitHub repo with a real PAT —
- * that one is gated on `GITHUB_PLATFORM_PAT` being set in CI.
+ * that one is gated on `LOCAL_DEV_ADMIN_GITHUB_PAT` being set in CI.
  *
  * Marked `.skip` by default because the test depends on a fully bootstrapped
  * dev environment (k3d + OC + GitHub PAT). Run with `npx playwright test --grep github-flow`.

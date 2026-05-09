@@ -22,14 +22,13 @@ type projectClient struct {
 	clientBase
 }
 
-func NewProjectClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider, namespaceOverride string) ProjectClient {
+func NewProjectClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider) ProjectClient {
 	return &projectClient{
 		clientBase: clientBase{
 			baseURL:       baseURL,
 			hostHeader:    hostHeader,
 			httpClient:    &http.Client{Transport: httpx.WrapTransport(nil)},
 			tokenProvider: tokenProvider,
-			nsMap:         parseNamespaceOverride(namespaceOverride),
 		},
 	}
 }
@@ -89,8 +88,7 @@ func buildCreateProjectBody(req *models.CreateProjectRequest) ocProject {
 }
 
 func (c *projectClient) ListProjects(ctx context.Context, orgName string, limit int, cursor string) (*models.ProjectList, error) {
-	ns := c.resolveNamespace(orgName)
-	req := c.newRequest(ctx, "openchoreo.ListProjects", http.MethodGet, c.projectsURL(ns))
+	req := c.newRequest(ctx, "openchoreo.ListProjects", http.MethodGet, c.projectsURL(orgName))
 	if limit > 0 {
 		req.SetQuery("limit", fmt.Sprintf("%d", limit))
 	}
@@ -111,8 +109,7 @@ func (c *projectClient) ListProjects(ctx context.Context, orgName string, limit 
 }
 
 func (c *projectClient) GetProject(ctx context.Context, orgName, projectName string) (*models.Project, error) {
-	ns := c.resolveNamespace(orgName)
-	req := c.newRequest(ctx, "openchoreo.GetProject", http.MethodGet, c.projectURL(ns, projectName))
+	req := c.newRequest(ctx, "openchoreo.GetProject", http.MethodGet, c.projectURL(orgName, projectName))
 
 	var raw ocProject
 	if err := c.send(ctx, req, &raw, http.StatusOK); err != nil {
@@ -123,8 +120,7 @@ func (c *projectClient) GetProject(ctx context.Context, orgName, projectName str
 }
 
 func (c *projectClient) CreateProject(ctx context.Context, orgName string, body *models.CreateProjectRequest) (*models.Project, error) {
-	ns := c.resolveNamespace(orgName)
-	req := c.newRequest(ctx, "openchoreo.CreateProject", http.MethodPost, c.projectsURL(ns))
+	req := c.newRequest(ctx, "openchoreo.CreateProject", http.MethodPost, c.projectsURL(orgName))
 	req.SetJSON(buildCreateProjectBody(body))
 
 	var raw ocProject
@@ -136,8 +132,7 @@ func (c *projectClient) CreateProject(ctx context.Context, orgName string, body 
 }
 
 func (c *projectClient) DeleteProject(ctx context.Context, orgName, projectName string) error {
-	ns := c.resolveNamespace(orgName)
-	req := c.newRequest(ctx, "openchoreo.DeleteProject", http.MethodDelete, c.projectURL(ns, projectName))
+	req := c.newRequest(ctx, "openchoreo.DeleteProject", http.MethodDelete, c.projectURL(orgName, projectName))
 
 	if err := c.send(ctx, req, nil, http.StatusNoContent); err != nil {
 		return fmt.Errorf("delete project: %w", err)

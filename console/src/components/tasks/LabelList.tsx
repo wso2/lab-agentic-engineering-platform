@@ -1,4 +1,4 @@
-import { Box, Chip } from '@wso2/oxygen-ui';
+import { alpha, Box, Chip } from '@wso2/oxygen-ui';
 import type { LabelInfo } from '../../services/api';
 import { labelTextColor } from '../../lib/taskBoard';
 
@@ -20,8 +20,8 @@ export function LabelList({ labels }: LabelListProps) {
             height: 20,
             fontSize: '0.65rem',
             fontWeight: 600,
-            bgcolor: `#${label.color}33`,
-            borderColor: `#${label.color}66`,
+            bgcolor: alpha(`#${label.color}`, 0.2),
+            borderColor: alpha(`#${label.color}`, 0.4),
             color: labelTextColor(label.color),
             '& .MuiChip-label': { px: 0.75 },
           }}

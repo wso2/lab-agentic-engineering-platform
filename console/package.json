@@ -28,6 +28,7 @@
     "@mui/x-data-grid": "^8.16.0",
     "@mui/x-date-pickers": "^8.16.0",
     "@mui/x-tree-view": "^8.14.0",
+    "@tanstack/react-query": "5.90.5",
     "@wso2/cell-diagram": "0.2.0",
     "@wso2/oxygen-ui": "0.1.0",
     "@wso2/oxygen-ui-icons-react": "0.1.0",

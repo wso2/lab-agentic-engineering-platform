@@ -30,16 +30,14 @@ type issueService struct {
 	github   GitHubClient
 	githubV2 GitHubV2Client
 	resolver credentials.Resolver
-	pat      string
 }
 
-func NewIssueService(repo repositories.RepoRepository, github GitHubClient, githubV2 GitHubV2Client, resolver credentials.Resolver, pat string) IssueService {
+func NewIssueService(repo repositories.RepoRepository, github GitHubClient, githubV2 GitHubV2Client, resolver credentials.Resolver) IssueService {
 	return &issueService{
 		repo:     repo,
 		github:   github,
 		githubV2: githubV2,
 		resolver: resolver,
-		pat:      pat,
 	}
 }
 
@@ -70,32 +68,41 @@ func (s *issueService) CreateIssue(ctx context.Context, projectID string, req Cr
 
 	gitRepo, repoErr := s.repo.GetByProjectID(ctx, projectID)
 	if repoErr == nil && gitRepo != nil {
-		if gitRepo.GithubProjectID == "" {
-			if boardID, err := s.ensureBoard(ctx, gitRepo, owner, repoName); err == nil {
-				gitRepo.GithubProjectID = boardID
-				if updateErr := s.repo.Update(ctx, gitRepo); updateErr != nil {
-					slog.WarnContext(ctx, "failed to persist github project id after lazy creation", "project", projectID, "error", updateErr)
+		// Mint the V2 (GraphQL) bearer once and reuse for the up-to-three
+		// sequential ensureBoard + addIssueToProject calls. App-installation
+		// tokens are 1h-TTL but the per-call latency we'd add by re-resolving
+		// is wasted work.
+		token, _, tokenErr := cred.Token(ctx)
+		if tokenErr != nil {
+			slog.WarnContext(ctx, "fetch credential token for board ops failed", "project", projectID, "error", tokenErr)
+		} else {
+			if gitRepo.GithubProjectID == "" {
+				if boardID, err := s.ensureBoard(ctx, gitRepo, owner, repoName, token); err == nil {
+					gitRepo.GithubProjectID = boardID
+					if updateErr := s.repo.Update(ctx, gitRepo); updateErr != nil {
+						slog.WarnContext(ctx, "failed to persist github project id after lazy creation", "project", projectID, "error", updateErr)
+					}
 				}
 			}
+			s.addIssueToProject(ctx, gitRepo.GithubProjectID, issue, token)
 		}
-		s.addIssueToProject(ctx, gitRepo.GithubProjectID, issue)
 	}
 
 	return issue, nil
 }
 
-func (s *issueService) ensureBoard(ctx context.Context, gitRepo *models.GitRepository, owner, repoName string) (string, error) {
-	orgNodeID, err := s.githubV2.GetOrgID(ctx, owner, s.pat)
+func (s *issueService) ensureBoard(ctx context.Context, gitRepo *models.GitRepository, owner, repoName, token string) (string, error) {
+	orgNodeID, err := s.githubV2.GetOrgID(ctx, owner, token)
 	if err != nil {
 		return "", fmt.Errorf("resolve org id during lazy board create: %w", err)
 	}
 
-	githubProjectID, err := s.githubV2.CreateGitHubV2Project(ctx, orgNodeID, s.pat, gitRepo.ProjectID)
+	githubProjectID, err := s.githubV2.CreateGitHubV2Project(ctx, orgNodeID, token, gitRepo.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("create github project board: %w", err)
 	}
 
-	if linkErr := s.githubV2.LinkProjectToRepository(ctx, githubProjectID, owner, repoName, s.pat); linkErr != nil {
+	if linkErr := s.githubV2.LinkProjectToRepository(ctx, githubProjectID, owner, repoName, token); linkErr != nil {
 		slog.WarnContext(ctx, "failed to link lazy-created board to repository", "project", gitRepo.ProjectID, "error", linkErr)
 	}
 
@@ -103,12 +110,12 @@ func (s *issueService) ensureBoard(ctx context.Context, gitRepo *models.GitRepos
 	return githubProjectID, nil
 }
 
-func (s *issueService) addIssueToProject(ctx context.Context, githubProjectID string, issue *IssueResult) {
+func (s *issueService) addIssueToProject(ctx context.Context, githubProjectID string, issue *IssueResult, token string) {
 	if issue.NodeID == "" || s.githubV2 == nil || githubProjectID == "" {
 		slog.WarnContext(ctx, "skipping board add: missing project id or issue node id", "issue", issue.URL)
 		return
 	}
-	if err := s.githubV2.AddIssueToProject(ctx, githubProjectID, issue.NodeID, s.pat); err != nil {
+	if err := s.githubV2.AddIssueToProject(ctx, githubProjectID, issue.NodeID, token); err != nil {
 		slog.WarnContext(ctx, "failed to add issue to GitHub project board", "issue", issue.URL, "error", err)
 	}
 }

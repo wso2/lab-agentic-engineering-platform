@@ -25,7 +25,7 @@ type Config struct {
 	// OAuthStateSigningKey is the HS256 key used to sign the connect-state
 	// JWT that rides the GitHub App OAuth `state` query param (CSRF
 	// protection on the connect callback). Task JWTs use RS256 via
-	// TaskTokenSigningKeyPath; this key has no other use.
+	// TaskTokenSigningKey; this key has no other use.
 	OAuthStateSigningKey string
 
 	// Phase 2 PR B — GitHub App connect surface.
@@ -35,10 +35,9 @@ type Config struct {
 	// the App-mode redirect after callback (302 → console settings page).
 	BFFPublicURL string
 
-	// TaskTokenSigningKeyPath is the path to the BFF's RSA private key used
-	// to sign Task JWTs. The matching public key is published at
-	// /auth/external/jwks.json.
-	TaskTokenSigningKeyPath string
+	// TaskTokenSigningKey is the PEM-encoded RSA private key used to sign
+	// Task JWTs. The matching public key is published at /auth/external/jwks.json.
+	TaskTokenSigningKey string
 	// TaskTokenIssuer is the iss claim on issued Task JWTs (e.g. "asdlc-bff").
 	TaskTokenIssuer string
 	// TaskTokenAudience is the aud claim — fixed to "git-service" today, the
@@ -52,35 +51,31 @@ type Config struct {
 
 	Observability   ObservabilityConfig
 	AgentsService   AgentsServiceConfig
-	RemoteWorker    RemoteWorkerConfig
 	ServiceAuth     ServiceAuthConfig
 	GitService      GitServiceConfig
 	DatabaseService DatabaseServiceConfig
 
+	// AgentGitServiceURL is the URL the coding-agent runner pod uses to reach
+	// git-service for /credentials/refresh. The pod runs in the per-tenant
+	// WorkflowPlane namespace (`workflows-<ouHandle>`), so this must be a
+	// cross-namespace FQDN (e.g.
+	// http://app-factory-git-service.<dp-ns>.svc.cluster.local:3300).
+	// Falls back to GitService.BaseURL when empty.
+	AgentGitServiceURL string
+
 	// JWKS settings for inbound JWT verification — Thunder publishes the
 	// User JWT and Service JWT signing key at JWKSURL; verifiers refresh
 	// on kid miss. Issuer and audience configure RFC 7519 claim checks.
-	JWKSURL                  string
-	JWTAllowedIssuer         string
-	JWTAllowedAudience       string
-	JWTResourceMetadataURL   string
+	JWKSURL                string
+	JWTAllowedIssuer       string
+	JWTAllowedAudience     string
+	JWTResourceMetadataURL string
 
 	// Per-target Service JWT clients used for outbound auth. Each one
 	// corresponds to a distinct Thunder OAuth2 client whose audience is
 	// pinned to the target service.
 	ServiceAuthGitService    ServiceAuthConfig
 	ServiceAuthAgentsService ServiceAuthConfig
-	ServiceAuthRemoteWorker  ServiceAuthConfig
-}
-
-// RemoteWorkerConfig holds connection settings for the remote-worker service.
-// BaseURL is optional; if empty, task dispatch via remote-worker is disabled.
-type RemoteWorkerConfig struct {
-	BaseURL string
-	// GitServiceHostURL is the URL the remote-worker uses to reach git-service
-	// for /credentials/refresh. In container mode this is an in-network DNS
-	// name; in host mode it's the published localhost port.
-	GitServiceHostURL string
 }
 
 // ServiceAuthConfig holds OAuth2 client_credentials settings for
@@ -98,10 +93,22 @@ type AgentsServiceConfig struct {
 	BaseURL string
 }
 
-// ObservabilityConfig holds connection settings for the observability service.
-// BaseURL is optional; if empty, build log endpoints return an unavailable error.
+// ObservabilityConfig holds connection settings for the OpenChoreo Observer
+// service. BaseURL is optional; if empty, the BFF returns 503
+// progress_unavailable on the /progress/* endpoints. Auth fields drive the
+// Thunder client_credentials flow used to read workflow-run logs.
 type ObservabilityConfig struct {
 	BaseURL string
+
+	// OAuth client_credentials settings — wired to the platform-default
+	// reader app `openchoreo-observer-resource-reader-client` on this
+	// branch. Promoting to multi-tenant cloud should swap this for a
+	// per-app registration (see task-execution-progress.md §5.4).
+	TokenURL     string
+	ClientID     string
+	ClientSecret string
+	HostHeader   string
+
 }
 
 // PlatformAPIConfig holds connection settings for the OpenChoreo platform API.
@@ -112,13 +119,6 @@ type PlatformAPIConfig struct {
 	// Used to construct image refs at deploy time — OC does not surface them
 	// in the WorkflowRun API.
 	BuildRegistry string
-	// OrgNamespaceOverride is a comma-separated list of orgHandle=namespace
-	// pairs. When set, the OC client resolves org handles to the given
-	// namespace instead of using the org handle directly. Example:
-	//   admin=dp-wso2cloud-core-development-54e3d6ff
-	// Needed when running under WSO2Cloud where K8s namespaces are
-	// auto-generated and don't match org handles.
-	OrgNamespaceOverride string
 }
 
 // GitServiceConfig holds connection settings for the git-service.

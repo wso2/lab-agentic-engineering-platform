@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://app-factory.openchoreo.dev/schemas/progress-event.v1.json",
+  "title": "ProgressEvent v1",
+  "description": "Versioned NDJSON envelope emitted by the coding-agent runner to stdout (and synthesised by the BFF for build steps). Source of truth for remote-worker/src/lib/progress/schema.ts and asdlc-service/clients/observer/schema.go. See docs/design/task-execution-progress.md §5.1.",
+  "type": "object",
+  "required": ["schemaVersion", "ts", "seq", "kind"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "ts": {
+      "type": "string",
+      "description": "RFC3339 timestamp with millisecond precision."
+    },
+    "seq": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Per-pod monotonic counter. Used to break ties on identical timestamps and to dedup overlapping cursor windows."
+    },
+    "kind": {
+      "type": "string",
+      "enum": ["phase", "tool_use", "git_commit", "git_push", "gh_action", "log", "result", "build_step"]
+    },
+    "phase":       { "type": "string" },
+    "tool":        { "type": "string" },
+    "summary":     { "type": "string" },
+    "sha":         { "type": "string" },
+    "branch":      { "type": "string" },
+    "files":       { "type": "integer", "minimum": 0 },
+    "command":     { "type": "string" },
+    "level":       { "type": "string", "enum": ["info", "warn", "error"] },
+    "status":      { "type": "string", "enum": ["success", "failure"] },
+    "error":       { "type": "string" },
+    "step":        { "type": "string" },
+    "message":     { "type": "string" },
+    "startedAt":   { "type": "string" },
+    "completedAt": { "type": "string" }
+  },
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if":   { "properties": { "kind": { "const": "phase" } } },
+      "then": { "required": ["phase"] }
+    },
+    {
+      "if":   { "properties": { "kind": { "const": "tool_use" } } },
+      "then": { "required": ["tool"] }
+    },
+    {
+      "if":   { "properties": { "kind": { "const": "gh_action" } } },
+      "then": { "required": ["command"] }
+    },
+    {
+      "if":   { "properties": { "kind": { "const": "log" } } },
+      "then": { "required": ["summary"] }
+    },
+    {
+      "if":   { "properties": { "kind": { "const": "result" } } },
+      "then": { "required": ["status"] }
+    },
+    {
+      "if":   { "properties": { "kind": { "const": "build_step" } } },
+      "then": { "required": ["step"] }
+    }
+  ]
+}

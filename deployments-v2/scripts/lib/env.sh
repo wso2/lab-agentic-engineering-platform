@@ -11,6 +11,18 @@ KEYS_DIR="${KEYS_DIR:-$ROOT_DIR/deployments-v2/keys}"
 ensure_env_loaded() {
   [ -f "$ENV_FILE" ] || die "$ENV_FILE missing — run setup.sh first"
   set -a; source "$ENV_FILE"; set +a
+  _export_task_signing_key
+}
+
+# Export PEM contents as BFF_TASK_SIGNING_KEY for envsubst into the BFF
+# env-overlay. Newlines are escaped to literal \n; YAML double-quoted
+# scalars decode them back to newlines, giving Go a multi-line PEM via
+# os.Getenv. No-op if the PEM hasn't been generated yet.
+_export_task_signing_key() {
+  if [ -f "$KEYS_DIR/task-signing.pem" ]; then
+    export BFF_TASK_SIGNING_KEY
+    BFF_TASK_SIGNING_KEY=$(awk 'NR>1{printf "\\n"} {printf "%s", $0} END{printf "\\n"}' "$KEYS_DIR/task-signing.pem")
+  fi
 }
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -129,8 +141,8 @@ ensure_env() {
   # Read current values from .env (don't source — we build up exports manually).
   local _aev="" _gpv="" _grov="" _ptu="" _au="" _ap="" _gai="" _gci="" _gcs="" _gas="" _gkp=""
   _aev="$(_env_read ANTHROPIC_API_KEY)"
-  _gpv="$(_env_read GITHUB_PLATFORM_PAT)"
-  _grov="$(_env_read GITHUB_REPO_OWNER)"
+  _gpv="$(_env_read LOCAL_DEV_ADMIN_GITHUB_PAT)"
+  _grov="$(_env_read LOCAL_DEV_ADMIN_GITHUB_OWNER)"
   _ptu="$(_env_read PUBLIC_THUNDER_URL)"
   _au="$(_env_read ADMIN_USERNAME)"
   _ap="$(_env_read ADMIN_PASSWORD)"
@@ -176,16 +188,17 @@ ensure_env() {
       _prompt_var ANTHROPIC_API_KEY "" 1 || true
     fi
 
-    # GITHUB_PLATFORM_PAT
+    # LOCAL_DEV_ADMIN_GITHUB_PAT — local-dev shortcut for pre-connecting
+    # the admin user's GitHub PAT. Has no effect on hosted environments.
     if [ -z "$_gpv" ]; then
-      _prompt_var GITHUB_PLATFORM_PAT "" 0
+      _prompt_var LOCAL_DEV_ADMIN_GITHUB_PAT "" 0
     fi
 
-    # GITHUB_REPO_OWNER (only prompt if PAT is set, either previously or just now)
-    _gpv="$(_env_read GITHUB_PLATFORM_PAT)"
-    _grov="$(_env_read GITHUB_REPO_OWNER)"
+    # LOCAL_DEV_ADMIN_GITHUB_OWNER (only prompt if PAT is set).
+    _gpv="$(_env_read LOCAL_DEV_ADMIN_GITHUB_PAT)"
+    _grov="$(_env_read LOCAL_DEV_ADMIN_GITHUB_OWNER)"
     if [ -n "$_gpv" ] && [ -z "$_grov" ]; then
-      _prompt_var GITHUB_REPO_OWNER "" 1 || true
+      _prompt_var LOCAL_DEV_ADMIN_GITHUB_OWNER "" 1 || true
     fi
   fi
 
@@ -205,15 +218,18 @@ ensure_env() {
 
   # ── source the finalized .env to export everything ─────────────────────────
   set -a; source "$ENV_FILE"; set +a
+  _export_task_signing_key
 
   # Shell exports override .env (user might export vars on the CLI).
   local _shell_val
   _shell_val="${ANTHROPIC_API_KEY-__unset__}"
   [ "$_shell_val" != "__unset__" ] && export ANTHROPIC_API_KEY="$_shell_val"
-  _shell_val="${GITHUB_PLATFORM_PAT-__unset__}"
-  [ "$_shell_val" != "__unset__" ] && export GITHUB_PLATFORM_PAT="$_shell_val"
-  _shell_val="${GITHUB_REPO_OWNER-__unset__}"
-  [ "$_shell_val" != "__unset__" ] && export GITHUB_REPO_OWNER="$_shell_val"
+  _shell_val="${LOCAL_DEV_ADMIN_GITHUB_PAT-__unset__}"
+  [ "$_shell_val" != "__unset__" ] && export LOCAL_DEV_ADMIN_GITHUB_PAT="$_shell_val"
+  _shell_val="${LOCAL_DEV_ADMIN_GITHUB_OWNER-__unset__}"
+  [ "$_shell_val" != "__unset__" ] && export LOCAL_DEV_ADMIN_GITHUB_OWNER="$_shell_val"
+  _shell_val="${LOCAL_DEV_ADMIN_OUHANDLE-__unset__}"
+  [ "$_shell_val" != "__unset__" ] && export LOCAL_DEV_ADMIN_OUHANDLE="$_shell_val"
 
   # ── summary ────────────────────────────────────────────────────────────────
   if [ "${DRY_RUN:-0}" != 1 ]; then
@@ -223,14 +239,10 @@ ensure_env() {
     else
       log_warn "ANTHROPIC_API_KEY: not set — AI features disabled"
     fi
-    if [ -n "${GITHUB_PLATFORM_PAT:-}" ]; then
-      if [ -n "${GITHUB_REPO_OWNER:-}" ]; then
-        log_ok "GITHUB_PLATFORM_PAT + GITHUB_REPO_OWNER: org '${GITHUB_REPO_OWNER}' will be auto-seeded"
-      else
-        log_warn "GITHUB_PLATFORM_PAT set but GITHUB_REPO_OWNER missing — seed disabled"
-      fi
+    if [ -n "${LOCAL_DEV_ADMIN_GITHUB_PAT:-}" ] && [ -n "${LOCAL_DEV_ADMIN_GITHUB_OWNER:-}" ]; then
+      log_ok "LOCAL_DEV_ADMIN_GITHUB_PAT + LOCAL_DEV_ADMIN_GITHUB_OWNER: admin org '${LOCAL_DEV_ADMIN_OUHANDLE:-default}' will be pre-connected via the Connect API"
     else
-      log_info "GITHUB_PLATFORM_PAT: not set — manual connect via console required"
+      log_info "LOCAL_DEV_ADMIN_GITHUB_PAT: not set — connect via console (Settings → GitHub Integration)"
     fi
   fi
   log_ok "env ready"

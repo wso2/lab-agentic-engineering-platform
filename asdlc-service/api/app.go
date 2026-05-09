@@ -2,6 +2,7 @@ package api
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/wso2/asdlc/asdlc-service/config"
 	"github.com/wso2/asdlc/asdlc-service/controllers"
@@ -9,16 +10,18 @@ import (
 	jwtmw "github.com/wso2/asdlc/asdlc-service/middleware/jwt"
 	"github.com/wso2/asdlc/asdlc-service/middleware/jwtassertion"
 	"github.com/wso2/asdlc/asdlc-service/middleware/logger"
+	"github.com/wso2/asdlc/asdlc-service/middleware/orgensure"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
+	"github.com/wso2/asdlc/asdlc-service/services"
 )
 
 // AppParams holds all dependencies needed to build the HTTP handler.
 type AppParams struct {
 	Config                 config.Config
-	ProjectController       controllers.ProjectController
-	ComponentController     controllers.ComponentController
-	RequirementsController  controllers.RequirementsController
-	DesignController        controllers.DesignController
+	ProjectController      controllers.ProjectController
+	ComponentController    controllers.ComponentController
+	RequirementsController controllers.RequirementsController
+	DesignController       controllers.DesignController
 	TaskController         controllers.TaskController
 	BoardController        controllers.BoardController
 	ConfigController       controllers.ConfigController
@@ -29,6 +32,10 @@ type AppParams struct {
 	JWKSController         controllers.JWKSController
 	TaskRepo               repositories.TaskRepository
 	ConfigRepo             repositories.ConfigRepository
+
+	// OrganizationService backs the JIT org-provisioning middleware. nil
+	// disables the middleware (tests, dev configurations without a DB).
+	OrganizationService services.OrganizationService
 
 	// ThunderJWKS verifies User JWTs and Service JWTs presented to the BFF.
 	// May be nil in dev/test, in which case inbound auth falls back to
@@ -107,12 +114,17 @@ func NewHandler(params AppParams) http.Handler {
 
 	jwt := jwtmw.Middleware(jwtmw.Config{
 		JWKS:                params.ThunderJWKS,
-		AllowedIssuers:      filterEmpty(params.Config.JWTAllowedIssuer),
-		AllowedAudiences:    filterEmpty(params.Config.JWTAllowedAudience),
+		AllowedIssuers:      splitAndTrim(params.Config.JWTAllowedIssuer),
+		AllowedAudiences:    splitAndTrim(params.Config.JWTAllowedAudience),
 		ResourceMetadataURL: params.Config.JWTResourceMetadataURL,
 		IsLocalDevEnv:       params.ThunderJWKS == nil,
 	})
-	mux.Handle("/api/", jwt(apiMux))
+	// JIT org-onboarding sits between JWT verification and the org-aware
+	// route handlers. Tenants materialise on first authenticated request;
+	// no env var, manifest, or seed names an org. See
+	// docs/design/default-org-seed-removal.md §3.2.
+	ensureOrg := orgensure.Middleware(params.OrganizationService)
+	mux.Handle("/api/", jwt(ensureOrg(apiMux)))
 
 	// Global middleware stack (outermost applied last).
 	var handler http.Handler = mux
@@ -124,11 +136,27 @@ func NewHandler(params AppParams) http.Handler {
 	return handler
 }
 
-func filterEmpty(s string) []string {
+// splitAndTrim splits a comma-separated env value into a list, dropping
+// empty entries. Lets JWT_ISSUER / JWT_AUDIENCE accept multiple values
+// (e.g. "APP_FACTORY_CONSOLE,local-dev-seeder") so a single BFF can
+// accept both end-user and S2S tokens that carry different `aud`
+// claims, without weakening the matcher to a wildcard.
+func splitAndTrim(s string) []string {
 	if s == "" {
 		return nil
 	}
-	return []string{s}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func testResetHandler(params AppParams) http.HandlerFunc {

@@ -27,4 +27,9 @@ export type {
   Task,
   ProjectBoard,
   LabelInfo,
+  TaskProgressEvent,
+  TaskProgressResponse,
+  TaskProgressKind,
+  TaskStatusResponse,
+  BuildStep,
 } from './types';

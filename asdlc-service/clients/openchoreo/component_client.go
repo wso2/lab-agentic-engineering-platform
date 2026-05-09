@@ -35,22 +35,45 @@ type ComponentClient interface {
 	// params.repository.revision.commit. Mirrors agent-manager's pattern at
 	// agent-manager-service/clients/openchoreosvc/client/builds.go:71-85.
 	TriggerBuildAtCommit(ctx context.Context, orgName, projectName, componentName, commitSHA string) (*models.WorkflowRun, error)
+	// TriggerCodingAgent creates a WorkflowRun of ClusterWorkflow
+	// `app-factory-coding-agent` for the per-task ephemeral pod that runs the
+	// Claude Agent SDK against the task's feature branch. Replaces the legacy
+	// HTTP POST to remote-worker /dispatch. The label
+	// `app-factory.openchoreo.dev/coding-agent-task` carries the taskId so
+	// the BFF watcher can correlate runs back to the task.
+	TriggerCodingAgent(ctx context.Context, params CodingAgentParams) (*models.WorkflowRun, error)
 	ListWorkflowRuns(ctx context.Context, orgName, projectName, componentName string, limit int, cursor string) (*models.WorkflowRunList, error)
 	GetWorkflowRun(ctx context.Context, orgName, runName string) (*models.WorkflowRun, error)
+}
+
+// CodingAgentParams is the input to TriggerCodingAgent. Mirrors the schema
+// of `app-factory-coding-agent` ClusterWorkflow. All fields are required.
+type CodingAgentParams struct {
+	OrgName       string
+	ProjectName   string
+	ComponentName string
+	TaskID        string
+	BranchName    string
+	Prompt        string
+	RepoURL       string
+	IdentityName  string
+	IdentityEmail string
+	IdentityLogin string
+	Bearer        string
+	GitServiceURL string
 }
 
 type componentClient struct {
 	clientBase
 }
 
-func NewComponentClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider, namespaceOverride string) ComponentClient {
+func NewComponentClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider) ComponentClient {
 	return &componentClient{
 		clientBase: clientBase{
 			baseURL:       baseURL,
 			hostHeader:    hostHeader,
 			httpClient:    &http.Client{Transport: httpx.WrapTransport(nil)},
 			tokenProvider: tokenProvider,
-			nsMap:         parseNamespaceOverride(namespaceOverride),
 		},
 	}
 }
@@ -140,41 +163,31 @@ func normalizeWorkflowRun(run ocWorkflowRun) models.WorkflowRun {
 	}
 
 	status := "Pending"
+	completed := false
 	for _, cond := range run.Status.Conditions {
-		if cond.Type == "WorkflowCompleted" && cond.Reason != "" {
-			status = cond.Reason
-			break
+		if cond.Type == "WorkflowCompleted" {
+			if cond.Status == "True" {
+				completed = true
+			}
+			if cond.Reason != "" {
+				status = cond.Reason
+				break
+			}
 		}
 		if cond.Type == "WorkflowRunning" && cond.Status == "True" {
 			status = "Running"
 		}
 	}
 
-	var image, commit string
 	tasks := make([]models.WorkflowRunTask, 0, len(run.Status.Tasks))
 	for _, task := range run.Status.Tasks {
-		flat := models.WorkflowRunTask{Name: task.Name, Outputs: map[string]string{}}
-		if task.Outputs != nil {
-			for _, p := range task.Outputs.Parameters {
-				flat.Outputs[p.Name] = p.Value
-			}
-		}
-		tasks = append(tasks, flat)
-		// Convenience extracts retained for backward compat with the
-		// existing component_service callers that read Image / Commit
-		// directly off the flat WorkflowRun.
-		if task.Outputs != nil {
-			switch task.Name {
-			case "publish-image":
-				if v, ok := flat.Outputs["image"]; ok {
-					image = v
-				}
-			case "checkout-source":
-				if v, ok := flat.Outputs["git-revision"]; ok {
-					commit = v
-				}
-			}
-		}
+		tasks = append(tasks, models.WorkflowRunTask{
+			Name:        task.Name,
+			Phase:       task.Phase,
+			Message:     task.Message,
+			StartedAt:   task.StartedAt,
+			CompletedAt: task.CompletedAt,
+		})
 	}
 
 	return models.WorkflowRun{
@@ -183,8 +196,7 @@ func normalizeWorkflowRun(run ocWorkflowRun) models.WorkflowRun {
 		StartedAt:     run.Metadata.CreationTimestamp,
 		ComponentName: FriendlyComponentName(componentName, projectName),
 		ProjectName:   projectName,
-		Image:         image,
-		Commit:        commit,
+		Completed:     completed,
 		Tasks:         tasks,
 	}
 }
@@ -222,7 +234,7 @@ func normalizeDeployment(rb ocReleaseBinding) models.Deployment {
 // -- Component CRUD ----------------------------------------------------------
 
 func (c *componentClient) ListComponents(ctx context.Context, orgName, projectName string, limit int, cursor string) (*models.ComponentList, error) {
-	req := c.newRequest(ctx, "openchoreo.ListComponents", http.MethodGet, c.componentsURL(c.resolveNamespace(orgName)))
+	req := c.newRequest(ctx, "openchoreo.ListComponents", http.MethodGet, c.componentsURL(orgName))
 	req.SetQuery("labelSelector", fmt.Sprintf("openchoreo.dev/project=%s", projectName))
 	if limit > 0 {
 		req.SetQuery("limit", fmt.Sprintf("%d", limit))
@@ -245,7 +257,7 @@ func (c *componentClient) ListComponents(ctx context.Context, orgName, projectNa
 
 func (c *componentClient) GetComponent(ctx context.Context, orgName, projectName, componentName string) (*models.Component, error) {
 	k8sName := ScopedComponentName(projectName, componentName)
-	req := c.newRequest(ctx, "openchoreo.GetComponent", http.MethodGet, c.componentURL(c.resolveNamespace(orgName), k8sName))
+	req := c.newRequest(ctx, "openchoreo.GetComponent", http.MethodGet, c.componentURL(orgName, k8sName))
 
 	var raw ocComponent
 	if err := c.send(ctx, req, &raw, http.StatusOK); err != nil {
@@ -304,7 +316,7 @@ func (c *componentClient) CreateComponent(ctx context.Context, orgName, projectN
 		}
 	}
 
-	httpReq := c.newRequest(ctx, "openchoreo.CreateComponent", http.MethodPost, c.componentsURL(c.resolveNamespace(orgName)))
+	httpReq := c.newRequest(ctx, "openchoreo.CreateComponent", http.MethodPost, c.componentsURL(orgName))
 	httpReq.SetJSON(body)
 
 	var raw ocComponent
@@ -363,7 +375,7 @@ func (c *componentClient) CreateWorkload(ctx context.Context, orgName string, re
 	// container image can be refreshed on each deploy. Updating the Workload
 	// is what drives OC to emit a new ComponentRelease + (with autoDeploy)
 	// ReleaseBinding.
-	postReq := c.newRequest(ctx, "openchoreo.CreateWorkload", http.MethodPost, c.workloadsURL(c.resolveNamespace(orgName)))
+	postReq := c.newRequest(ctx, "openchoreo.CreateWorkload", http.MethodPost, c.workloadsURL(orgName))
 	postReq.SetJSON(body)
 	err := c.send(ctx, postReq, nil, http.StatusCreated)
 	if err == nil {
@@ -373,7 +385,7 @@ func (c *componentClient) CreateWorkload(ctx context.Context, orgName string, re
 	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusConflict {
 		return fmt.Errorf("create workload: %w", err)
 	}
-	putReq := c.newRequest(ctx, "openchoreo.UpdateWorkload", http.MethodPut, c.workloadURL(c.resolveNamespace(orgName), body.Metadata.Name))
+	putReq := c.newRequest(ctx, "openchoreo.UpdateWorkload", http.MethodPut, c.workloadURL(orgName, body.Metadata.Name))
 	putReq.SetJSON(body)
 	if err := c.send(ctx, putReq, nil, http.StatusOK); err != nil {
 		return fmt.Errorf("update workload: %w", err)
@@ -427,7 +439,7 @@ func (c *componentClient) CreateComponentRelease(ctx context.Context, params *mo
 		},
 	}
 
-	httpReq := c.newRequest(ctx, "openchoreo.CreateComponentRelease", http.MethodPost, c.componentReleasesURL(c.resolveNamespace(params.OrgName)))
+	httpReq := c.newRequest(ctx, "openchoreo.CreateComponentRelease", http.MethodPost, c.componentReleasesURL(params.OrgName))
 	httpReq.SetJSON(body)
 
 	if err := c.send(ctx, httpReq, nil, http.StatusCreated); err != nil {
@@ -522,7 +534,7 @@ func (c *componentClient) CreateReleaseBinding(ctx context.Context, orgName, pro
 		},
 	}
 
-	httpReq := c.newRequest(ctx, "openchoreo.CreateReleaseBinding", http.MethodPost, c.releaseBindingsURL(c.resolveNamespace(orgName)))
+	httpReq := c.newRequest(ctx, "openchoreo.CreateReleaseBinding", http.MethodPost, c.releaseBindingsURL(orgName))
 	httpReq.SetJSON(body)
 
 	if err := c.send(ctx, httpReq, nil, http.StatusCreated); err != nil {
@@ -532,7 +544,7 @@ func (c *componentClient) CreateReleaseBinding(ctx context.Context, orgName, pro
 }
 
 func (c *componentClient) ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error) {
-	httpReq := c.newRequest(ctx, "openchoreo.ListReleaseBindings", http.MethodGet, c.releaseBindingsURL(c.resolveNamespace(orgName)))
+	httpReq := c.newRequest(ctx, "openchoreo.ListReleaseBindings", http.MethodGet, c.releaseBindingsURL(orgName))
 	httpReq.SetQuery("component", ScopedComponentName(projectName, componentName))
 
 	var raw ocReleaseBindingList
@@ -565,7 +577,7 @@ func (c *componentClient) TriggerBuildAtCommit(ctx context.Context, orgName, pro
 func (c *componentClient) triggerBuildInner(ctx context.Context, orgName, projectName, componentName, commitSHA string) (*models.WorkflowRun, error) {
 	scopedComp := ScopedComponentName(projectName, componentName)
 	// Fetch the component to get its workflow config
-	getReq := c.newRequest(ctx, "openchoreo.GetComponentForBuild", http.MethodGet, c.componentURL(c.resolveNamespace(orgName), scopedComp))
+	getReq := c.newRequest(ctx, "openchoreo.GetComponentForBuild", http.MethodGet, c.componentURL(orgName, scopedComp))
 	var rawComp ocComponent
 	if err := c.send(ctx, getReq, &rawComp, http.StatusOK); err != nil {
 		return nil, fmt.Errorf("get component for build trigger: %w", err)
@@ -605,7 +617,7 @@ func (c *componentClient) triggerBuildInner(ctx context.Context, orgName, projec
 		},
 	}
 
-	httpReq := c.newRequest(ctx, "openchoreo.TriggerBuild", http.MethodPost, c.workflowRunsURL(c.resolveNamespace(orgName)))
+	httpReq := c.newRequest(ctx, "openchoreo.TriggerBuild", http.MethodPost, c.workflowRunsURL(orgName))
 	httpReq.SetJSON(body)
 
 	var raw ocWorkflowRun
@@ -616,8 +628,80 @@ func (c *componentClient) triggerBuildInner(ctx context.Context, orgName, projec
 	return &run, nil
 }
 
+// TriggerCodingAgent creates a WorkflowRun of ClusterWorkflow
+// `app-factory-coding-agent`. Each call creates a fresh run; idempotency is
+// the caller's responsibility (see DispatchService.dispatchOne which gates on
+// task.LastCodingAgentRunName + DispatchedAt).
+func (c *componentClient) TriggerCodingAgent(ctx context.Context, params CodingAgentParams) (*models.WorkflowRun, error) {
+	scopedComp := ScopedComponentName(params.ProjectName, params.ComponentName)
+
+	// Run name shape: coding-agent-<short-task>-<unixMs>. K8s names must be
+	// ≤63 chars and start with a letter. Truncate the taskID to 8 to stay
+	// safely inside the budget. The unixMs suffix makes re-dispatch unique.
+	shortTask := params.TaskID
+	if len(shortTask) > 8 {
+		shortTask = shortTask[:8]
+	}
+	runName := fmt.Sprintf("coding-agent-%s-%d", shortTask, time.Now().UnixMilli())
+
+	// NOTE: deliberately NOT setting `openchoreo.dev/component` / `openchoreo.dev/project`
+	// labels. OC validates ClusterWorkflow → ClusterComponentType allowed-workflow
+	// pairs when a WorkflowRun carries the `openchoreo.dev/component` label, which
+	// would reject `app-factory-coding-agent` because the user's component is
+	// `deployment/service` (allowed only the builder ClusterWorkflows). The agent
+	// pod has no need to be tied to the user's Component for OC's purposes — the
+	// project + component identifiers flow in via the `parameters.task.*` fields
+	// that the runner reads.
+	body := ocWorkflowRun{
+		Metadata: ocObjectMeta{
+			Name: runName,
+			Labels: map[string]string{
+				"app-factory.openchoreo.dev/coding-agent-task": params.TaskID,
+				"app-factory.openchoreo.dev/project":           params.ProjectName,
+				"app-factory.openchoreo.dev/component":         scopedComp,
+			},
+		},
+		Spec: ocWorkflowRunSpec{
+			Workflow: &ocWorkflow{
+				Kind: "ClusterWorkflow",
+				Name: "app-factory-coding-agent",
+				Parameters: &ocWorkflowParameters{
+					Task: &ocCodingAgentTask{
+						ID:            params.TaskID,
+						OrgID:         params.OrgName,
+						ProjectID:     params.ProjectName,
+						ComponentName: params.ComponentName,
+						BranchName:    params.BranchName,
+						Prompt:        params.Prompt,
+					},
+					Repository: &ocWorkflowRepository{
+						URL: params.RepoURL,
+						Identity: &ocWorkflowIdentity{
+							Name:  params.IdentityName,
+							Email: params.IdentityEmail,
+							Login: params.IdentityLogin,
+						},
+					},
+					BFF:        &ocCodingAgentBFF{Bearer: params.Bearer},
+					GitService: &ocCodingAgentGitService{URL: params.GitServiceURL},
+				},
+			},
+		},
+	}
+
+	httpReq := c.newRequest(ctx, "openchoreo.TriggerCodingAgent", http.MethodPost, c.workflowRunsURL(params.OrgName))
+	httpReq.SetJSON(body)
+
+	var raw ocWorkflowRun
+	if err := c.send(ctx, httpReq, &raw, http.StatusCreated); err != nil {
+		return nil, fmt.Errorf("trigger coding-agent: %w", err)
+	}
+	run := normalizeWorkflowRun(raw)
+	return &run, nil
+}
+
 func (c *componentClient) ListWorkflowRuns(ctx context.Context, orgName, projectName, componentName string, limit int, cursor string) (*models.WorkflowRunList, error) {
-	httpReq := c.newRequest(ctx, "openchoreo.ListWorkflowRuns", http.MethodGet, c.workflowRunsURL(c.resolveNamespace(orgName)))
+	httpReq := c.newRequest(ctx, "openchoreo.ListWorkflowRuns", http.MethodGet, c.workflowRunsURL(orgName))
 	httpReq.SetQuery("labelSelector", fmt.Sprintf("openchoreo.dev/component=%s", ScopedComponentName(projectName, componentName)))
 	if limit > 0 {
 		httpReq.SetQuery("limit", fmt.Sprintf("%d", limit))
@@ -639,7 +723,7 @@ func (c *componentClient) ListWorkflowRuns(ctx context.Context, orgName, project
 }
 
 func (c *componentClient) GetWorkflowRun(ctx context.Context, orgName, runName string) (*models.WorkflowRun, error) {
-	httpReq := c.newRequest(ctx, "openchoreo.GetWorkflowRun", http.MethodGet, c.workflowRunURL(c.resolveNamespace(orgName), runName))
+	httpReq := c.newRequest(ctx, "openchoreo.GetWorkflowRun", http.MethodGet, c.workflowRunURL(orgName, runName))
 
 	var raw ocWorkflowRun
 	if err := c.send(ctx, httpReq, &raw, http.StatusOK); err != nil {

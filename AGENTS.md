@@ -9,8 +9,9 @@ asdlc/
 ├── console/                → React frontend (Vite + Oxygen UI)
 ├── asdlc-service/          → Go backend API (BFF) + GitHub webhook receiver
 ├── git-service/            → Go microservice for git operations (clone, commit, push, tag)
-├── agents/                 → TypeScript agents service (Vercel AI SDK; BA, Architect, TaskGen)
-├── remote-worker/          → TS service that runs Claude Agent SDK agents per component (containerised on cluster)
+├── agents/                 → TypeScript agents service (Vercel AI SDK; BA, Architect, TaskGen, Wireframe)
+├── remote-worker/          → TS one-shot runner image for the `app-factory-coding-agent` ClusterWorkflow (Argo per-task pod)
+├── ui-components/          → pnpm workspace packages: `explorer` (markdown explorer), `md-editor`, `excalidraw-editor` + `excalidraw-dsl` (wireframe / domain-model canvas)
 ├── deployments-v2/         → CANONICAL local setup — k3d + WSO2 Cloud (OpenChoreo + Thunder + OpenBao + ESO + kgateway)
 │   ├── README.md           → Quick-start, env reference, troubleshooting
 │   ├── .env.example        → Template; setup.sh prompts for missing values
@@ -37,7 +38,7 @@ asdlc/
 - `architecture.md` — Overall system architecture, service diagram, data ownership
 - `console.md` — Frontend component design (React + Oxygen UI)
 - `api-service.md` — Go backend API service design (BFF, PostgreSQL, OC proxy)
-- `agent-orchestrator.md` — TypeScript AI agents-service (Vercel AI SDK; BA, Architect, TaskGen)
+- `agent-orchestrator.md` — TypeScript AI agents-service (Vercel AI SDK; BA, Architect, TaskGen, Wireframe)
 - `git-integration.md` — Git provider integration design
 - `openchoreo-client.md` — OpenChoreo client layer design
 - `testing.md` — Testing strategy (Playwright E2E + API integration; runs against the cluster brought up by `deployments-v2/scripts/setup.sh`)
@@ -46,7 +47,7 @@ asdlc/
 
 ### Requirements — `requirements/`
 - `1-project-management.md` — Project CRUD scenarios
-- `2-specification.md` — Spec creation and management scenarios
+- `2-requirements.md` — Multi-document requirements creation and management scenarios
 - `3-design.md` — AI design generation scenarios
 - `4-implementation.md` — AI implementation scenarios
 - `5-build-deploy.md` — Build and deploy scenarios
@@ -68,15 +69,26 @@ the end of `setup.sh` and printed in the login banner.
 | `app-factory-console` | React, Oxygen UI, nginx | 8080 | Frontend SPA (Thunder auth via PKCE) |
 | `app-factory-api` | Go, GORM, PostgreSQL | 8080 | BFF — CRUD, OC proxy, GitHub webhook receiver, build trigger |
 | `app-factory-git-service` | Go, GORM, PostgreSQL | 3300 | Git operations — clone, commit, push, tag; resolves per-org credentials from OpenBao |
-| `app-factory-agents-service` | TypeScript, Vercel AI SDK | 3400 | AI agents: BusinessAnalyst (spec), Architect (design), TaskGenerator |
-| `app-factory-remote-worker` | TypeScript, Claude Agent SDK | 3200 | Runs an Agent SDK `query()` per component in an isolated workspace. Containerised on cluster; authed via `ANTHROPIC_API_KEY` from OpenBao. |
+| `app-factory-agents-service` | TypeScript, Vercel AI SDK | 3400 | AI agents: BusinessAnalyst (spec), Architect (design), TaskGenerator, Wireframe |
+| `app-factory-coding-agent-runner` | TypeScript, Claude Agent SDK | n/a | One-shot runner image referenced by ClusterWorkflow `app-factory-coding-agent`. Argo creates one ephemeral pod per ComponentTask; pod exits when the agent finishes. Authed via `ANTHROPIC_API_KEY` (per-WorkflowRun ExternalSecret from OpenBao). |
 | `app-factory-postgresql` | PostgreSQL 16 | 5432 | Component tasks, git repository records (`wso2cloud` namespace) |
 | `thunder` | WSO2 Thunder IDP | 8080/8090 | Identity provider; user auth (PKCE) + service-to-service `client_credentials`. Browser URL: `http://thunder.openchoreo.localhost:8080` |
-| `openbao` | HashiCorp Vault fork | 8200 | Secret store. Holds `ANTHROPIC_API_KEY`, `GITHUB_PLATFORM_PAT`, GitHub webhook secret, BFF task-signing PEM. |
+| `openbao` | HashiCorp Vault fork | 8200 | Secret store. Holds `ANTHROPIC_API_KEY`, per-org GitHub credentials at `secret/asdlc/{ouHandle}/github/pat`, GitHub webhook secret, BFF task-signing PEM. |
 
-Smee-client and collab-server are **deferred** — webhook delivery requires a
-public URL or manual smee tunnel; collaborative editing in the console is
-non-functional until collab-server lands.
+**GitHub webhook delivery (local dev)**: the BFF `/webhooks/github` endpoint
+has no public ingress. A host-side bridge — `deployments-v2/scripts/webhook-relay.sh`
+— runs `kubectl port-forward` + `npx smee-client` together, forwarding the
+`smee.io` channel in `.env` (`GITHUB_WEBHOOK_DELIVERY_URL`) to the BFF service.
+**Run it in a terminal that stays open**; the script's supervisor only
+restarts the two child processes, so a closed shell or long laptop sleep
+takes the whole relay down and webhook-driven task transitions
+(`pull_request.ready_for_review` / `merged`, `push`) silently stop landing.
+The cluster-health pre-flight in `docs/operations/cluster-health.md`
+covers relay liveness — see Detect step (4) and Recover step (4).
+
+Collab-server (collaborative editing in the console) is **deferred**; an
+in-cluster `smee-client` Workload to replace the host-side relay is also
+deferred.
 
 ### Running Locally
 
@@ -113,10 +125,12 @@ persists across reboots; only `setup.sh` brings up the platform — every
 day-to-day cycle is just `dev-cycle.sh`.
 
 **Required env values** (`deployments-v2/.env`, prompted on first run):
-`ANTHROPIC_API_KEY`. **Optional:** `GITHUB_PLATFORM_PAT` + `GITHUB_REPO_OWNER`
-auto-seed the dev-tier "default" org's credentials so users can skip the
-"Settings → GitHub Integration" step. Auto-generated on first run:
-`GITHUB_WEBHOOK_SECRET`, `OAUTH_STATE_SIGNING_KEY`, `GITHUB_WEBHOOK_PROXY_URL`
+`ANTHROPIC_API_KEY`. **Optional (local-dev only):** `LOCAL_DEV_ADMIN_GITHUB_PAT`
++ `LOCAL_DEV_ADMIN_GITHUB_OWNER` are consumed exclusively by
+`scripts/lib/seed-admin-github.sh`, which calls the public Connect API to
+pre-connect the admin org. The platform binary does not read these vars —
+no env var, manifest, or seed names an org. Auto-generated on first run:
+`GITHUB_WEBHOOK_SECRET`, `OAUTH_STATE_SIGNING_KEY`, `GITHUB_WEBHOOK_DELIVERY_URL`
 (smee.io channel), and `keys/task-signing.pem` (RSA). See
 `deployments-v2/.env.example` for the full template.
 
@@ -136,7 +150,7 @@ one, the right home is upstream.
 
 **Optional GitHub App env values** (only needed if you want App-mode connect to work — PAT mode connect is fully self-contained from the console UI): `GITHUB_APP_ID`, `GITHUB_CLIENT_ID`, `GITHUB_CLIENT_SECRET`, `GITHUB_APP_SLUG`, `GITHUB_APP_PRIVATE_KEY_PATH`. See `docs/operations/github-app.md` for the App registration runbook.
 
-**Per-org GitHub connection**: each OC org connects via the console (Settings → GitHub Integration) using either GitHub App (preferred) or a Personal Access Token. There is no platform-wide PAT — git-service holds per-org credentials in OpenBao and routes every operation through the resolver. If `GITHUB_PLATFORM_PAT` + `GITHUB_REPO_OWNER` are set in `.env`, the "default" org is seeded automatically on first boot; otherwise navigate to `/organizations/{org}/settings/github` after login.
+**Per-org GitHub connection**: each OC org connects via the console (Settings → GitHub Integration) using either GitHub App (preferred) or a Personal Access Token. There is no platform-wide PAT — git-service holds per-org credentials in OpenBao and routes every operation through the resolver. The local-dev admin shortcut (`LOCAL_DEV_ADMIN_GITHUB_*` in `.env`) routes through the same Connect endpoint via `seed-admin-github.sh`; otherwise navigate to `/organizations/{org}/settings/github` after login.
 
 **PAT scopes** (when connecting via PAT):
 - Classic PAT: `repo` + `admin:org` + `admin:repo_hook`
@@ -155,13 +169,13 @@ In-cluster service DNS (k3d, namespace `default` for asdlc workloads, `wso2cloud
 - BFF inside cluster: `http://app-factory-api:8080`
 - Agents service: `http://app-factory-agents-service:3400`
 - Git service: `http://app-factory-git-service:3300`
-- Remote worker: `http://app-factory-remote-worker:3200`
+- Coding-agent: no Service — Argo creates one pod per WorkflowRun in the WorkflowPlane namespace
 - Postgres: `app-factory-postgresql.wso2cloud:5432`
 - GitHub webhook: BFF `/webhooks/github` (HMAC-authed; delivered via smee.io — channel auto-provisioned at first setup)
 
 #### Agents service (`agents/`)
 
-The TypeScript AI service backing every BFF AI flow. Built on the **Vercel AI SDK v6** (`ai` + `@ai-sdk/anthropic`) and runs in Docker on port **3400**. Authenticates with `ANTHROPIC_API_KEY` (standard API key — no Claude CLI / keychain dependency). Exposes one route per agent: business-analyst (SSE streaming spec generation), architect (SSE streaming design), task-generator (JSON).
+The TypeScript AI service backing every BFF AI flow. Built on the **Vercel AI SDK v6** (`ai` + `@ai-sdk/anthropic`) and runs in Docker on port **3400**. Authenticates with `ANTHROPIC_API_KEY` (standard API key — no Claude CLI / keychain dependency). Exposes one route per agent: business-analyst (SSE streaming spec generation), architect (SSE streaming design), task-generator (JSON), wireframe (JSON; the resulting Excalidraw scene renders in the `excalidraw-editor` UI component).
 
 Structure:
 - `src/shared/` — `createAgent` factory wrapping `streamText`, shared config and types
@@ -172,9 +186,11 @@ Structure:
 
 Requires `ANTHROPIC_API_KEY`. Run `npm install && npx tsc --noEmit` in `agents/` to verify.
 
-#### Remote-worker deployment
+#### Coding-agent runner deployment
 
-The `remote-worker` uses the **Claude Agent SDK** (`@anthropic-ai/claude-agent-sdk`'s `query()`) and runs as the `app-factory-remote-worker` Workload on the cluster, authed via `ANTHROPIC_API_KEY` (same key the agents-service already uses). The SDK auto-discovers the bundled native Claude binary inside the image. The BFF reaches it at `http://app-factory-remote-worker:3200`. Workspaces live inside the pod under `/home/asdlc/asdlc-workspace/<orgId>/<projectId>/<taskId>/` and are wiped on restart by design — in-flight tasks are recovered by the webhook-driven projector + redispatch.
+The `remote-worker/` directory is a **one-shot runner image** referenced by the OpenChoreo `ClusterWorkflow: app-factory-coding-agent` (defined in `deployments-v2/wso2cloud-deployment/.../cluster-workflows/app-factory-coding-agent.yaml`). It is **not** a long-lived Workload. On each task dispatch the BFF creates a `WorkflowRun`; Argo schedules one ephemeral pod on the WorkflowPlane that runs `npx tsx src/oneshot.ts`, calls `provisionWorkspace()` and `runClaudeQuery()`, and exits. Workspace lives inside the pod's `emptyDir` (`/home/asdlc/asdlc-workspace/<orgId>/<projectId>/<taskId>/`) and is discarded with the pod. `ANTHROPIC_API_KEY` flows in via a per-WorkflowRun ExternalSecret backed by the same OpenBao path the agents-service uses (`secret/apps/anthropic`).
+
+For local k3d the runner image is built and imported by `dev-cycle.sh` under the static tag `asdlc.local/app-factory-coding-agent-runner:local`; the ClusterWorkflow pins this name with `imagePullPolicy: Never` so each new pod uses the freshly imported image. Add new runner images to `deployments-v2/scripts/components.sh`'s `RUNNER_IMAGES` array.
 
 #### Implementation execution flow (Phase 0 — GitHub-native)
 
@@ -182,15 +198,20 @@ When the user clicks "Start Implementation" in the console:
 
 1. BFF creates `ComponentTask` records from the design (one per component) via `/tasks/generate`. Each task gets a GitHub issue with full context.
 2. Per task, BFF idempotently provisions: feature branch `task/<slug>-<short-id>` off the default branch, a draft PR linking back to the issue (`Closes #N`), and a per-task bearer (HS256 JWT, 24h TTL) for the agent's credential helper.
-3. BFF dispatches each task to `remote-worker` (POST `/dispatch`). The Local flow skips this — the user runs Claude Code locally; if they install the ASDLC plugin (`remote-worker/plugin/`) they get the same workflow skill the remote agent loads.
-4. Remote-worker provisions the per-task workspace at `<WORKSPACE_BASE_PATH>/<orgId>/<projectId>/<taskId>/` (`/home/asdlc/asdlc-workspace/...` inside the pod), clones the feature branch, configures `.git/config` (user + credential helper), and writes `gh` config + bearer file. Then starts an Agent SDK `query()` with `cwd = workspace`, the ASDLC plugin loaded (so the `asdlc` skill is available), and no tokens in env.
+3. BFF creates a `WorkflowRun` of `ClusterWorkflow: app-factory-coding-agent` via the OC REST API (`/api/v1/namespaces/<ns>/workflowruns`). Labels include `app-factory.openchoreo.dev/coding-agent-task: <taskId>`. The Local flow skips dispatch — the user runs Claude Code locally; if they install the ASDLC plugin (`remote-worker/plugin/`) they get the same workflow skill the cluster pod loads.
+4. Argo schedules an ephemeral pod on the WorkflowPlane. The pod's entrypoint is `npx tsx src/oneshot.ts`, which reads ASDLC_* env vars (substituted from `{{workflow.parameters.*}}`), provisions the workspace under an `emptyDir` mount (`/home/asdlc/asdlc-workspace/<orgId>/<projectId>/<taskId>/`), clones the feature branch, configures `.git/config`, writes `gh` config + bearer file, and starts an Agent SDK `query()` with `cwd = workspace`, the ASDLC plugin loaded (so the `asdlc` skill is available), and no tokens in env.
 5. Agent reads the issue (via `gh issue view`), edits code, runs `git commit` / `git push origin HEAD`, posts `gh issue comment` for progress, and runs `gh pr ready <prNumber>` when done. The SDK is credential-blind — `git` and `gh` authenticate via the workspace's credential helper / `gh` wrapper, both of which fetch fresh tokens from `git-service /api/v1/credentials/refresh`. **The agent does not merge.**
 6. Webhooks drive every state transition. The BFF's `/webhooks/github` (HMAC-validated, delivery-ID-deduped) processes:
    - `pull_request.ready_for_review` → task `in_progress` → `ready_for_review`
    - `pull_request.closed merged=true` → task `* → merged`, records merge SHA
    - `pull_request.closed merged=false` → task `* → rejected`
    - `push` to default branch → BFF creates an OC `WorkflowRun` with `params.repository.revision.commit` pinned to the merge SHA. Filters components by changed paths.
-7. The build watcher (10s sweep) polls OC `WorkflowRun` status and applies `build.{succeeded,failed}` via the projector → task `building → deployed | failed`.
+
+   There is **no polling fallback** — if the relay is down (see "GitHub
+   webhook delivery (local dev)" above), the projector never fires and
+   the task is stuck until the missed event is redelivered from the
+   smee.io channel or the GitHub Recent Deliveries panel.
+7. The build watcher (10s sweep) polls OC `WorkflowRun` status and applies `build.{succeeded,failed}` via the projector → task `building → deployed | failed`. A parallel coding-agent watcher (also 10s) polls coding-agent WorkflowRuns and applies `coding_agent.failed` on terminal pod failure → task `in_progress → failed` (success transitions ride the GitHub `pr.ready_for_review` webhook instead).
 
 **Task lifecycle**: `pending → in_progress → ready_for_review → merged → building → deployed | rejected | failed`.
 
@@ -294,13 +315,43 @@ bash deployments-v2/scripts/teardown.sh # remove asdlc workloads (cluster stays)
 - **Backend (BFF)**: Go 1.25, net/http, GORM, PostgreSQL
 - **Agent Service**: TypeScript, Node.js, Claude Agent SDK
 - **Agents Package**: TypeScript, Vercel AI SDK v6 (`ai` + `@ai-sdk/anthropic`), Zod v4
-- **Remote Worker**: TypeScript, Claude Agent SDK (containerised on cluster with `ANTHROPIC_API_KEY`)
+- **Coding-Agent Runner**: TypeScript, Claude Agent SDK (one-shot pod per ClusterWorkflow run, authed with `ANTHROPIC_API_KEY` from OpenBao via per-WorkflowRun ExternalSecret)
 - **Agent Protocol**: GitHub itself (issue + branch + PR), driven by webhooks. The agent uses `git` and `gh` directly inside a per-task workspace.
 - **Testing**: Playwright (E2E), vitest (API integration)
 - **Infrastructure**: k3d (local) + OpenChoreo + Thunder + OpenBao + ESO + kgateway, brought up by `deployments-v2/`
 
 
+## Design Review (OpenChoreo + WSO2 Cloud compliance)
+
+This repo ships two specialised reviewer subagents under `.claude/agents/`. They are pure subject-matter experts — not aware of App Factory's specifics — and you query them with the relevant design context:
+
+- **`oc-design-expert`** — answers questions and reviews designs strictly from the OpenChoreo perspective. Verifies against the OC sources at `/Users/wso2/openchoreo-sources/openchoreo` and docs at `/Users/wso2/openchoreo-sources/openchoreo.github.io`.
+- **`wso2cloud-expert`** — answers questions and reviews designs strictly from the WSO2 Cloud hosting perspective (GUIDELINES.md compliance, controlplane/dataplane layout, GitOps promotion, secrets, auth, gateway). Verifies against `/Users/wso2/repos/wso2cloud-deployment` (all branches) and the `agent-manager` reference at `/Users/wso2/repos/agent-manager`.
+
+**When to invoke them (do this proactively, in parallel):**
+
+Any task that meaningfully touches one of the following must be reviewed by **both agents in parallel** (single message, multiple Agent tool calls) before the change is considered complete:
+
+- New / changed OC primitives: Project, Component, Workload, ComponentType, Trait, Workflow, ReleaseBinding, SecretReference, ClusterWorkflow.
+- Changes to `asdlc-service/clients/openchoreo/` or `services/workflowrun_service.go`.
+- New env vars, secrets, or credential flows on any of the 5 long-lived services or the coding-agent runner.
+- New ingress / HTTPRoute / gateway exposure, new auth flow, new service-to-service call.
+- Changes to `deployments-v2/manifests/env-overlays/*.yaml` or the `deployments-v2/wso2cloud-deployment/` submodule.
+- Architectural / design docs in `docs/design/*.md`.
+- Anything described as "extending the platform", "new component pattern", "promotion / hosting / multi-tenancy".
+
+**How to run the review:**
+
+1. Read the design / change locally and identify the OC and cloud surfaces it touches.
+2. Send a single message with two `Agent` tool calls — one to `oc-design-expert`, one to `wso2cloud-expert`. Each prompt should describe the design in self-contained terms (do not assume the agents know App Factory) and point at the relevant App Factory files for the agents to read.
+3. Reconcile their feedback: hard violations must be fixed; soft concerns should be discussed; conflicts between the two reviewers should be surfaced explicitly to the user.
+4. Compare against `agent-manager` (the reference implementation) for any choice the reviewers flag as ambiguous.
+
+Skip the dual review only for purely local code-quality changes that have no OC or WSO2 Cloud surface (e.g. lint-only refactors inside a single function, frontend cosmetic tweaks).
+
 ## Practices
 - **Important**: Always do the proper fix, stick to patterns used by agent manager and integration platform. No hacks.
 - **Important**: If you come across a bug, fix it even if its not releted to your current task.
+- **Important**: Any change touching OpenChoreo primitives, the OC client, or WSO2 Cloud hosting (deployments, secrets, ingress, auth, env overlays, the `deployments-v2/wso2cloud-deployment` submodule) MUST go through the parallel `oc-design-expert` + `wso2cloud-expert` review described above. See the **Design Review** section.
+- **Important**: Cluster health pre-flight (local dev). Before any operation that talks to the local k3d cluster — `kubectl`, `dev-cycle.sh`, BFF / OC API calls, dispatching a task, running tests — **delegate the check to an isolated subagent** (e.g. `general-purpose`) with a prompt that says: "Read [`docs/operations/cluster-health.md`](docs/operations/cluster-health.md), run the **Detect** block, and if anything trips run **Recover** until the cluster is clean. Report back in under 100 words: healthy / what was wrong / what you did." Run it in a subagent (not in the main context) so the kubectl/event output doesn't pollute the parent. Only proceed with the requested action after the subagent reports healthy. The laptop's sleep/wake cycle frequently leaves pods transiently unhealthy and OC's mutating webhook serving 502s; without this check the agent will surface those as confusing `INTERNAL_ERROR`s instead of waiting them out.
 

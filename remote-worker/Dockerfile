@@ -22,8 +22,7 @@ COPY . .
 # Create a non-root user with a writeable home for workspace provisioning.
 RUN addgroup -S asdlc && adduser -S -G asdlc asdlc
 RUN chown -R asdlc:asdlc /app
-RUN mkdir -p /home/asdlc && chown -R asdlc:asdlc /home/asdlc
+RUN mkdir -p /home/asdlc/asdlc-workspace && chown -R asdlc:asdlc /home/asdlc
 USER asdlc
 
-EXPOSE 3200
-CMD ["npx", "tsx", "src/index.ts"]
+ENTRYPOINT ["npx", "tsx", "src/oneshot.ts"]

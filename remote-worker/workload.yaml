@@ -1,9 +1,0 @@
-apiVersion: openchoreo.dev/v1alpha1
-metadata:
-  name: app-factory-remote-worker
-endpoints:
-  - name: http
-    type: HTTP
-    port: 3200
-    visibility:
-      - project

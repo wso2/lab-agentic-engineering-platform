@@ -18,6 +18,8 @@ source "$SCRIPT_DIR/lib/submodule.sh"
 source "$SCRIPT_DIR/lib/cluster.sh"
 source "$SCRIPT_DIR/lib/platform.sh"
 source "$SCRIPT_DIR/lib/asdlc.sh"
+source "$SCRIPT_DIR/lib/seed-admin-org.sh"
+source "$SCRIPT_DIR/lib/seed-admin-github.sh"
 
 DRY_RUN=0
 case "${1:-}" in
@@ -55,6 +57,8 @@ register_streaming_timeouts
 register_console_redirect_uri
 register_thunder_cors_origin
 register_service_oauth_clients
+seed_admin_org
+seed_admin_github
 
 log_section "Done"
 print_login_banner

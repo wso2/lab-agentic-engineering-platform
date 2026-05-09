@@ -35,14 +35,13 @@ type secretRefClient struct {
 
 // NewSecretRefClient builds the client. Uses the same OC API base URL,
 // host header, and service-token provider as the component client.
-func NewSecretRefClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider, namespaceOverride string) SecretRefClient {
+func NewSecretRefClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider) SecretRefClient {
 	return &secretRefClient{
 		clientBase: clientBase{
 			baseURL:       baseURL,
 			hostHeader:    hostHeader,
 			httpClient:    &http.Client{Transport: httpx.WrapTransport(nil)},
 			tokenProvider: tokenProvider,
-			nsMap:         parseNamespaceOverride(namespaceOverride),
 		},
 	}
 }
@@ -108,7 +107,7 @@ type secretRefTplMeta struct {
 }
 
 func (c *secretRefClient) EnsureSecretReference(ctx context.Context, namespace, name, vaultPath string) error {
-	ns := c.resolveNamespace(namespace)
+	ns := namespace
 	body := secretReference{
 		APIVersion: "openchoreo.dev/v1alpha1",
 		Kind:       "SecretReference",

@@ -84,11 +84,23 @@ type ocWorkflowRevision struct {
 	Commit string `json:"commit,omitempty"`
 }
 
+// ocWorkflowIdentity is the {name,email,login} block used by ClusterWorkflows
+// that need a git author identity passed in (coding-agent today).
+type ocWorkflowIdentity struct {
+	Name  string `json:"name"`
+	Email string `json:"email"`
+	Login string `json:"login,omitempty"`
+}
+
 type ocWorkflowRepository struct {
 	URL       string              `json:"url,omitempty"`
 	SecretRef string              `json:"secretRef,omitempty"`
 	Revision  *ocWorkflowRevision `json:"revision,omitempty"`
 	AppPath   string              `json:"appPath,omitempty"`
+	// Identity is set only by the coding-agent ClusterWorkflow path. The
+	// build path (dockerfile-builder etc.) leaves it nil — the field is
+	// `omitempty` so the JSON shape stays unchanged for those callers.
+	Identity *ocWorkflowIdentity `json:"identity,omitempty"`
 }
 
 type ocDockerParameters struct {
@@ -96,9 +108,32 @@ type ocDockerParameters struct {
 	FilePath string `json:"filePath,omitempty"`
 }
 
+// ocCodingAgentTask carries the per-task fields of the coding-agent
+// ClusterWorkflow's `task` parameter object. Field names match the
+// openAPIV3Schema in the YAML.
+type ocCodingAgentTask struct {
+	ID            string `json:"id"`
+	OrgID         string `json:"orgId"`
+	ProjectID     string `json:"projectId"`
+	ComponentName string `json:"componentName"`
+	BranchName    string `json:"branchName"`
+	Prompt        string `json:"prompt"`
+}
+
+type ocCodingAgentBFF struct {
+	Bearer string `json:"bearer"`
+}
+
+type ocCodingAgentGitService struct {
+	URL string `json:"url"`
+}
+
 type ocWorkflowParameters struct {
-	Repository *ocWorkflowRepository `json:"repository,omitempty"`
-	Docker     *ocDockerParameters   `json:"docker,omitempty"`
+	Repository *ocWorkflowRepository    `json:"repository,omitempty"`
+	Docker     *ocDockerParameters      `json:"docker,omitempty"`
+	Task       *ocCodingAgentTask       `json:"task,omitempty"`
+	BFF        *ocCodingAgentBFF        `json:"bff,omitempty"`
+	GitService *ocCodingAgentGitService `json:"gitService,omitempty"`
 }
 
 type ocWorkflow struct {
@@ -127,18 +162,28 @@ type ocComponentList struct {
 
 // -- WorkflowRun (builds) ----------------------------------------------------
 
-type ocParameter struct {
-	Name  string `json:"name"`
-	Value string `json:"value,omitempty"`
-}
+// WorkflowRun condition Reasons. Mirrors OC's
+// internal/controller/workflowrun/controller_conditions.go reason constants.
+// `normalizeWorkflowRun` lifts the WorkflowCompleted condition's Reason
+// into models.WorkflowRun.Status; classifiers compare against these
+// constants instead of substring-matching the reason string.
+const (
+	ReasonWorkflowSucceeded = "WorkflowSucceeded"
+	ReasonWorkflowFailed    = "WorkflowFailed"
+	ReasonWorkflowRunning   = "WorkflowRunning"
+)
 
-type ocTaskOutputs struct {
-	Parameters []ocParameter `json:"parameters,omitempty"`
-}
-
+// ocTask is the OC CRD-canonical projection of WorkflowRun.Status.Tasks[i].
+// Per openchoreo/api/v1alpha1/workflowrun_types.go:80-109, OC surfaces only
+// {Name, Phase, Message, StartedAt, CompletedAt}. The previously-declared
+// `Outputs` field never existed on the CRD and was always nil on the wire —
+// see docs/design/auth-failure-classification.md.
 type ocTask struct {
-	Name    string         `json:"name"`
-	Outputs *ocTaskOutputs `json:"outputs,omitempty"`
+	Name        string  `json:"name"`
+	Phase       string  `json:"phase,omitempty"`
+	Message     string  `json:"message,omitempty"`
+	StartedAt   string  `json:"startedAt,omitempty"`
+	CompletedAt string  `json:"completedAt,omitempty"`
 }
 
 type ocWorkflowRunStatus struct {

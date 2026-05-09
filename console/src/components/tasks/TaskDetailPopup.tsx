@@ -1,5 +1,7 @@
 import { useState } from 'react';
+import { Link as RouterLink } from 'react-router-dom';
 import {
+  alpha,
   Box,
   Button,
   CircularProgress,
@@ -7,12 +9,12 @@ import {
   Paper,
   Popper,
   Typography,
-  useTheme,
 } from '@wso2/oxygen-ui';
 import ReactMarkdown from 'react-markdown';
-import { Play } from '@wso2/oxygen-ui-icons-react';
+import { ChevronRight, Play } from '@wso2/oxygen-ui-icons-react';
 import { api } from '../../services/api';
 import type { Task } from '../../services/api';
+import { projectTaskDetailPath } from '../../lib/paths';
 import { AssigneeChip } from './AssigneeChip';
 import { LabelList } from './LabelList';
 
@@ -27,8 +29,6 @@ interface TaskDetailPopupProps {
 }
 
 export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, projectId, onClose }: TaskDetailPopupProps) {
-  const theme = useTheme();
-  const isDark = theme.palette.mode === 'dark';
   const [isExecuting, setIsExecuting] = useState(false);
 
   const handleExecute = async (e: React.MouseEvent) => {
@@ -83,8 +83,8 @@ export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, project
                 '&::-webkit-scrollbar': { width: 4 },
                 '&::-webkit-scrollbar-track': { bgcolor: 'transparent' },
                 '&::-webkit-scrollbar-thumb': {
-                  bgcolor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)',
-                  borderRadius: '4px',
+                  bgcolor: (t) => alpha(t.palette.text.primary, 0.15),
+                  borderRadius: 0.5,
                 },
                 '& .md-body': {
                   fontSize: '0.75rem',
@@ -94,34 +94,34 @@ export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, project
                     fontSize: '0.8125rem',
                     fontWeight: 600,
                     color: 'text.primary',
-                    mt: '10px',
-                    mb: '4px',
+                    mt: 1.25,
+                    mb: 0.5,
                   },
-                  '& p': { m: 0, mb: '6px' },
-                  '& ul, & ol': { pl: '18px', m: 0, mb: '6px' },
-                  '& li': { mb: '2px' },
+                  '& p': { m: 0, mb: 0.75 },
+                  '& ul, & ol': { pl: 2.25, m: 0, mb: 0.75 },
+                  '& li': { mb: 0.25 },
                   '& code': {
                     fontFamily: 'monospace',
                     fontSize: '0.7rem',
-                    bgcolor: isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.06)',
-                    px: '4px',
-                    py: '1px',
-                    borderRadius: '3px',
+                    bgcolor: (t) => alpha(t.palette.text.primary, 0.06),
+                    px: 0.5,
+                    py: 0.125,
+                    borderRadius: 0.75,
                   },
                   '& pre': {
-                    bgcolor: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
-                    p: '8px',
-                    borderRadius: '6px',
+                    bgcolor: (t) => alpha(t.palette.text.primary, 0.04),
+                    p: 1,
+                    borderRadius: 1.5,
                     overflowX: 'auto',
-                    mb: '6px',
+                    mb: 0.75,
                     '& code': { bgcolor: 'transparent', p: 0 },
                   },
                   '& strong': { fontWeight: 600, color: 'text.primary' },
                   '& a': { color: 'primary.main' },
                   '& blockquote': {
                     borderLeft: '3px solid',
-                    borderColor: isDark ? 'rgba(255,255,255,0.15)' : 'rgba(0,0,0,0.15)',
-                    pl: '10px',
+                    borderColor: 'divider',
+                    pl: 1.25,
                     ml: 0,
                     color: 'text.disabled',
                   },
@@ -156,6 +156,20 @@ export function TaskDetailPopup({ open, anchorEl, task, isInTodo, orgId, project
               sx={{ alignSelf: 'flex-start', mt: 'auto' }}
             >
               {isExecuting ? 'Executing…' : 'Execute Now'}
+            </Button>
+          )}
+
+          {!isInTodo && task.componentTaskId && (
+            <Button
+              component={RouterLink}
+              to={projectTaskDetailPath(orgId, projectId, task.componentTaskId)}
+              variant="outlined"
+              size="small"
+              endIcon={<ChevronRight size={12} />}
+              onClick={(e: React.MouseEvent) => { e.stopPropagation(); onClose(); }}
+              sx={{ alignSelf: 'flex-start', mt: 'auto' }}
+            >
+              View execution progress
             </Button>
           )}
         </Paper>

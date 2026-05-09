@@ -31,14 +31,8 @@ env:
     value: "ASDLC Bot"
   - key: GIT_COMMITTER_EMAIL
     value: "bot@asdlc.dev"
-  - key: GITHUB_PLATFORM_PAT_SEED_ORGS
-    value: "default"
-  - key: GITHUB_REPO_OWNER
-    value: "${GITHUB_REPO_OWNER}"
   - key: ASDLC_API_INTERNAL_URL
     value: "http://app-factory-api:8080"
-  - key: GITHUB_PLATFORM_PAT
-    value: "${GITHUB_PLATFORM_PAT}"
   - key: GITHUB_WEBHOOK_DELIVERY_URL
     value: "${GITHUB_WEBHOOK_DELIVERY_URL}"
   - key: GITHUB_WEBHOOK_SECRET

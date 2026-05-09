@@ -430,6 +430,7 @@ func (s *taskService) persistAndIssue(
 			SourceDesignVersion: designVersion,
 			Order:               i + 1,
 			Status:              string(models.TaskStatusPending),
+			LifecycleStatus:     string(models.TaskLifecycleGhIssueWaiting),
 			ExecType:            "WORKER",
 		}
 		if err := s.taskRepo.Create(ctx, task); err != nil {
@@ -462,6 +463,7 @@ func (s *taskService) persistAndIssue(
 				row.IssueOK = false
 				row.IssueErr = err.Error()
 				row.Task.Status = string(models.TaskStatusFailed)
+				row.Task.LifecycleStatus = string(models.TaskLifecycleGhIssueFailed)
 				row.Task.ErrorMessage = "github.create_failed: " + err.Error()
 				cause := "github.create_failed"
 				row.Task.Cause = &cause

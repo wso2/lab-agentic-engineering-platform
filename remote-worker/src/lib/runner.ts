@@ -4,6 +4,8 @@ import { query, type Query } from "@anthropic-ai/claude-agent-sdk";
 import type { TaskLog } from "./logger.js";
 import type { DispatchRequest } from "./types.js";
 import type { WorkspaceLayout } from "./workspace.js";
+import { emit } from "./progress/emitter.js";
+import { progressFromSdkMessage } from "./progress/from-sdk.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_PATH = path.resolve(__dirname, "../../plugin");
@@ -60,6 +62,9 @@ export function runClaudeQuery(
     try {
       for await (const message of q) {
         log.write(message);
+        for (const event of progressFromSdkMessage(message)) {
+          emit(event);
+        }
         if (message.type === "result") {
           if (message.subtype === "success") {
             return { exitCode: 0 };
@@ -74,10 +79,12 @@ export function runClaudeQuery(
           };
         }
       }
+      emit({ kind: "log", level: "warn", summary: "agent stream ended without result" });
       return { exitCode: 1, error: "agent stream ended without result" };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       log.write({ type: "worker_error", error: msg });
+      emit({ kind: "result", status: "failure", error: msg });
       return { exitCode: 1, error: msg };
     } finally {
       log.close();

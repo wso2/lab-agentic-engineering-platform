@@ -350,6 +350,7 @@ func (s *taskService) ensureIssueForTask(
 
 	task.IssueURL = issue.URL
 	task.IssueNumber = issue.Number
+	task.LifecycleStatus = string(models.TaskLifecycleGhIssueCreated)
 	if err := s.taskRepo.Update(ctx, task); err != nil {
 		return fmt.Errorf("persist issue metadata: %w", err)
 	}

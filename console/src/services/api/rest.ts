@@ -24,6 +24,8 @@ import type {
   Organization,
   CreateOrganizationInput,
   ProjectBoard,
+  TaskStatusResponse,
+  TaskProgressResponse,
 } from './types';
 
 import { env } from '../../config/env';
@@ -884,6 +886,35 @@ export const restApi = {
     await fetchJSON<void>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/exec`, {
       method: 'POST',
     });
+  },
+
+  async getTask(orgHandle: string, projectId: string, taskId: string): Promise<ComponentTask> {
+    return fetchJSON<ComponentTask>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}`);
+  },
+
+  async getTaskStatus(orgHandle: string, projectId: string, taskId: string): Promise<TaskStatusResponse> {
+    return fetchJSON<TaskStatusResponse>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/status`);
+  },
+
+  async getTaskAgentProgress(
+    orgHandle: string, projectId: string, taskId: string,
+    sinceMillis: number, limit?: number,
+  ): Promise<TaskProgressResponse> {
+    const q = new URLSearchParams({ sinceMillis: String(sinceMillis) });
+    if (limit) q.set('limit', String(limit));
+    return fetchJSON<TaskProgressResponse>(
+      `${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/progress/agent?${q.toString()}`,
+    );
+  },
+
+  async getTaskBuildProgress(
+    orgHandle: string, projectId: string, taskId: string,
+    sinceMillis: number,
+  ): Promise<TaskProgressResponse> {
+    const q = new URLSearchParams({ sinceMillis: String(sinceMillis) });
+    return fetchJSON<TaskProgressResponse>(
+      `${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/progress/build?${q.toString()}`,
+    );
   },
 
   // -- Component Configs (Environment Variables) --------------------------------

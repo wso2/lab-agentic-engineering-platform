@@ -203,7 +203,7 @@ func main() {
 	gitOpsService := services.NewGitOpsService(repoRepo, resolver, cfg.RepoBasePath)
 	artifactService := services.NewArtifactService(repoRepo, gitOpsService)
 	githubV2Client := services.NewGitHubV2Client()
-	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, resolver, cfg.GitHubPlatformPAT)
+	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, resolver)
 
 	gitOpsService.CleanupOrphanTmpClones()
 	go func() {
@@ -228,17 +228,10 @@ func main() {
 	// lookups. Mounted under shared-secret middleware.
 	credService := services.NewCredentialService(db, openBaoStore, minter, cfg.WebhookHMACSecret, cfg.GitHubAppClientID, appClientSecret, githubClient)
 
-	// Default-org PAT seed — dev-only convenience so a fresh deploy lands
-	// with the default org pre-connected from env vars. Skips silently if
-	// tier is not dev, env vars are empty, or any row already exists for
-	// default. Bad PATs log a warning and continue; they don't crash the
-	// service. Routes through credService.Connect — the same code path
-	// the console UI uses — so there is no parallel PAT-validation logic.
-	defaultSeedCtx, cancelDefaultSeed := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := seed.DefaultOrgPATFromEnv(defaultSeedCtx, db, cfg, credService); err != nil {
-		slog.Warn("default-org seed unexpected error", "error", err)
-	}
-	cancelDefaultSeed()
+	// No default-org PAT seed: the binary is org-agnostic. The local-dev
+	// admin org is pre-connected by deployments-v2/scripts/lib/seed-admin-github.sh,
+	// which calls the same /credentials/connect endpoint the console uses.
+	// Hosted environments connect via the console UI per GUIDELINES.md §9.
 
 	// Build credentials service. The mint-build endpoint validates
 	// (ocOrgId, repoSlug) ownership, mints a fresh GitHub token via the
@@ -254,7 +247,7 @@ func main() {
 	// the validator only flags stale identity in the DB.
 	validatorProbes := services.NewValidatorProbes(credService, githubClient, resolver, minter)
 	validator := credentials.NewValidator(db, validatorProbes, nil, cfg.CredentialValidatorInterval)
-	boardService := services.NewBoardService(repoRepo, githubV2Client, cfg.GitHubPlatformPAT)
+	boardService := services.NewBoardService(repoRepo, githubV2Client, resolver)
 
 	// Controllers
 	repoCtrl := controllers.NewRepoController(repoService)
@@ -294,7 +287,7 @@ func main() {
 	} else {
 		slog.Warn("BFF_JWKS_URL not set — Task JWT verification disabled (dev/test only)")
 	}
-	projectCtrl := controllers.NewProjectController(githubV2Client, cfg.GitHubPlatformPAT, cfg.GitHubRepoOwner, repoService)
+	projectCtrl := controllers.NewProjectController(githubV2Client, resolver, repoService)
 	boardCtrl := controllers.NewBoardController(boardService)
 
 	// Handler

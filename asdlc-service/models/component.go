@@ -98,23 +98,27 @@ type WorkflowRun struct {
 	StartedAt     string `json:"startedAt,omitempty"`
 	ComponentName string `json:"componentName,omitempty"`
 	ProjectName   string `json:"projectName,omitempty"`
-	Image         string `json:"image,omitempty"`
-	Commit        string `json:"commit,omitempty"`
 
-	// Tasks preserves OC's per-task outputs from Status.Tasks[]. Phase 2
-	// PR D §9.3 — the build watcher classifies git-clone auth failures by
-	// inspecting the checkout-source task's failure outputs. Optional;
-	// only populated when OC surfaces task-level outputs.
+	// Completed mirrors Status.Conditions[type=WorkflowCompleted].Status=True
+	// — the canonical OC signal that the controller is done with this run
+	// (controller_conditions.go:151-152). Watchers gate terminal-state
+	// transitions on this, not on substring-matching the Status string.
+	Completed bool `json:"completed,omitempty"`
+
+	// Tasks mirrors OC's WorkflowRun.Status.Tasks[] (CRD shape:
+	// {Name, Phase, Message, StartedAt, CompletedAt}). Used by the build
+	// watcher's auth-failure classifier and by the build-progress endpoint.
 	Tasks []WorkflowRunTask `json:"tasks,omitempty"`
 }
 
-// WorkflowRunTask is the platform-side projection of OC's ocTask. The
-// only consumer today (PR D) reads these to discriminate
-// git_clone_failed_auth from other build failures, so the shape is
-// minimal — Name + a flat key/value Outputs map.
+// WorkflowRunTask is the platform-side projection of OC's ocTask. Mirrors the
+// upstream CRD field-for-field (api/v1alpha1/workflowrun_types.go:80-109).
 type WorkflowRunTask struct {
-	Name    string            `json:"name"`
-	Outputs map[string]string `json:"outputs,omitempty"`
+	Name        string `json:"name"`
+	Phase       string `json:"phase,omitempty"`
+	Message     string `json:"message,omitempty"`
+	StartedAt   string `json:"startedAt,omitempty"`
+	CompletedAt string `json:"completedAt,omitempty"`
 }
 
 type WorkflowRunList struct {

@@ -24,23 +24,29 @@ apply_platform() {
       | kubectl apply -f -
   }
 
-  # _wait_for_hr <name> <namespace>
+  # _wait_for_hr <name> <namespace> [timeout_seconds]
   # Waits for a HelmRelease to become Ready with periodic status checks.
+  # Default timeout 900s; pass a 3rd arg for HelmReleases with a long first-pull
+  # (e.g. observability-plane / OpenSearch needs ~30 min cold).
   # On failure shows the HelmRelease status (conditions + events) so the
   # operator can see why reconciliation is not progressing (e.g. image pull,
   # dependency wait, cert issues).
   _wait_for_hr() {
-    local name=$1 ns=$2
+    local name=$1 ns=$2 timeout_s=${3:-900}
     if [ "${DRY_RUN:-0}" = 1 ]; then
       log_skip "[dry-run] would wait for HelmRelease $name/$ns"
       return
     fi
-    log_step "Waiting for HelmRelease $name/$ns" "5 min"
-    if kubectl wait --for=condition=Ready "hr/$name" -n "$ns" --timeout=900s 2>&1; then
+    local timeout_label="${timeout_s}s"
+    if [ "$timeout_s" -ge 60 ]; then
+      timeout_label="$((timeout_s / 60)) min"
+    fi
+    log_step "Waiting for HelmRelease $name/$ns" "$timeout_label"
+    if kubectl wait --for=condition=Ready "hr/$name" -n "$ns" --timeout="${timeout_s}s" 2>&1; then
       log_ok "HelmRelease $name/$ns ready"
       return 0
     fi
-    log_warn "HelmRelease $name/$ns timed out after 900s — dumping status:"
+    log_warn "HelmRelease $name/$ns timed out after ${timeout_s}s — dumping status:"
     echo ""
     kubectl describe "hr/$name" -n "$ns" 2>/dev/null || true
     echo ""
@@ -165,6 +171,16 @@ apply_platform() {
 
   log_info "Layer 2: DP + WP + registry + WS gateway policy"
   _apply_kustomize "$SUB/init/layer-2"
+
+  log_info "Observability plane: Observer + OpenSearch + Fluent Bit"
+  # The HelmRelease has dependsOn: control-plane (observability-plane.yaml:35-37),
+  # so applying it here is fine — Flux gates the actual install on CP being Ready.
+  # In production WSO2 Cloud this is reconciled via the Flux GitRepository
+  # picking up wso2cloud-local/kustomizations/observability-plane.yaml.
+  # Local k3d has no GitRepository watching the submodule, so we apply
+  # imperatively the same way every other layer is applied.
+  _apply_kustomize "$SUB/init/observability-plane"
+
   if [ "${DRY_RUN:-0}" != 1 ]; then
     # control-plane dependsOn: thunder — wait for Thunder first so the
     # control-plane HelmRelease can actually start reconciling (instead of
@@ -174,6 +190,17 @@ apply_platform() {
 
     _wait_for_hr control-plane openchoreo-control-plane
     _wait_for_hr workflow-plane openchoreo-workflow-plane
+    # OpenSearch first-pull is the long pole (~30 min cold). Match the Flux
+    # Kustomization timeout in wso2cloud-local/kustomizations/observability-plane.yaml.
+    _wait_for_hr observability-plane openchoreo-observability-plane 2400
+
+    # ClusterObservabilityPlane CR is deferred until the HR is Ready —
+    # otherwise its CRD doesn't exist yet and the apply fails (race
+    # against Helm's CRD install on first install). The manifest has no
+    # envsubst placeholders, so a direct apply is sufficient.
+    log_info "Registering ClusterObservabilityPlane with the control plane"
+    kubectl apply -f "$SUB/init/observability-plane/cluster-observability-plane.yaml" \
+      || log_warn "ClusterObservabilityPlane apply failed; retry on next setup"
 
     # Wait for Argo CRDs to actually exist before applying domain resources
     local WAITED=0 ARGO_CRD="workflowtemplates.argoproj.io"
@@ -207,24 +234,25 @@ apply_platform() {
   log_info "app-factory project + components (developers domain)"
   _apply_kustomize "$SUB/domains/developers/namespaces/wso2cloud/projects/app-factory" || log_warn "app-factory domain apply had errors"
 
-  # Project/Components live in "default" namespace, but ReleaseBindings
-  # and other platform resources are in "wso2cloud".  The controller
-  # resolves per-namespace, so copy the cross-namespace resources.
+  # Cross-namespace copy retired: previously this projected
+  # ReleaseBinding/SecretReference/DeploymentPipeline/Environment from
+  # `wso2cloud` into `default` because app-factory Workloads were
+  # applied to `default`. With Workloads now applied to `wso2cloud`
+  # (deployments-v2/scripts/lib/workload.sh — WORKLOAD_NAMESPACE), the
+  # OC controller resolves everything within a single namespace and the
+  # copy is unnecessary. Cleaning up any leftover orphans in `default`
+  # from previous runs:
   if [ "${DRY_RUN:-0}" != 1 ]; then
-    log_info "copying platform resources to default namespace"
-    for r in $(kubectl get releasebinding -n wso2cloud -o name 2>/dev/null); do
-      kubectl get "$r" -n wso2cloud -o yaml | sed 's/namespace: wso2cloud/namespace: default/' | kubectl apply -f - -n default 2>/dev/null || true
+    # Anchored / boundary-bounded match — `platform` as a substring would
+    # eat unrelated names (`cluster-platform-config` etc.) on a non-`--all`
+    # re-run.
+    for kind in releasebinding secretreference deploymentpipeline environment; do
+      for r in $(kubectl get "$kind" -n default -o name 2>/dev/null \
+        | grep -E '/(app-factory-|billing-|cloud-console-|platform-(api|idp)-|sample-console-|task-)' \
+        || true); do
+        kubectl delete "$r" -n default --ignore-not-found 2>/dev/null || true
+      done
     done
-    for r in $(kubectl get secretreference -n wso2cloud -o name 2>/dev/null); do
-      kubectl get "$r" -n wso2cloud -o yaml | sed 's/namespace: wso2cloud/namespace: default/' | kubectl apply -f - -n default 2>/dev/null || true
-    done
-    for r in $(kubectl get deploymentpipeline -n wso2cloud -o name 2>/dev/null); do
-      kubectl get "$r" -n wso2cloud -o yaml | sed 's/namespace: wso2cloud/namespace: default/' | kubectl apply -f - -n default 2>/dev/null || true
-    done
-    for r in $(kubectl get environment -n wso2cloud -o name 2>/dev/null); do
-      kubectl get "$r" -n wso2cloud -o yaml | sed 's/namespace: wso2cloud/namespace: default/' | kubectl apply -f - -n default 2>/dev/null || true
-    done
-    log_ok "platform resources copied to default namespace"
   fi
 
   if [ "${DRY_RUN:-0}" != 1 ]; then

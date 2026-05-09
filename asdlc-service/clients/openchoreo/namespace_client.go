@@ -15,7 +15,7 @@ import (
 // CRD. The BFF's local Organization table just side-cars a UUID per namespace.
 type NamespaceClient interface {
 	ListNamespaces(ctx context.Context) ([]models.OrganizationView, error)
-	CreateNamespace(ctx context.Context, name, displayName, description string) (*models.OrganizationView, error)
+	GetNamespace(ctx context.Context, name string) (*models.OrganizationView, error)
 }
 
 type namespaceClient struct {
@@ -37,6 +37,10 @@ func (c *namespaceClient) namespacesURL() string {
 	return fmt.Sprintf("%s/api/v1/namespaces", c.baseURL)
 }
 
+func (c *namespaceClient) namespaceURL(name string) string {
+	return fmt.Sprintf("%s/api/v1/namespaces/%s", c.baseURL, name)
+}
+
 func normalizeNamespace(n ocNamespace) models.OrganizationView {
 	ann := n.Metadata.Annotations
 	var displayName, description string
@@ -50,24 +54,6 @@ func normalizeNamespace(n ocNamespace) models.OrganizationView {
 		Description: description,
 		Status:      n.Status.Phase,
 	}
-}
-
-func buildCreateNamespaceBody(name, displayName, description string) ocNamespace {
-	body := ocNamespace{
-		Metadata: ocObjectMeta{
-			Name: name,
-		},
-	}
-	if displayName != "" || description != "" {
-		body.Metadata.Annotations = map[string]string{}
-		if displayName != "" {
-			body.Metadata.Annotations["openchoreo.dev/display-name"] = displayName
-		}
-		if description != "" {
-			body.Metadata.Annotations["openchoreo.dev/description"] = description
-		}
-	}
-	return body
 }
 
 func (c *namespaceClient) ListNamespaces(ctx context.Context) ([]models.OrganizationView, error) {
@@ -85,13 +71,17 @@ func (c *namespaceClient) ListNamespaces(ctx context.Context) ([]models.Organiza
 	return items, nil
 }
 
-func (c *namespaceClient) CreateNamespace(ctx context.Context, name, displayName, description string) (*models.OrganizationView, error) {
-	req := c.newRequest(ctx, "openchoreo.CreateNamespace", http.MethodPost, c.namespacesURL())
-	req.SetJSON(buildCreateNamespaceBody(name, displayName, description))
+// GetNamespace returns the OC namespace named `name`. OC's namespace API
+// only surfaces namespaces labelled `openchoreo.dev/control-plane=true`;
+// any other K8s namespace returns 404. The BFF uses this to verify the
+// caller's tenant has been provisioned (by `platform-api-service` in
+// hosted, or by `seed-admin-org.sh` locally).
+func (c *namespaceClient) GetNamespace(ctx context.Context, name string) (*models.OrganizationView, error) {
+	req := c.newRequest(ctx, "openchoreo.GetNamespace", http.MethodGet, c.namespaceURL(name))
 
 	var raw ocNamespace
-	if err := c.send(ctx, req, &raw, http.StatusCreated); err != nil {
-		return nil, fmt.Errorf("create namespace: %w", err)
+	if err := c.send(ctx, req, &raw, http.StatusOK); err != nil {
+		return nil, fmt.Errorf("get namespace: %w", err)
 	}
 	v := normalizeNamespace(raw)
 	return &v, nil

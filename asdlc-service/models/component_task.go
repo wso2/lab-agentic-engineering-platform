@@ -5,6 +5,25 @@ import "time"
 // StringSlice is a reusable slice type for JSONB storage in PostgreSQL.
 type StringSlice []string
 
+// TaskLifecycleStatus tracks the GitHub issue creation phase for a ComponentTask.
+type TaskLifecycleStatus string
+
+const (
+	// TaskLifecycleGhIssueWaiting is the default — the task row exists but the
+	// GitHub issue has not been created yet (issue creation is in flight).
+	TaskLifecycleGhIssueWaiting TaskLifecycleStatus = "gh_issue_waiting"
+	// TaskLifecycleGhIssueSyncing is a response-only value — never written to DB.
+	// GetBoard returns this when a gh_issue_created task's issue is not yet
+	// visible on the GitHub Project board (fallback path, board has 0 items).
+	TaskLifecycleGhIssueSyncing TaskLifecycleStatus = "gh_issue_syncing"
+	// TaskLifecycleGhIssueCreated is set once the GitHub issue is successfully
+	// created and the issue URL + number are persisted.
+	TaskLifecycleGhIssueCreated TaskLifecycleStatus = "gh_issue_created"
+	// TaskLifecycleGhIssueFailed is set when GitHub issue creation fails after
+	// the issue goroutine exhausts its attempts.
+	TaskLifecycleGhIssueFailed TaskLifecycleStatus = "gh_issue_failed"
+)
+
 // TaskStatus is the single, webhook-driven lifecycle for a ComponentTask.
 // Transitions live in services/task_state.go; the projector in services/webhook
 // is the only writer outside dispatch.
@@ -93,6 +112,7 @@ type ComponentTask struct {
 	IssueURL          string      `gorm:"type:text;index" json:"issueUrl,omitempty"`
 	IssueNumber       int         `json:"issueNumber,omitempty"`
 	Labels            StringSlice `gorm:"type:jsonb;serializer:json" json:"labels,omitempty"`
+	LifecycleStatus   string      `gorm:"not null;default:gh_issue_waiting" json:"lifecycleStatus"`
 	BranchName        string      `gorm:"type:text;index" json:"branchName,omitempty"`
 	PullRequestNumber int         `gorm:"index" json:"pullRequestNumber,omitempty"`
 	PullRequestURL    string      `gorm:"type:text" json:"pullRequestUrl,omitempty"`
@@ -102,6 +122,12 @@ type ComponentTask struct {
 	LastEventAt      *time.Time `gorm:"index" json:"lastEventAt,omitempty"`
 	LastBuildRunName string     `gorm:"type:text" json:"lastBuildRunName,omitempty"`
 	LastBuildSHA     string     `gorm:"type:text" json:"lastBuildSha,omitempty"`
+	// LastCodingAgentRunName is the most recent OC WorkflowRun that ran the
+	// per-task coding agent. Mirrors LastBuildRunName for the build phase.
+	// Set by DispatchService at dispatch time; the coding-agent watcher
+	// reads it to poll the run's status. Replaces the legacy WorkspacePath
+	// column populated by remote-worker.
+	LastCodingAgentRunName string `gorm:"type:text" json:"lastCodingAgentRunName,omitempty"`
 
 	// Error tracking
 	ErrorMessage string `gorm:"type:text" json:"errorMessage,omitempty"`

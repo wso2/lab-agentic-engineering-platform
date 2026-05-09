@@ -7,6 +7,9 @@ import (
 )
 
 func registerOrgRoutes(mux *http.ServeMux, pc controllers.ProjectController) {
+	if pc == nil {
+		return
+	}
 	// GitHub project operations
 	mux.HandleFunc("POST /api/v1/orgs", pc.InitProject)
 }

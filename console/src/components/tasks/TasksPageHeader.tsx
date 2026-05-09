@@ -20,6 +20,7 @@ interface TasksPageHeaderProps {
   isGenerating: boolean;
   isDispatching: boolean;
   githubProjectUrl: string | null;
+  hideGenerateButton: boolean;
   onGenerate: () => void;
   onStartImplementation: () => void;
 }
@@ -30,6 +31,7 @@ export function TasksPageHeader({
   isGenerating,
   isDispatching,
   githubProjectUrl,
+  hideGenerateButton,
   onGenerate,
   onStartImplementation,
 }: TasksPageHeaderProps) {
@@ -59,7 +61,7 @@ export function TasksPageHeader({
         </Box>
 
         <Stack direction="row" spacing={1} alignItems="center">
-          {totalTasks === 0 ? (
+          {!hideGenerateButton && totalTasks === 0 && (
             <Button
               variant="contained"
               size="small"
@@ -69,7 +71,9 @@ export function TasksPageHeader({
             >
               {isGenerating ? 'Generating…' : 'Generate Tasks'}
             </Button>
-          ) : (
+          )}
+
+          {(hideGenerateButton || totalTasks > 0) && (
             <>
               <Button
                 variant="contained"
@@ -91,7 +95,9 @@ export function TasksPageHeader({
                 transformOrigin={{ vertical: 'top', horizontal: 'right' }}
               >
                 <MenuItem onClick={handleRemoteImplementation} sx={{ alignItems: 'flex-start', py: 1.5, gap: 1.5, minWidth: 320 }}>
-                  <Cloud size={20} style={{ marginTop: 2, flexShrink: 0 }} />
+                  <Box sx={{ mt: 0.25, flexShrink: 0, display: 'flex' }}>
+                    <Cloud size={20} />
+                  </Box>
                   <Box>
                     <Typography variant="body2" fontWeight={600}>Implement via Remote Agents</Typography>
                     <Typography variant="caption" color="text.secondary">
@@ -100,7 +106,9 @@ export function TasksPageHeader({
                   </Box>
                 </MenuItem>
                 <MenuItem onClick={handleLocalImplementation} sx={{ alignItems: 'flex-start', py: 1.5, gap: 1.5, minWidth: 320 }}>
-                  <Laptop size={20} style={{ marginTop: 2, flexShrink: 0 }} />
+                  <Box sx={{ mt: 0.25, flexShrink: 0, display: 'flex' }}>
+                    <Laptop size={20} />
+                  </Box>
                   <Box>
                     <Typography variant="body2" fontWeight={600}>Implement Locally</Typography>
                     <Typography variant="caption" color="text.secondary">
@@ -139,22 +147,24 @@ export function TasksPageHeader({
         <DialogTitle>
           <Stack direction="row" spacing={1} alignItems="center">
             <Laptop size={20} />
-            <span>Implement Locally with Claude Code</span>
+            <Box>Implement Locally with Claude Code</Box>
           </Stack>
         </DialogTitle>
         <DialogContent dividers>
           <Typography variant="body2" sx={{ mb: 2 }}>
-            Each task above has a corresponding GitHub issue (open the
-            <ExternalLink size={12} style={{ verticalAlign: 'middle', margin: '0 4px' }} />
-            link on a row), a feature branch, and a draft PR already prepared. Work directly on
+            Each task above has a corresponding GitHub issue (open the{' '}
+            <Box component="span" sx={{ display: 'inline-flex', verticalAlign: 'middle', mx: 0.5 }}>
+              <ExternalLink size={12} />
+            </Box>
+            {' '}link on a row), a feature branch, and a draft PR already prepared. Work directly on
             GitHub from a regular Claude Code session — no platform plugin needed.
           </Typography>
 
           <Typography variant="subtitle2" sx={{ mt: 2, mb: 1 }}>1. Clone the repo and check out the task branch</Typography>
-          <Box component="pre" sx={{
-            p: 1.5, bgcolor: 'action.hover', borderRadius: 1, fontSize: '0.8rem', overflowX: 'auto',
-            fontFamily: 'monospace', m: 0,
-          }}>
+          <Box
+            component="pre"
+            sx={{ p: 1.5, bgcolor: 'action.hover', borderRadius: 1, fontSize: '0.8rem', overflowX: 'auto', fontFamily: 'monospace', m: 0 }}
+          >
 {`gh repo clone <repo>
 cd <repo>
 git checkout <task-branch>`}
@@ -164,10 +174,10 @@ git checkout <task-branch>`}
           <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
             Run Claude Code in the repo. When the work is done:
           </Typography>
-          <Box component="pre" sx={{
-            p: 1.5, bgcolor: 'action.hover', borderRadius: 1, fontSize: '0.8rem', overflowX: 'auto',
-            fontFamily: 'monospace', m: 0,
-          }}>
+          <Box
+            component="pre"
+            sx={{ p: 1.5, bgcolor: 'action.hover', borderRadius: 1, fontSize: '0.8rem', overflowX: 'auto', fontFamily: 'monospace', m: 0 }}
+          >
 {`git push origin HEAD
 gh pr ready <pr-number>`}
           </Box>

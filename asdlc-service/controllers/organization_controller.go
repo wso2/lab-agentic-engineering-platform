@@ -1,21 +1,22 @@
 package controllers
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/requests"
-	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/utils"
 )
 
 // OrganizationController serves the unscoped /api/v1/organizations endpoints.
+//
+// The BFF is read-only over OC namespaces. Tenant onboarding (creating the
+// OC namespace + the per-org bootstrap content) is the platform's job —
+// `platform-api-service` in hosted, `seed-admin-org.sh` in local. There is
+// no `POST /api/v1/organizations` endpoint here.
 type OrganizationController interface {
 	ListOrganizations(w http.ResponseWriter, r *http.Request)
-	CreateOrganization(w http.ResponseWriter, r *http.Request)
 }
 
 type organizationController struct {
@@ -38,39 +39,4 @@ func (c *organizationController) ListOrganizations(w http.ResponseWriter, r *htt
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, list)
-}
-
-func (c *organizationController) CreateOrganization(w http.ResponseWriter, r *http.Request) {
-	var req models.CreateOrganizationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Name == "" {
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "name is required")
-		return
-	}
-
-	org, err := c.service.Create(r.Context(), &req)
-	if err != nil {
-		if errors.Is(err, services.ErrUnauthorized) {
-			utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid or expired token")
-			return
-		}
-		if errors.Is(err, services.ErrOrganizationExists) {
-			utils.WriteErrorResponse(w, http.StatusConflict, "organization already exists")
-			return
-		}
-		var httpErr *requests.HttpError
-		if errors.As(err, &httpErr) {
-			slog.ErrorContext(r.Context(), "create organization failed", "error", err, "status", httpErr.StatusCode)
-			utils.WriteErrorResponse(w, httpErr.StatusCode, httpErr.Body)
-			return
-		}
-		slog.ErrorContext(r.Context(), "create organization failed", "error", err)
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to create organization")
-		return
-	}
-
-	utils.WriteSuccessResponse(w, http.StatusCreated, org)
 }

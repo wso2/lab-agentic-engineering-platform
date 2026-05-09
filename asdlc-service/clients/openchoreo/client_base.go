@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
 	"github.com/wso2/asdlc/asdlc-service/clients/requests"
@@ -14,54 +13,15 @@ import (
 
 // clientBase holds state shared by every OC sub-client. Embed it to get
 // newRequest/send with service-token auth and retry-on-401 behavior.
+//
+// The OC namespace name is the OC org handle directly. Per-call sites
+// pass `orgName` (== ouHandle) to the namespace-shaped OC API; there is
+// no override, no fallback, no map.
 type clientBase struct {
 	baseURL       string
 	hostHeader    string
 	httpClient    *http.Client
 	tokenProvider *oauth.TokenProvider
-	// nsMap maps org handles to actual K8s namespaces. Used when running
-	// under WSO2Cloud where namespaces are auto-generated (e.g.
-	// admin → dp-wso2cloud-core-development-54e3d6ff).
-	nsMap map[string]string
-}
-
-// resolveNamespace returns the actual K8s namespace for orgHandle, or
-// orgHandle itself if no override is configured.
-func (c *clientBase) resolveNamespace(orgHandle string) string {
-	if c.nsMap == nil {
-		return orgHandle
-	}
-	if ns, ok := c.nsMap[orgHandle]; ok {
-		return ns
-	}
-	return orgHandle
-}
-
-// parseNamespaceOverride parses a comma-separated list of "org=ns" pairs.
-// Empty input returns nil (no override).
-func parseNamespaceOverride(raw string) map[string]string {
-	if raw == "" {
-		return nil
-	}
-	m := make(map[string]string)
-	for _, pair := range strings.Split(raw, ",") {
-		pair = strings.TrimSpace(pair)
-		if pair == "" {
-			continue
-		}
-		kv := strings.SplitN(pair, "=", 2)
-		if len(kv) == 2 {
-			org := strings.TrimSpace(kv[0])
-			ns := strings.TrimSpace(kv[1])
-			if org != "" && ns != "" {
-				m[org] = ns
-			}
-		}
-	}
-	if len(m) == 0 {
-		return nil
-	}
-	return m
 }
 
 // newRequest builds an HttpRequest without auth. send() attaches the bearer

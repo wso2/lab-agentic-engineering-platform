@@ -183,6 +183,7 @@ export interface ComponentTask {
   lastEventAt?: string;
   lastBuildRunName?: string;
   lastBuildSha?: string;
+  lastCodingAgentRunName?: string;
 
   // GitHub issue labels (for Kanban board)
   labels?: string[];
@@ -196,6 +197,67 @@ export interface ComponentTask {
   dispatchedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// -- Task progress (live execution feed) -------------------------------------
+// Mirrors asdlc-service/clients/observer/schema.go and
+// remote-worker/src/lib/progress/schema.ts. Versioned NDJSON envelope —
+// see docs/design/task-execution-progress.md §5.1.
+
+export const TASK_PROGRESS_SCHEMA_VERSION = 1;
+
+export type TaskProgressKind =
+  | 'phase'
+  | 'tool_use'
+  | 'git_commit'
+  | 'git_push'
+  | 'gh_action'
+  | 'log'
+  | 'result'
+  | 'build_step';
+
+export interface TaskProgressEvent {
+  schemaVersion: number;
+  ts: string;
+  seq: number;
+  kind: TaskProgressKind;
+  // Discriminated payload — only the fields relevant to `kind` are set.
+  phase?: string;
+  tool?: string;
+  sha?: string;
+  branch?: string;
+  files?: number;
+  command?: string;
+  level?: 'info' | 'warn' | 'error';
+  status?: 'success' | 'failure';
+  summary?: string;
+  error?: string;
+  step?: string;
+  startedAt?: string;
+  completedAt?: string;
+  message?: string;
+}
+
+export interface TaskProgressResponse {
+  schemaVersion: number;
+  lines: TaskProgressEvent[];
+  cursorMillis: number;
+  phase?: string;
+  truncated?: boolean;
+  final: boolean;
+}
+
+export interface BuildStep {
+  name: string;
+  phase?: string;
+  message?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface TaskStatusResponse {
+  task: ComponentTask;
+  buildSteps?: BuildStep[];
 }
 
 // -- Generated Tasks ----------------------------------------------------------
@@ -214,6 +276,8 @@ export interface LabelInfo {
   color: string; // hex without #, e.g. "0075ca"
 }
 
+export type TaskLifecycleStatus = 'gh_issue_waiting' | 'gh_issue_syncing' | 'gh_issue_created' | 'gh_issue_failed';
+
 export interface Task {
   id: string;
   title: string;
@@ -222,6 +286,7 @@ export interface Task {
   assignee?: string;
   componentTaskId?: string;
   labels?: LabelInfo[];
+  lifecycleStatus?: TaskLifecycleStatus;
 }
 
 export interface ProjectBoard {
