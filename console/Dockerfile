@@ -35,9 +35,7 @@ RUN chmod +x /docker-entrypoint.sh
 RUN chown -R 10001:10001 /var/cache/nginx && \
     chown -R 10001:10001 /var/log/nginx && \
     chown -R 10001:10001 /etc/nginx && \
-    chown -R 10001:10001 /usr/share/nginx/html && \
-    touch /var/run/nginx.pid && \
-    chown -R 10001:10001 /var/run/nginx.pid
+    chown -R 10001:10001 /usr/share/nginx/html
 
 USER 10001
 
