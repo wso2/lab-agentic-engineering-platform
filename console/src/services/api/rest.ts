@@ -620,17 +620,9 @@ export const restApi = {
   },
 
   // -- Deployments (ReleaseBindings) ------------------------------------------
-
-  async deploy(orgHandle: string, projectId: string, componentId: string, environment: string): Promise<Deployment | undefined> {
-    try {
-      return await fetchJSON<Deployment>(`${projectPrefix(orgHandle, projectId)}/components/${componentId}/deployments`, {
-        method: 'POST',
-        body: JSON.stringify({ environment }),
-      });
-    } catch {
-      return undefined;
-    }
-  },
+  // No POST: deploys are driven entirely by OC's Component controller
+  // (AutoDeploy=true) once the build's generate-workload-cr step posts the
+  // Workload CR. The deploy page only reads.
 
   async listDeployments(orgHandle: string, projectId: string, componentId: string): Promise<Deployment[]> {
     try {

@@ -10,7 +10,7 @@ const STAGES: { key: TaskStatus | 'dispatched'; label: string }[] = [
   { key: 'ready_for_review', label: 'Ready' },
   { key: 'merged',           label: 'Merged' },
   { key: 'building',         label: 'Building' },
-  { key: 'deployed',         label: 'Deployed' },
+  { key: 'deployed',         label: 'Deploying' },
 ];
 
 const FAILURE_STATUSES: TaskStatus[] = ['rejected', 'failed', 'abandoned'];
