@@ -342,7 +342,7 @@ func (s *taskService) ensureIssueForTask(
 	issue, err := s.gitClient.CreateIssue(ctx, task.OrgID, task.ProjectID, &gitservice.CreateIssueRequest{
 		Title:  issueTitle(task),
 		Body:   buildIssueBody(task, comp, repoURL, repoSlug),
-		Labels: []string{"asdlc", "implementation", "pending"},
+		Labels: []string{"asdlc", "implementation"},
 	})
 	if err != nil {
 		return err

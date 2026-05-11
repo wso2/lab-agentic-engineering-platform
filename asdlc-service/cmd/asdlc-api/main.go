@@ -267,7 +267,7 @@ func main() {
 	webhookRouter := webhook.NewRouter()
 	projector := webhook.NewProjector(db)
 
-	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, tokenInject)
+	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, projector, tokenInject)
 
 	// Dispatch service — replaces the legacy RemoteWorkerService. Routes to
 	// WorkflowRunService.TriggerCodingAgent (ClusterWorkflow `app-factory-coding-agent`)

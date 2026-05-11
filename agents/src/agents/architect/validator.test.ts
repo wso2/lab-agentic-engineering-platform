@@ -11,7 +11,7 @@ const slim = (overrides: Partial<SlimComponent> = {}): SlimComponent => ({
   dependsOn: [],
   entrypoint: "deployment/service",
   buildpack: "docker",
-  appPath: "/todo-api",
+  appPath: "todo-api",
   componentAgentInstructions: "go service",
   ...overrides,
 });
@@ -89,12 +89,34 @@ test("validate — entrypoint mismatch flagged", () => {
 
 test("validate — duplicate appPath flagged", () => {
   const doc = new DesignDoc();
-  doc.addComponent(slim({ name: "a", appPath: "/x" }));
-  doc.addComponent(slim({ name: "b", appPath: "/x" }));
+  doc.addComponent(slim({ name: "a", appPath: "x" }));
+  doc.addComponent(slim({ name: "b", appPath: "x" }));
   doc.setOpenApi("a", healthYaml);
   doc.setOpenApi("b", healthYaml);
   const issues = validate(doc);
   assert.ok(codes(issues).includes("duplicate-app-path"));
+});
+
+test("validate — appPath with leading slash flagged", () => {
+  const doc = new DesignDoc();
+  // The pre-fix architect emitted "/greeting-api"; the BFF's path-prefix
+  // filter then silently skipped the build because GitHub push payload
+  // file paths never have a leading slash. Catch it at the source.
+  doc.addComponent(slim({ name: "greeting-api", appPath: "/greeting-api" }));
+  doc.setOpenApi("greeting-api", healthYaml);
+  const issues = validate(doc);
+  assert.ok(
+    codes(issues).includes("app-path-leading-slash"),
+    `expected app-path-leading-slash, got: ${JSON.stringify(issues)}`,
+  );
+});
+
+test("validate — appPath that looks like an http route flagged", () => {
+  const doc = new DesignDoc();
+  doc.addComponent(slim({ name: "a", appPath: "../escape" }));
+  doc.setOpenApi("a", healthYaml);
+  const issues = validate(doc);
+  assert.ok(codes(issues).includes("app-path-not-relative"));
 });
 
 test("validate — dangling dependsOn flagged", () => {
@@ -107,8 +129,8 @@ test("validate — dangling dependsOn flagged", () => {
 
 test("validate — dependency cycle flagged", () => {
   const doc = new DesignDoc();
-  doc.addComponent(slim({ name: "a", appPath: "/a", dependsOn: ["b"] }));
-  doc.addComponent(slim({ name: "b", appPath: "/b", dependsOn: ["a"] }));
+  doc.addComponent(slim({ name: "a", appPath: "a", dependsOn: ["b"] }));
+  doc.addComponent(slim({ name: "b", appPath: "b", dependsOn: ["a"] }));
   doc.setOpenApi("a", healthYaml);
   doc.setOpenApi("b", healthYaml);
   const issues = validate(doc);

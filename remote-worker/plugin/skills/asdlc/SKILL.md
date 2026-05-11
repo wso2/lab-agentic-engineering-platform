@@ -76,8 +76,13 @@ gh issue list --label asdlc --label implementation --state open \
 ## Project structure
 
 Create a production-ready project structure under your component's
-**App Path** (from the issue's Component Reference card). Match the
-language/stack:
+**App Path** (from the issue's Component Reference card). The App Path
+is a **folder name** relative to the repo root (e.g. `user-api`,
+`services/auth`) — it is NOT an HTTP route. All of this component's
+files (source, `Dockerfile`, `workload.yaml`) must live under that
+directory and nowhere else; the platform watches that path to decide
+which component to rebuild on a push, so a file committed outside it
+will not trigger your build. Match the language/stack:
 
 - **Go**: `go.mod` with proper module path; `cmd/` or `main.go` entry
   point; `Dockerfile` (multi-stage build); internal packages as needed

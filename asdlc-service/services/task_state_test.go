@@ -21,6 +21,7 @@ func TestApplyTaskEventHappyPath(t *testing.T) {
 		{models.TaskStatusMerged, TaskEventPushMatched, models.TaskStatusBuilding},
 		{models.TaskStatusBuilding, TaskEventBuildSucceeded, models.TaskStatusDeployed},
 		{models.TaskStatusBuilding, TaskEventBuildFailed, models.TaskStatusFailed},
+		{models.TaskStatusMerged, TaskEventBuildPathMismatch, models.TaskStatusFailed},
 	}
 	for _, c := range cases {
 		got, err := ApplyTaskEvent(c.from, c.event)

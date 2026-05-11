@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
@@ -20,6 +21,14 @@ type BoardTask struct {
 	ComponentTaskID string                 `json:"componentTaskId,omitempty"`
 	Labels          []gitservice.LabelInfo `json:"labels,omitempty"`
 	LifecycleStatus string                 `json:"lifecycleStatus,omitempty"`
+	// Status is the ComponentTask execution status (pending, in_progress,
+	// ready_for_review, merged, building, deployed, rejected, failed,
+	// abandoned). Empty when the row has no backing ComponentTask.
+	Status string `json:"status,omitempty"`
+	// DispatchedAt is the time the task was dispatched for execution.
+	// Nil for never-dispatched tasks; the frontend uses it to render
+	// "started Xm ago" and to gate the Live progress affordance.
+	DispatchedAt *time.Time `json:"dispatchedAt,omitempty"`
 }
 
 // ProjectBoard holds tasks grouped by their kanban column.
@@ -69,6 +78,8 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 	type taskDBMeta struct {
 		id              string
 		lifecycleStatus string
+		status          string
+		dispatchedAt    *time.Time
 	}
 	issueURLToMeta := map[string]taskDBMeta{}
 	var allComponentTasks []models.ComponentTask
@@ -83,6 +94,8 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 					issueURLToMeta[ct.IssueURL] = taskDBMeta{
 						id:              ct.ID,
 						lifecycleStatus: ct.LifecycleStatus,
+						status:          ct.Status,
+						dispatchedAt:    ct.DispatchedAt,
 					}
 				} else {
 					unissuedTasks = append(unissuedTasks, ct)
@@ -104,6 +117,8 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 		if meta, ok := issueURLToMeta[item.URL]; ok {
 			task.ComponentTaskID = meta.id
 			task.LifecycleStatus = meta.lifecycleStatus
+			task.Status = meta.status
+			task.DispatchedAt = meta.dispatchedAt
 		}
 		switch normalizeStatus(item.Status) {
 		case "in progress":
@@ -143,6 +158,8 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 				ComponentTaskID: ct.ID,
 				Labels:          labels,
 				LifecycleStatus: lifecycleStatus,
+				Status:          ct.Status,
+				DispatchedAt:    ct.DispatchedAt,
 			}
 			switch ct.Status {
 			case "in_progress":
@@ -167,6 +184,8 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			Title:           ct.Title,
 			ComponentTaskID: ct.ID,
 			LifecycleStatus: ct.LifecycleStatus,
+			Status:          ct.Status,
+			DispatchedAt:    ct.DispatchedAt,
 		}
 		if ct.LifecycleStatus == string(models.TaskLifecycleGhIssueFailed) {
 			board.Failed = append(board.Failed, task)

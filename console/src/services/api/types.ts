@@ -287,6 +287,13 @@ export interface Task {
   componentTaskId?: string;
   labels?: LabelInfo[];
   lifecycleStatus?: TaskLifecycleStatus;
+  // Execution status (mirrors ComponentTask.status). Empty/undefined for
+  // rows with no backing ComponentTask. Drives the inline status pill +
+  // Live progress button on TaskRow.
+  status?: TaskStatus;
+  // Time the task was dispatched, ISO-8601. Undefined for never-dispatched
+  // tasks; used for the "started Xm ago" caption.
+  dispatchedAt?: string;
 }
 
 export interface ProjectBoard {

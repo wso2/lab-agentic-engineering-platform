@@ -154,9 +154,14 @@ func (p *Projector) AdvanceMergedTasksForPush(
 		if err := acquireProjectLock(tx, projectID); err != nil {
 			return err
 		}
+		// Defence in depth: only advance tasks where a build was actually
+		// dispatched (LastBuildRunName populated). Without this guard a
+		// silent-skip in TriggerForPush (e.g. path-filter mismatch, mint
+		// failure) would flip the task to `building` with no WorkflowRun
+		// behind it, and the build watcher would have nothing to poll.
 		var tasks []models.ComponentTask
 		if err := tx.
-			Where("project_id = ? AND status = ? AND merge_commit_sha IN ?",
+			Where("project_id = ? AND status = ? AND merge_commit_sha IN ? AND last_build_run_name <> ''",
 				projectID, string(models.TaskStatusMerged), commitSHAs).
 			Find(&tasks).Error; err != nil {
 			return fmt.Errorf("scan merged tasks: %w", err)
@@ -180,9 +185,10 @@ func (p *Projector) AdvanceMergedTasksForPush(
 }
 
 // MarkBuilding records the WorkflowRun name on the task when the push
-// handler creates the build. Decoupled from AdvanceMergedTasksForPush so
-// the build watcher can resume polling on restart by reading
-// LastBuildRunName + LastBuildSHA.
+// handler creates the build, and atomically transitions merged → building
+// in the same transaction. This is the only path that creates a `building`
+// task: the AdvanceMergedTasksForPush gate is now defensive (asserts
+// LastBuildRunName != "" before advancing).
 func (p *Projector) MarkBuilding(
 	ctx context.Context,
 	taskID, sha, runName string,
@@ -206,7 +212,11 @@ func (p *Projector) MarkBuilding(
 	})
 }
 
-// ApplyBuildResult advances a task from building → deployed/failed.
+// ApplyBuildResult applies a terminal/lifecycle event to a task: writes the
+// resulting status, optional errMsg, and cause inside a per-task advisory
+// lock. Used for any non-PR transition driven by build state — the build
+// watcher (building → deployed/failed) and the dispatch path
+// (merged → failed on TaskEventBuildPathMismatch).
 func (p *Projector) ApplyBuildResult(
 	ctx context.Context,
 	taskID string,

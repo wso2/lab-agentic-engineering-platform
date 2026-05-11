@@ -244,9 +244,9 @@ func (h *Handler) PullRequestClosed(ctx context.Context, event, action string, b
 	}
 
 	// Cross-handler rendezvous: if the matching push already arrived, we'll
-	// find a row in project_default_pushes and can immediately advance to
-	// building. Look up the task fresh — scoped to this repo's project so
-	// stale tasks from unrelated projects (same PR number) don't bleed in.
+	// find a row in project_default_pushes and can dispatch the build now.
+	// Look up the task fresh — scoped to this repo's project so stale tasks
+	// from unrelated projects (same PR number) don't bleed in.
 	if mergeSHA == "" {
 		return nil
 	}
@@ -270,10 +270,14 @@ func (h *Handler) PullRequestClosed(ctx context.Context, event, action string, b
 		}
 		return fmt.Errorf("lookup project_default_push: %w", err)
 	}
-	// Push already processed — advance to building immediately.
-	if _, advErr := h.projector.AdvanceMergedTasksForPush(ctx, task.ProjectID, []string{mergeSHA}); advErr != nil {
-		slog.WarnContext(ctx, "advance after merge rendezvous failed",
-			"task", task.ID, "error", advErr)
+	// Push already processed — dispatch the build now. DispatchTaskBuild
+	// is idempotent on (LastBuildSHA, LastBuildRunName) and atomically
+	// transitions merged → building via projector.MarkBuilding.
+	if h.wfService != nil {
+		if _, derr := h.wfService.DispatchTaskBuild(ctx, &task, mergeSHA); derr != nil {
+			slog.WarnContext(ctx, "dispatch build at merge rendezvous failed",
+				"task", task.ID, "sha", mergeSHA, "error", derr)
+		}
 	}
 
 	// Tech-lead revamp §12: a merge may unblock sibling tasks in
@@ -394,17 +398,12 @@ func (h *Handler) Push(ctx context.Context, event, action string, body []byte) e
 		}
 	}
 
-	// Advance any merged tasks whose MergeCommitSHA matches a commit in this
-	// push. Project lock keeps this serialised vs. concurrent pushes.
-	commitSHAs := []string{sha}
-	for _, c := range p.Commits {
-		if c.ID != "" {
-			commitSHAs = append(commitSHAs, c.ID)
-		}
-	}
-	if _, err := h.projector.AdvanceMergedTasksForPush(ctx, projectID, commitSHAs); err != nil {
-		slog.WarnContext(ctx, "advance merged tasks for push failed", "error", err)
-	}
+	// State transition (merged → building) is performed atomically inside
+	// TriggerForPush via projector.MarkBuilding when a build is dispatched.
+	// AdvanceMergedTasksForPush is no longer wired here — keeping it would
+	// be a no-op given its LastBuildRunName guard, but routing the
+	// transition through one path keeps the invariant easy to reason about
+	// ("a task in `building` always has a WorkflowRun").
 	return nil
 }
 
