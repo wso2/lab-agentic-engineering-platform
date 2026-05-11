@@ -14,10 +14,17 @@ trigger:
     include:
       - .cicd/app-factory-console.yaml
       - "console/**"
+      - "ui-components/**"
+      - pnpm-workspace.yaml
+      - pnpm-lock.yaml
 
 type: docker
-context: console
+context: .
 ecrRepository: 259428491004.dkr.ecr.us-east-2.amazonaws.com/system/app-factory-console
+
+settings:
+  docker:
+    dockerFile: console/Dockerfile
 
 workloadPaths:
   - controlplane/common/domains/developers/namespaces/wso2cloud/projects/app-factory/components/app-factory-console/workload.yaml
