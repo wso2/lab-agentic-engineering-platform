@@ -81,8 +81,12 @@ func NewHandler(params AppParams) http.Handler {
 	if params.CredService != nil {
 		registerCredentialsInternalRoutes(apiMux, params.CredService, params.BuildCredService, params.Validator)
 	}
-	registerOrgRoutes(mux, params.ProjectCtrl)
-	registerBoardRoutes(mux, params.BoardCtrl)
+	if params.ProjectCtrl != nil {
+		registerOrgRoutes(mux, params.ProjectCtrl)
+	}
+	if params.BoardCtrl != nil {
+		registerBoardRoutes(mux, params.BoardCtrl)
+	}
 
 	// Test-only reset endpoint (open — runs only when TEST_MODE=true).
 	if params.TestMode {

@@ -40,6 +40,12 @@ func Load() (Config, error) {
 		WebhookHMACSecret:    r.readOptionalString("GITHUB_WEBHOOK_SECRET", ""),
 		TestMode:             r.readOptionalBool("TEST_MODE", false),
 		DeploymentTier:          r.readOptionalString("DEPLOYMENT_TIER", "dev"),
+		// TODO: replace this default with a real key in Vault before deploying to any
+		// shared environment. Generate with: openssl rand -base64 32
+		// The default (32 zero bytes) means any pod without the env var set can decrypt
+		// data written by another pod without the env var set — fine for a single-dev
+		// local setup, not acceptable for shared or production environments.
+		CredentialEncryptionKey: r.readOptionalString("CREDENTIAL_ENCRYPTION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
 		OpenBaoAddr:             r.readOptionalString("OPENBAO_ADDR", ""),
 		OpenBaoToken:            r.readOptionalString("OPENBAO_TOKEN", ""),
 		GitHubAppID:             r.readOptionalString("GITHUB_APP_ID", ""),

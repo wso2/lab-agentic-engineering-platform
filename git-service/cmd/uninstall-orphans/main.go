@@ -26,6 +26,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"flag"
 	"fmt"
 	"log/slog"
@@ -59,11 +60,17 @@ func main() {
 		os.Exit(1)
 	}
 
-	store, err := credentials.NewOpenBaoStore(cfg.OpenBaoAddr, cfg.OpenBaoToken, "secret", "asdlc-uninstall-orphans")
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "openbao init: %v\n", err)
+	credKey, err := base64.StdEncoding.DecodeString(cfg.CredentialEncryptionKey)
+	if err != nil || len(credKey) != 32 {
+		fmt.Fprintf(os.Stderr, "CREDENTIAL_ENCRYPTION_KEY must be base64-encoded 32 bytes: %v\n", err)
 		os.Exit(1)
 	}
+	store, err := credentials.NewDBStore(db, credKey)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "credential store init: %v\n", err)
+		os.Exit(1)
+	}
+
 	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 60*time.Second)
 	appKey, err := credentials.LoadAppKeyFromOpenBao(loadCtx, store)
 	cancelLoad()

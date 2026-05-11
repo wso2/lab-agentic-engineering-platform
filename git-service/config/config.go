@@ -45,16 +45,18 @@ type Config struct {
 	// Test mode — enables test-only endpoints like _test/reset.
 	TestMode bool
 
-	// Phase 2 PR A — OpenBao + per-org credentials.
-	//
 	// DeploymentTier guards the dev-only seed path. Production deployments
 	// connect via the (PR B) /internal/credentials/orgs/{ocOrgId} endpoint
 	// instead of seeding from env.
 	DeploymentTier string
 
-	// OpenBao connection details. Token-based dev auth; production uses
-	// kubernetes-auth (the policies are pre-seeded by the postStart hook
-	// in OpenBao's helm values — no per-tenant ACL configuration needed).
+	// CredentialEncryptionKey is the base64-encoded 32-byte AES-256 key used
+	// to encrypt per-org credentials at rest in org_secrets. Required.
+	// Generate with: openssl rand -base64 32
+	CredentialEncryptionKey string
+
+	// OpenBaoAddr / OpenBaoToken are retained until the _platform secret
+	// env-mount migration lands. Unused by the credential store.
 	OpenBaoAddr  string
 	OpenBaoToken string
 

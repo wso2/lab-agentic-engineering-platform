@@ -254,10 +254,10 @@ func (s *CredentialService) connectPAT(ctx context.Context, tx *gorm.DB, ocOrgID
 
 	now := time.Now().UTC()
 
-	// Persist the PAT to OpenBao first; if the DB write fails the OpenBao
-	// value is harmless (the row that references it doesn't exist yet).
+	// Persist the PAT to the credential store first; if the DB row insert
+	// fails below the credential entry is harmless (no referencing row yet).
 	if err := s.store.Put(ctx, ocOrgID, "github/pat", []byte(req.PAT)); err != nil {
-		return nil, fmt.Errorf("connect: write PAT to OpenBao: %w", err)
+		return nil, fmt.Errorf("connect: write PAT: %w", err)
 	}
 
 	if !hadRow {
