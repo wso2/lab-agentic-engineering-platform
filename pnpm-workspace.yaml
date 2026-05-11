@@ -1,3 +1,8 @@
 packages:
   - console
   - ui-components/*
+
+onlyBuiltDependencies:
+  - "@swc/core"
+  - core-js
+  - esbuild
