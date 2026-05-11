@@ -126,10 +126,14 @@ export function TaskDetailPanel({ task, orgId, projectId, onClose }: TaskDetailP
 
         <Box sx={{ flex: 1 }} />
 
-        {/* Execute Now is only available pre-dispatch. Once dispatched,
-            the row carries a Live progress button as its primary
-            affordance — no buttons inside the panel. */}
-        {task.componentTaskId && (!task.status || task.status === 'pending' || task.status === 'pending_deps') && (
+        {/* Execute Now only fires the per-task /tasks/{id}/exec endpoint,
+            which does meaningful work only for SYSTEM tasks (DB / infra
+            provisioning). WORKER (coding-agent) tasks must go through the
+            batch dispatch path — hide the button for them so users don't
+            see a no-op affordance. Pre-dispatch states only; once
+            dispatched, the row's Live progress button is the primary
+            affordance. */}
+        {task.componentTaskId && task.execType === 'SYSTEM' && (!task.status || task.status === 'pending' || task.status === 'pending_deps') && (
           task.status === 'pending_deps' ? (
             <Tooltip title="Waiting on prerequisite tasks to complete">
               <span>

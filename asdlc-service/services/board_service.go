@@ -29,6 +29,12 @@ type BoardTask struct {
 	// Nil for never-dispatched tasks; the frontend uses it to render
 	// "started Xm ago" and to gate the Live progress affordance.
 	DispatchedAt *time.Time `json:"dispatchedAt,omitempty"`
+	// ExecType mirrors ComponentTask.ExecType ("SYSTEM","WORKER"). The
+	// frontend gates the per-task "Execute Now" button on this — the
+	// endpoint behind that button (/tasks/{id}/exec) only does meaningful
+	// work for SYSTEM tasks; WORKER (coding-agent) tasks must go through
+	// the batch /tasks/dispatch path via "Execute all → Remote Agents".
+	ExecType string `json:"execType,omitempty"`
 }
 
 // ProjectBoard holds tasks grouped by their kanban column.
@@ -80,6 +86,7 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 		lifecycleStatus string
 		status          string
 		dispatchedAt    *time.Time
+		execType        string
 	}
 	issueURLToMeta := map[string]taskDBMeta{}
 	var allComponentTasks []models.ComponentTask
@@ -96,6 +103,7 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 						lifecycleStatus: ct.LifecycleStatus,
 						status:          ct.Status,
 						dispatchedAt:    ct.DispatchedAt,
+						execType:        ct.ExecType,
 					}
 				} else {
 					unissuedTasks = append(unissuedTasks, ct)
@@ -119,6 +127,7 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			task.LifecycleStatus = meta.lifecycleStatus
 			task.Status = meta.status
 			task.DispatchedAt = meta.dispatchedAt
+			task.ExecType = meta.execType
 		}
 		switch normalizeStatus(item.Status) {
 		case "in progress":
@@ -160,6 +169,7 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 				LifecycleStatus: lifecycleStatus,
 				Status:          ct.Status,
 				DispatchedAt:    ct.DispatchedAt,
+				ExecType:        ct.ExecType,
 			}
 			switch ct.Status {
 			case "in_progress":
@@ -186,6 +196,7 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			LifecycleStatus: ct.LifecycleStatus,
 			Status:          ct.Status,
 			DispatchedAt:    ct.DispatchedAt,
+			ExecType:        ct.ExecType,
 		}
 		if ct.LifecycleStatus == string(models.TaskLifecycleGhIssueFailed) {
 			board.Failed = append(board.Failed, task)

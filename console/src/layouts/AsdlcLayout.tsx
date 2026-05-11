@@ -38,7 +38,6 @@ import ChatPanel from '../components/ChatPanel';
 import { subscribeCopilotRequest } from '../services/chatStore';
 import {
   organizationOverviewPath,
-  organizationCreatePath,
   projectOverviewPath,
   projectRequirementsPath,
   projectArchitecturePath,
@@ -82,9 +81,8 @@ export default function AsdlcLayout() {
 
   // routeOrgId resolves the org for the current page. Precedence:
   //   1. `:orgId` URL param — set on every project/component sub-route.
-  //   2. JWT claim `ouHandle` — used on org-less pages (e.g. /organizations/new).
-  // If both are missing, App.tsx's `/` route renders NoOrganizationPage;
-  // /organizations/new still works (it's a no-org-required page).
+  //   2. JWT claim `ouHandle` — used on any org-less page.
+  // If both are missing, App.tsx's `/` route renders NoOrganizationPage.
   const resolvedOrgId = orgId ?? claimsOrgId;
   const routeOrgId = resolvedOrgId ?? '';
   const inProjectLevel = Boolean(projectId);
@@ -299,18 +297,6 @@ export default function AsdlcLayout() {
                 renderValue={renderOrgValue}
                 label="Organizations"
               >
-                <ComplexSelect.MenuItem
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    navigate(organizationCreatePath());
-                  }}
-                >
-                  <ComplexSelect.MenuItem.Icon>
-                    <Plus size={16} />
-                  </ComplexSelect.MenuItem.Icon>
-                  <ComplexSelect.MenuItem.Text primary="Add Organization" />
-                </ComplexSelect.MenuItem>
                 {(orgs.length > 0 ? orgs : [{ name: claimsOrgId, displayName: claimsOrgName, uuid: '', createdAt: '' }]).map((org) => (
                   <ComplexSelect.MenuItem key={org.name} value={org.name}>
                     <ComplexSelect.MenuItem.Icon>

@@ -100,11 +100,6 @@ export interface Organization {
   createdAt: string;
 }
 
-export interface CreateOrganizationInput {
-  displayName: string;
-  description?: string;
-}
-
 // -- Build (WorkflowRun) ----------------------------------------------------
 
 export type BuildStatus = 'Pending' | 'Running' | 'Succeeded' | 'Failed' | 'Completed'
@@ -294,6 +289,12 @@ export interface Task {
   // Time the task was dispatched, ISO-8601. Undefined for never-dispatched
   // tasks; used for the "started Xm ago" caption.
   dispatchedAt?: string;
+  // Execution model the task expects. "SYSTEM" tasks (DB provisioning,
+  // infra setup) are the only ones the per-task /tasks/{id}/exec endpoint
+  // can dispatch — "WORKER" (coding-agent) tasks must go through the batch
+  // dispatch path ("Execute all → Remote Agents"). Used by TaskDetailPanel
+  // to gate the "Execute Now" button.
+  execType?: 'SYSTEM' | 'WORKER';
 }
 
 export interface ProjectBoard {

@@ -20,6 +20,14 @@ ensure secret references.
 `*gen.ClientWithResponses` and require no codegen change to use; we just
 haven't written the wrapper conversions yet.
 
+**Namespace lifecycle (`CreateNamespace` / `UpdateNamespace` / `DeleteNamespace`)
+is explicitly out of scope for this BFF.** OC namespaces ≡ organizations, and
+tenant onboarding is owned by `platform-api-service` (hosted, driven by
+Thunder's `notify_org_created` webhook) and `seed-admin-org.sh` (local). The
+BFF authenticates as the end user and has no AuthZRole that permits namespace
+creation; routing it here would also bypass Thunder OU minting and the
+bootstrap content step. See `asdlc-service/controllers/organization_controller.go`.
+
 Concrete features that will likely arrive once the BFF needs them:
 
 | Capability | gen method(s) | Why we'll need it |
