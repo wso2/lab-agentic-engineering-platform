@@ -38,9 +38,30 @@ type DockerParameters struct {
 	FilePath string `json:"filePath,omitempty"`
 }
 
+// WorkflowEnvVarRef is a Workload-style env entry passed into the
+// dockerfile-builder ClusterWorkflow's `environmentVariables` parameter.
+// The build's `generate-workload-cr` step splices these into
+// `Workload.spec.container.env` so the auto-deployed pod picks them up.
+// Either Value or ValueFrom must be set, not both.
+type WorkflowEnvVarRef struct {
+	Key       string                  `json:"key"`
+	Value     string                  `json:"value,omitempty"`
+	ValueFrom *WorkflowEnvVarValueRef `json:"valueFrom,omitempty"`
+}
+
+type WorkflowEnvVarValueRef struct {
+	SecretKeyRef *WorkflowSecretKeyRef `json:"secretKeyRef,omitempty"`
+}
+
+type WorkflowSecretKeyRef struct {
+	Name string `json:"name"`
+	Key  string `json:"key"`
+}
+
 type ComponentWorkflowParameters struct {
-	Repository *WorkflowRepository `json:"repository,omitempty"`
-	Docker     *DockerParameters   `json:"docker,omitempty"`
+	Repository           *WorkflowRepository `json:"repository,omitempty"`
+	Docker               *DockerParameters   `json:"docker,omitempty"`
+	EnvironmentVariables []WorkflowEnvVarRef `json:"environmentVariables,omitempty"`
 }
 
 type ComponentWorkflowSpec struct {
@@ -57,37 +78,6 @@ type CreateComponentRequest struct {
 	AutoBuild   bool                   `json:"autoBuild,omitempty"`
 	AutoDeploy  bool                   `json:"autoDeploy,omitempty"`
 	Workflow    *ComponentWorkflowSpec `json:"workflow,omitempty"`
-}
-
-// -- Workload ----------------------------------------------------------------
-
-type WorkloadEndpoint struct {
-	Type       string   `json:"type,omitempty"`
-	Port       int      `json:"port"`
-	Visibility []string `json:"visibility,omitempty"`
-}
-
-type CreateWorkloadRequest struct {
-	ComponentName string                      `json:"componentName"`
-	ProjectName   string                      `json:"projectName"`
-	Image         string                      `json:"image"`
-	Port          int                         `json:"port"`
-	Args          []string                    `json:"args,omitempty"`
-	EnvVars       []EnvVar                    `json:"envVars,omitempty"`
-	Endpoints     map[string]WorkloadEndpoint `json:"endpoints,omitempty"`
-}
-
-// CreateReleaseParams holds all parameters for creating a ComponentRelease.
-type CreateReleaseParams struct {
-	OrgName           string
-	ProjectName       string
-	ComponentName     string
-	ReleaseName       string
-	Image             string
-	Port              int
-	Args              []string
-	EnvVars           []EnvVar
-	ComponentTypeName string
 }
 
 // -- WorkflowRun (builds) ----------------------------------------------------
@@ -139,10 +129,6 @@ type Deployment struct {
 
 type DeploymentList struct {
 	Items []Deployment `json:"items"`
-}
-
-type DeployRequest struct {
-	Environment string `json:"environment"`
 }
 
 // -- Build Logs ---------------------------------------------------------------

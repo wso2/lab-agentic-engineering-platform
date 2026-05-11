@@ -115,10 +115,6 @@ type ObservabilityConfig struct {
 type PlatformAPIConfig struct {
 	BaseURL    string
 	HostHeader string
-	// BuildRegistry is the Docker registry OC's dockerfile-builder pushes to.
-	// Used to construct image refs at deploy time — OC does not surface them
-	// in the WorkflowRun API.
-	BuildRegistry string
 }
 
 // GitServiceConfig holds connection settings for the git-service.

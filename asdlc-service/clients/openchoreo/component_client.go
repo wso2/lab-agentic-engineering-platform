@@ -16,15 +16,31 @@ import (
 // Every method that names a component takes the user-friendly componentName
 // plus the projectName that scopes it. The client applies ScopedComponentName
 // internally so callers never deal with the prefixed k8s name.
+//
+// Deploy chain: with AutoDeploy=true set on the Component (see
+// dispatch_service.ensureOCComponent), OC's Component controller owns the
+// Workload → ComponentRelease → ReleaseBinding fan-out. The build
+// workflow's `generate-workload-cr` step POSTs the Workload; the
+// controller picks it up, hashes the spec, creates a ComponentRelease,
+// and binds it into the project's first environment. The BFF only reads
+// the result back via ListDeployments. Wrappers for the write side of
+// that chain are deliberately absent — add them back per the roadmap
+// when a real caller appears (e.g. per-env config overrides).
 type ComponentClient interface {
 	ListComponents(ctx context.Context, orgName, projectName string, limit int, cursor string) (*models.ComponentList, error)
 	GetComponent(ctx context.Context, orgName, projectName, componentName string) (*models.Component, error)
 	CreateComponent(ctx context.Context, orgName, projectName string, req *models.CreateComponentRequest) (*models.Component, error)
+	// UpdateComponentWorkflowEnvVars rewrites the Component's
+	// `spec.workflow.parameters.environmentVariables` array. This is the
+	// signal the next build picks up: when the user edits per-component
+	// env vars, the BFF mirrors the change onto the OC Component so the
+	// next WorkflowRun (triggered by push or manual click) ships the
+	// updated env vars through `generate-workload-cr` into the Workload
+	// CR. Other workflow parameters (repository, docker, ...) are left
+	// untouched.
+	UpdateComponentWorkflowEnvVars(ctx context.Context, orgName, projectName, componentName string, envVars []models.WorkflowEnvVarRef) error
 
-	// Workload + Release (deploy flow)
-	CreateWorkload(ctx context.Context, orgName string, req *models.CreateWorkloadRequest) error
-	CreateComponentRelease(ctx context.Context, params *models.CreateReleaseParams) error
-	CreateReleaseBinding(ctx context.Context, orgName, projectName, componentName, environment, releaseName string) error
+	// Deploy (read-only — auto-deploy on the Component drives the chain)
 	ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error)
 
 	// Build (workflow runs)
@@ -323,6 +339,75 @@ func (c *componentClient) CreateComponent(ctx context.Context, orgName, projectN
 	})
 }
 
+// UpdateComponentWorkflowEnvVars fetches the Component, rewrites its
+// `spec.workflow.parameters.environmentVariables` array, and PUTs the
+// whole Component back. We do a read-modify-write rather than blasting
+// the entire spec from scratch because the build workflow's other
+// parameters (repository, docker, ...) are owned by the dispatch path
+// and we don't want to lose them.
+//
+// Returns nil on 404 — a missing Component means the user is editing
+// env vars before the first dispatch, which is allowed: the values will
+// be stamped onto the Component when ensureOCComponent fires (see
+// dispatch_service.workflowEnvVars).
+func (c *componentClient) UpdateComponentWorkflowEnvVars(ctx context.Context, orgName, projectName, componentName string, envVars []models.WorkflowEnvVarRef) error {
+	scopedComp := ScopedComponentName(projectName, componentName)
+	getResp, err := c.oc.GetComponentWithResponse(ctx, orgName, scopedComp)
+	if err != nil {
+		return fmt.Errorf("failed to get component for env-var update: %w", err)
+	}
+	if getResp.StatusCode() == http.StatusNotFound {
+		return nil
+	}
+	if getResp.StatusCode() != http.StatusOK || getResp.JSON200 == nil {
+		return handleErrorResponse(getResp.StatusCode(), ErrorResponses{
+			JSON401: getResp.JSON401,
+			JSON403: getResp.JSON403,
+			JSON404: getResp.JSON404,
+			JSON500: getResp.JSON500,
+		})
+	}
+
+	body := *getResp.JSON200
+	if body.Spec == nil {
+		body.Spec = &gen.ComponentSpec{}
+	}
+	if body.Spec.Workflow == nil {
+		// No workflow on this Component — env vars can't take effect.
+		// Don't synthesize one here; the dispatch path is the only place
+		// that knows the builder kind/name. Surface a soft error so the
+		// caller can warn.
+		return fmt.Errorf("component %s/%s has no workflow; env vars cannot be applied", projectName, componentName)
+	}
+	var params map[string]interface{}
+	if body.Spec.Workflow.Parameters != nil {
+		params = cloneParameterMap(*body.Spec.Workflow.Parameters)
+	} else {
+		params = map[string]interface{}{}
+	}
+	if list := workflowEnvVarsToList(envVars); list != nil {
+		params["environmentVariables"] = list
+	} else {
+		delete(params, "environmentVariables")
+	}
+	body.Spec.Workflow.Parameters = &params
+
+	updateResp, err := c.oc.UpdateComponentWithResponse(ctx, orgName, scopedComp, gen.UpdateComponentJSONRequestBody(body))
+	if err != nil {
+		return fmt.Errorf("failed to update component env vars: %w", err)
+	}
+	if updateResp.StatusCode() != http.StatusOK && updateResp.StatusCode() != http.StatusCreated {
+		return handleErrorResponse(updateResp.StatusCode(), ErrorResponses{
+			JSON400: updateResp.JSON400,
+			JSON401: updateResp.JSON401,
+			JSON403: updateResp.JSON403,
+			JSON404: updateResp.JSON404,
+			JSON500: updateResp.JSON500,
+		})
+	}
+	return nil
+}
+
 // buildCreateComponentBody mirrors the legacy hand-rolled body verbatim.
 // gen's ComponentSpec.{ComponentType,Owner} are inline anonymous structs;
 // we materialize them with composite literals to stay clear of pointer
@@ -419,292 +504,46 @@ func workflowParametersToMap(p *models.ComponentWorkflowParameters) map[string]i
 			out["docker"] = docker
 		}
 	}
+	if envVars := workflowEnvVarsToList(p.EnvironmentVariables); envVars != nil {
+		out["environmentVariables"] = envVars
+	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
 }
 
-// -- Workload ----------------------------------------------------------------
-
-func (c *componentClient) CreateWorkload(ctx context.Context, orgName string, req *models.CreateWorkloadRequest) error {
-	body := buildWorkloadBody(req)
-
-	// Upsert: POST, and on 409 Conflict fall back to PUT so the Workload's
-	// container image can be refreshed on each deploy. Updating the Workload
-	// is what drives OC to emit a new ComponentRelease + (with autoDeploy)
-	// ReleaseBinding.
-	resp, err := c.oc.CreateWorkloadWithResponse(ctx, orgName, body)
-	if err != nil {
-		return fmt.Errorf("failed to create workload: %w", err)
-	}
-	switch resp.StatusCode() {
-	case http.StatusCreated, http.StatusOK:
+// workflowEnvVarsToList shapes the typed env-var slice into the
+// `[]map[string]interface{}` form OC's dockerfile-builder
+// `environmentVariables` parameter expects. The build workflow's
+// `generate-workload-cr` step splices this into the generated Workload's
+// `spec.container.env`, so the auto-deployed pod picks the values up.
+// Returns nil when there's nothing to inject so the JSON body stays
+// `[]`-clean (the workflow's schema default).
+func workflowEnvVarsToList(envVars []models.WorkflowEnvVarRef) []map[string]interface{} {
+	if len(envVars) == 0 {
 		return nil
-	case http.StatusConflict:
-		return c.updateWorkload(ctx, orgName, body)
 	}
-	return handleErrorResponse(resp.StatusCode(), ErrorResponses{
-		JSON400: resp.JSON400,
-		JSON401: resp.JSON401,
-		JSON403: resp.JSON403,
-		JSON409: resp.JSON409,
-		JSON500: resp.JSON500,
-	})
-}
-
-func (c *componentClient) updateWorkload(ctx context.Context, orgName string, body gen.Workload) error {
-	resp, err := c.oc.UpdateWorkloadWithResponse(ctx, orgName, body.Metadata.Name, gen.UpdateWorkloadJSONRequestBody(body))
-	if err != nil {
-		return fmt.Errorf("failed to update workload: %w", err)
-	}
-	if resp.StatusCode() != http.StatusOK && resp.StatusCode() != http.StatusCreated {
-		return handleErrorResponse(resp.StatusCode(), ErrorResponses{
-			JSON400: resp.JSON400,
-			JSON401: resp.JSON401,
-			JSON403: resp.JSON403,
-			JSON404: resp.JSON404,
-			JSON500: resp.JSON500,
-		})
-	}
-	return nil
-}
-
-func buildWorkloadBody(req *models.CreateWorkloadRequest) gen.Workload {
-	container := &gen.WorkloadContainer{Image: req.Image}
-	if len(req.Args) > 0 {
-		args := append([]string(nil), req.Args...)
-		container.Args = &args
-	}
-	if len(req.EnvVars) > 0 {
-		env := envVarsToGen(req.EnvVars)
-		container.Env = &env
-	}
-
-	scopedComp := ScopedComponentName(req.ProjectName, req.ComponentName)
-	visibility := []gen.WorkloadEndpointVisibility{gen.WorkloadEndpointVisibilityExternal}
-	endpoints := map[string]gen.WorkloadEndpoint{
-		"http": {
-			Type:       gen.WorkloadEndpointTypeHTTP,
-			Port:       req.Port,
-			Visibility: &visibility,
-		},
-	}
-
-	return gen.Workload{
-		Metadata: gen.ObjectMeta{Name: scopedComp + "-workload"},
-		Spec: &gen.WorkloadSpec{
-			Owner: &struct {
-				ComponentName string `json:"componentName"`
-				ProjectName   string `json:"projectName"`
-			}{
-				ComponentName: scopedComp,
-				ProjectName:   req.ProjectName,
-			},
-			Endpoints: &endpoints,
-			Container: container,
-		},
-	}
-}
-
-// -- ComponentRelease --------------------------------------------------------
-
-func (c *componentClient) CreateComponentRelease(ctx context.Context, params *models.CreateReleaseParams) error {
-	ctName := params.ComponentTypeName
-	if ctName == "" {
-		ctName = "service"
-	}
-
-	ctSpec := c.fetchComponentTypeSpec(ctx, ctName)
-
-	resp, err := c.oc.CreateComponentReleaseWithResponse(ctx, params.OrgName, buildComponentReleaseBody(params, ctName, ctSpec))
-	if err != nil {
-		return fmt.Errorf("failed to create component release: %w", err)
-	}
-	if resp.StatusCode() != http.StatusCreated && resp.StatusCode() != http.StatusOK {
-		return handleErrorResponse(resp.StatusCode(), ErrorResponses{
-			JSON400: resp.JSON400,
-			JSON401: resp.JSON401,
-			JSON403: resp.JSON403,
-			JSON409: resp.JSON409,
-			JSON500: resp.JSON500,
-		})
-	}
-	return nil
-}
-
-// fetchComponentTypeSpec returns the ClusterComponentType spec to embed in
-// a release snapshot. Best-effort: on any error we fall back to a minimal
-// schema that supports env vars + a Service. The fallback shape mirrors the
-// legacy hand-rolled client so the deploy path behaves identically when OC
-// returns 404 (during cluster bootstrap, for example).
-func (c *componentClient) fetchComponentTypeSpec(ctx context.Context, ctName string) map[string]interface{} {
-	resp, err := c.oc.GetClusterComponentTypeWithResponse(ctx, ctName)
-	if err == nil && resp.StatusCode() == http.StatusOK && resp.JSON200 != nil && resp.JSON200.Spec != nil {
-		if asMap, ok := componentTypeSpecToMap(resp.JSON200.Spec); ok {
-			return asMap
+	out := make([]map[string]interface{}, 0, len(envVars))
+	for _, ev := range envVars {
+		entry := map[string]interface{}{"key": ev.Key}
+		switch {
+		case ev.ValueFrom != nil && ev.ValueFrom.SecretKeyRef != nil:
+			entry["valueFrom"] = map[string]interface{}{
+				"secretKeyRef": map[string]interface{}{
+					"name": ev.ValueFrom.SecretKeyRef.Name,
+					"key":  ev.ValueFrom.SecretKeyRef.Key,
+				},
+			}
+		default:
+			entry["value"] = ev.Value
 		}
+		out = append(out, entry)
 	}
-	return fallbackComponentTypeSpec()
+	return out
 }
 
-// componentTypeSpecToMap round-trips a typed ClusterComponentTypeSpec into
-// the `map[string]interface{}` shape gen.ComponentReleaseSpec.ComponentType
-// expects. JSON marshal is the simplest faithful conversion since the spec
-// has many anonymous nested structs.
-func componentTypeSpecToMap(spec *gen.ClusterComponentTypeSpec) (map[string]interface{}, bool) {
-	if spec == nil {
-		return nil, false
-	}
-	asMap, err := structToMap(spec)
-	if err != nil {
-		return nil, false
-	}
-	return asMap, true
-}
-
-// fallbackComponentTypeSpec is the same minimal Deployment+Service schema
-// the legacy hand-rolled client used. Lets local-dev keep deploying when
-// the ClusterComponentType isn't yet provisioned.
-func fallbackComponentTypeSpec() map[string]interface{} {
-	return map[string]interface{}{
-		"workloadType": "deployment",
-		"resources": []map[string]interface{}{
-			{
-				"id": "deployment",
-				"template": map[string]interface{}{
-					"apiVersion": "apps/v1",
-					"kind":       "Deployment",
-					"metadata":   map[string]interface{}{"name": "${metadata.componentName}", "namespace": "${metadata.namespace}", "labels": "${metadata.labels}"},
-					"spec": map[string]interface{}{
-						"replicas": 1,
-						"selector": map[string]interface{}{"matchLabels": "${metadata.podSelectors}"},
-						"template": map[string]interface{}{
-							"metadata": map[string]interface{}{"labels": "${metadata.podSelectors}"},
-							"spec": map[string]interface{}{
-								"containers": []map[string]interface{}{{
-									"name":    "main",
-									"image":   "${workload.container.image}",
-									"env":     "${workload.container.env}",
-									"envFrom": "${configurations.toContainerEnvFrom()}",
-								}},
-							},
-						},
-					},
-				},
-			},
-			{
-				"id": "service",
-				"template": map[string]interface{}{
-					"apiVersion": "v1",
-					"kind":       "Service",
-					"metadata":   map[string]interface{}{"name": "${metadata.componentName}", "namespace": "${metadata.namespace}"},
-					"spec":       map[string]interface{}{"selector": "${metadata.podSelectors}", "ports": "${workload.toServicePorts()}"},
-				},
-			},
-		},
-	}
-}
-
-func buildComponentReleaseBody(params *models.CreateReleaseParams, ctName string, ctSpec map[string]interface{}) gen.CreateComponentReleaseJSONRequestBody {
-	envEntries := []map[string]interface{}{}
-	for _, ev := range params.EnvVars {
-		envEntries = append(envEntries, map[string]interface{}{
-			"key":   ev.Key,
-			"value": ev.Value,
-		})
-	}
-	container := map[string]interface{}{
-		"image": params.Image,
-	}
-	if len(params.Args) > 0 {
-		container["args"] = params.Args
-	}
-	if len(envEntries) > 0 {
-		container["env"] = envEntries
-	}
-
-	workload := map[string]interface{}{
-		"endpoints": map[string]interface{}{
-			"http": map[string]interface{}{
-				"type":       "HTTP",
-				"port":       params.Port,
-				"visibility": []string{"external"},
-			},
-		},
-		"container": container,
-	}
-
-	componentType := map[string]interface{}{
-		"kind": "ClusterComponentType",
-		"name": ctName,
-		"spec": ctSpec,
-	}
-
-	return gen.CreateComponentReleaseJSONRequestBody{
-		Metadata: gen.ObjectMeta{
-			Name: ScopedComponentName(params.ProjectName, params.ReleaseName),
-		},
-		Spec: &gen.ComponentReleaseSpec{
-			Owner: struct {
-				ComponentName string `json:"componentName"`
-				ProjectName   string `json:"projectName"`
-			}{
-				ComponentName: ScopedComponentName(params.ProjectName, params.ComponentName),
-				ProjectName:   params.ProjectName,
-			},
-			ComponentType: componentType,
-			Workload:      workload,
-		},
-	}
-}
-
-// -- ReleaseBinding (deploy) -------------------------------------------------
-
-func (c *componentClient) CreateReleaseBinding(ctx context.Context, orgName, projectName, componentName, environment, releaseName string) error {
-	scopedComp := ScopedComponentName(projectName, componentName)
-	scopedRelease := ScopedComponentName(projectName, releaseName)
-	envConfigs := map[string]interface{}{
-		"replicas": 1,
-		"resources": map[string]interface{}{
-			"requests": map[string]interface{}{"cpu": "50m", "memory": "128Mi"},
-			"limits":   map[string]interface{}{"cpu": "200m", "memory": "256Mi"},
-		},
-	}
-
-	body := gen.CreateReleaseBindingJSONRequestBody{
-		Metadata: gen.ObjectMeta{
-			Name: fmt.Sprintf("%s-%s", scopedComp, environment),
-		},
-		Spec: &gen.ReleaseBindingSpec{
-			Owner: struct {
-				ComponentName string `json:"componentName"`
-				ProjectName   string `json:"projectName"`
-			}{
-				ComponentName: scopedComp,
-				ProjectName:   projectName,
-			},
-			Environment:                     environment,
-			ReleaseName:                     &scopedRelease,
-			ComponentTypeEnvironmentConfigs: &envConfigs,
-		},
-	}
-
-	resp, err := c.oc.CreateReleaseBindingWithResponse(ctx, orgName, body)
-	if err != nil {
-		return fmt.Errorf("failed to create release binding: %w", err)
-	}
-	if resp.StatusCode() != http.StatusCreated && resp.StatusCode() != http.StatusOK {
-		return handleErrorResponse(resp.StatusCode(), ErrorResponses{
-			JSON400: resp.JSON400,
-			JSON401: resp.JSON401,
-			JSON403: resp.JSON403,
-			JSON409: resp.JSON409,
-			JSON500: resp.JSON500,
-		})
-	}
-	return nil
-}
+// -- Deployments (read-only) -------------------------------------------------
 
 func (c *componentClient) ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error) {
 	scopedComp := ScopedComponentName(projectName, componentName)

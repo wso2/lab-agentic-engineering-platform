@@ -189,11 +189,13 @@ func main() {
 	// git-service. The BFF no longer mounts /data/repos.
 	artifactStore := services.NewArtifactStore(gitClient)
 
-	// Services
-	configService := services.NewConfigService(configRepo)
+	// Services. componentService is constructed before configService so
+	// configService can call back into it to mirror env-var edits onto
+	// the OC Component's workflow params.
 	projectService := services.NewProjectService(projectClient, gitClient, secretRefClient, artifactStore, taskRepo)
 	organizationService := services.NewOrganizationService(db, namespaceClient)
-	componentService := services.NewComponentService(componentClient, observClient, configService, cfg.PlatformAPI.BuildRegistry)
+	componentService := services.NewComponentService(componentClient, observClient)
+	configService := services.NewConfigService(configRepo, componentService)
 	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
 
@@ -285,7 +287,7 @@ func main() {
 	if agentGitServiceURL == "" {
 		agentGitServiceURL = cfg.GitService.BaseURL
 	}
-	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, artifactStore, taskTokens, tokenInject, wfRunService, agentGitServiceURL)
+	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, agentGitServiceURL)
 	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
 
 	webhook.Register(webhookRouter, db, projector, wfRunService)

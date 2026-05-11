@@ -47,6 +47,7 @@ type dispatchService struct {
 	taskRepo      repositories.TaskRepository
 	gitClient     gitservice.Client
 	componentSvc  ComponentService
+	configSvc     ConfigService
 	store         *ArtifactStore
 	taskTokens    *TaskTokenManager
 	tokenInject   func(ctx context.Context) context.Context
@@ -58,6 +59,7 @@ func NewDispatchService(
 	taskRepo repositories.TaskRepository,
 	gitClient gitservice.Client,
 	componentSvc ComponentService,
+	configSvc ConfigService,
 	store *ArtifactStore,
 	taskTokens *TaskTokenManager,
 	tokenInject func(ctx context.Context) context.Context,
@@ -68,6 +70,7 @@ func NewDispatchService(
 		taskRepo:      taskRepo,
 		gitClient:     gitClient,
 		componentSvc:  componentSvc,
+		configSvc:     configSvc,
 		store:         store,
 		taskTokens:    taskTokens,
 		tokenInject:   tokenInject,
@@ -258,7 +261,12 @@ func buildAgentPrompt(task *models.ComponentTask) string {
 // ensureOCComponent creates the OC Component (one per task component) needed
 // for the build to fire when the merge push arrives. AutoBuild=false — every
 // build is driven by the BFF's push-webhook handler creating a WorkflowRun
-// pinned to the merge SHA.
+// pinned to the merge SHA. AutoDeploy=true — OC's Component controller
+// watches the Workload the build's generate-workload-cr step posts and
+// creates the ReleaseBinding into the first environment of the project's
+// DeploymentPipeline (development) with empty ComponentTypeEnvironmentConfigs;
+// schema defaults on the `service` ClusterComponentType supply replicas,
+// resources, and imagePullPolicy.
 func (s *dispatchService) ensureOCComponent(
 	ctx context.Context,
 	task *models.ComponentTask,
@@ -297,13 +305,20 @@ func (s *dispatchService) ensureOCComponent(
 		description = task.Title + " — " + task.Rationale
 	}
 
+	// Stamp the current per-component env vars onto the Component's
+	// workflow parameters so the build's generate-workload-cr step writes
+	// them into the Workload CR. autoDeploy then carries them into the
+	// ReleaseBinding. Env-var changes after first dispatch flow in via
+	// componentEnvVarsUpdated below.
+	envVars := s.workflowEnvVars(ctx, task.OrgID, task.ProjectID, componentName)
+
 	_, err = s.componentSvc.CreateComponent(ctx, task.OrgID, task.ProjectID, &models.CreateComponentRequest{
 		Name:        componentName,
 		DisplayName: task.ComponentName,
 		Description: description,
 		Type:        ocEntrypoint(comp.ComponentType),
 		AutoBuild:   false,
-		AutoDeploy:  false,
+		AutoDeploy:  true,
 		Workflow: &models.ComponentWorkflowSpec{
 			Kind: "ClusterWorkflow",
 			Name: "dockerfile-builder",
@@ -318,6 +333,7 @@ func (s *dispatchService) ensureOCComponent(
 					Context:  dockerContext,
 					FilePath: dockerFilePath,
 				},
+				EnvironmentVariables: envVars,
 			},
 		},
 	})
@@ -325,4 +341,29 @@ func (s *dispatchService) ensureOCComponent(
 		return fmt.Errorf("create component: %w", err)
 	}
 	return nil
+}
+
+// workflowEnvVars reads the stored env vars for this component and shapes
+// them into the WorkflowEnvVarRef slice that the dockerfile-builder
+// ClusterWorkflow's `environmentVariables` schema expects. Returns nil
+// when nothing is configured or the lookup fails — the build workflow's
+// `default: []` covers that case.
+func (s *dispatchService) workflowEnvVars(ctx context.Context, orgID, projectID, componentName string) []models.WorkflowEnvVarRef {
+	if s.configSvc == nil {
+		return nil
+	}
+	stored, err := s.configSvc.GetEnvVarsForDeploy(ctx, orgID, projectID, componentName)
+	if err != nil {
+		slog.WarnContext(ctx, "fetch env vars for component workflow params; proceeding without",
+			"org", orgID, "project", projectID, "component", componentName, "error", err)
+		return nil
+	}
+	if len(stored) == 0 {
+		return nil
+	}
+	out := make([]models.WorkflowEnvVarRef, 0, len(stored))
+	for _, ev := range stored {
+		out = append(out, models.WorkflowEnvVarRef{Key: ev.Key, Value: ev.Value})
+	}
+	return out
 }
