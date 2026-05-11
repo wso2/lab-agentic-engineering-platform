@@ -2,7 +2,7 @@ packages:
   - console
   - ui-components/*
 
-onlyBuiltDependencies:
-  - "@swc/core"
-  - core-js
-  - esbuild
+allowBuilds:
+  "@swc/core": true
+  core-js: true
+  esbuild: true
