@@ -34,7 +34,6 @@ function readDispatchFromEnv(): DispatchRequest {
   const orgId = requireEnv("ASDLC_ORG_ID");
   const projectId = requireEnv("ASDLC_PROJECT_ID");
   const componentName = requireEnv("ASDLC_COMPONENT_NAME");
-  const branchName = requireEnv("ASDLC_BRANCH_NAME");
   const repoUrl = requireEnv("ASDLC_REPO_URL");
   const bearer = requireEnv("ASDLC_BEARER");
   const gitServiceUrl = requireEnv("ASDLC_GIT_SERVICE_URL");
@@ -56,7 +55,6 @@ function readDispatchFromEnv(): DispatchRequest {
     orgId,
     projectId,
     componentName,
-    branchName,
     repoUrl,
     bearer,
     identity: { name: identityName, email: identityEmail, login: identityLogin || undefined },

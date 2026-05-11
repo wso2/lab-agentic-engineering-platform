@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
-	"github.com/wso2/asdlc/asdlc-service/clients/requests"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 )
@@ -86,7 +84,25 @@ func (s *projectService) CreateProject(ctx context.Context, orgName string, req 
 			// MintBuildToken writes the per-build token into that path
 			// immediately before each WorkflowRun. The CR is idempotent on
 			// (namespace, name) so re-creates are safe.
-			if s.secretRefCli != nil && repoInfo != nil && repoInfo.OcSecretRefName != nil && *repoInfo.OcSecretRefName != "" && repoInfo.RepoSlug != "" {
+			if s.secretRefCli == nil {
+				slog.WarnContext(ctx, "skipping OC SecretReference creation: no secretRefCli configured",
+					"project", project.Name)
+			} else if repoInfo == nil {
+				slog.ErrorContext(ctx, "skipping OC SecretReference creation: git-service returned nil repoInfo (build will be stuck pending)",
+					"project", project.Name)
+			} else if repoInfo.OcSecretRefName == nil || *repoInfo.OcSecretRefName == "" || repoInfo.RepoSlug == "" {
+				// Loud failure: this is exactly the silent skip that stranded
+				// per-project builds in WorkflowPending after the
+				// InitProject response shape changed under us. If the
+				// downstream contract drifts again, fail at project create
+				// rather than discovering it 10 minutes into a build.
+				slog.ErrorContext(ctx, "BUG: git-service init response missing OcSecretRefName/RepoSlug — build will be stuck in WorkflowPending until SecretReference is created out-of-band",
+					"project", project.Name,
+					"orgId", orgName,
+					"hasOcSecretRefName", repoInfo.OcSecretRefName != nil && *repoInfo.OcSecretRefName != "",
+					"hasRepoSlug", repoInfo.RepoSlug != "",
+					"repoUrl", repoInfo.RepoURL)
+			} else {
 				// Path is relative to the OpenBao KV v2 mount (`secret`); the
 				// ClusterSecretStore's path/version=v2 config adds `data/` at
 				// read time. The OC API normalises the apiVersion v1alpha1 →
@@ -95,8 +111,6 @@ func (s *projectService) CreateProject(ctx context.Context, orgName string, req 
 				if err := s.secretRefCli.EnsureSecretReference(ctx, orgName, *repoInfo.OcSecretRefName, vaultPath); err != nil {
 					slog.ErrorContext(ctx, "failed to create OC SecretReference",
 						"project", project.Name, "name", *repoInfo.OcSecretRefName, "error", err)
-					// Best-effort: build path will surface a real failure
-					// when the WorkflowRun fires; admins can re-run.
 				} else {
 					slog.InfoContext(ctx, "secretref ensure",
 						"name", *repoInfo.OcSecretRefName, "ns", orgName, "vaultPath", vaultPath)
@@ -235,20 +249,21 @@ func (s *projectService) GetProjectStatus(ctx context.Context, orgName, projectN
 	return status, nil
 }
 
+// translateHTTPError lifts OC-level sentinel errors (openchoreo.ErrNotFound
+// etc.) into the project-service vocabulary the controllers branch on. The
+// underlying err is preserved in the chain so deeper layers can still
+// errors.Is against openchoreo.* if they want richer context.
 func translateHTTPError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var httpErr *requests.HttpError
-	if errors.As(err, &httpErr) {
-		switch httpErr.StatusCode {
-		case http.StatusNotFound:
-			return fmt.Errorf("%w: %s", ErrProjectNotFound, httpErr.Body)
-		case http.StatusUnauthorized:
-			return ErrUnauthorized
-		case http.StatusForbidden:
-			return ErrForbidden
-		}
+	switch {
+	case errors.Is(err, openchoreo.ErrNotFound):
+		return fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	case errors.Is(err, openchoreo.ErrUnauthorized):
+		return ErrUnauthorized
+	case errors.Is(err, openchoreo.ErrForbidden):
+		return ErrForbidden
 	}
 	return err
 }

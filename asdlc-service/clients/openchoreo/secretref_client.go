@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/httpx"
-	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
-	"github.com/wso2/asdlc/asdlc-service/clients/requests"
+	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo/gen"
 )
+
+//go:generate go run github.com/matryer/moq@v0.7.1 -rm -fmt goimports -pkg mocks -out mocks/secretref_client_mock.go . SecretRefClient
 
 // SecretRefClient creates the OC SecretReference CR that the build pod
 // resolves through external-secrets to fetch the per-repo build token from
@@ -20,7 +20,8 @@ import (
 // Re-creating an existing CR returns 409 which we treat as success.
 type SecretRefClient interface {
 	// EnsureSecretReference creates a SecretReference CR. Idempotent on
-	// (namespace, name): a 409 from OC's API is treated as success.
+	// (namespace, name): a 409 from OC's API is treated as success — the
+	// pre-existing CR satisfies the caller's "make sure this exists" contract.
 	//
 	// vaultPath is the OpenBao KV v2 logical path (e.g.
 	// "secret/asdlc/{ocOrgId}/git/{repoSlug}"); ExternalSecret resolves it
@@ -30,124 +31,85 @@ type SecretRefClient interface {
 }
 
 type secretRefClient struct {
-	clientBase
+	oc *gen.ClientWithResponses
 }
 
-// NewSecretRefClient builds the client. Uses the same OC API base URL,
-// host header, and service-token provider as the component client.
-func NewSecretRefClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider) SecretRefClient {
-	return &secretRefClient{
-		clientBase: clientBase{
-			baseURL:       baseURL,
-			hostHeader:    hostHeader,
-			httpClient:    &http.Client{Transport: httpx.WrapTransport(nil)},
-			tokenProvider: tokenProvider,
-		},
+func NewSecretRefClient(cfg Config) SecretRefClient {
+	oc, err := newGenClient(cfg)
+	if err != nil {
+		panic(fmt.Errorf("init openchoreo secretref client: %w", err))
 	}
-}
-
-func (c *secretRefClient) secretReferencesURL(namespace string) string {
-	return fmt.Sprintf("%s/api/v1/namespaces/%s/secretreferences", c.baseURL, namespace)
-}
-
-// secretReference is the K8s-shaped CR body. Mirrors the live CRD schema —
-// `spec.template` accepts only `type` and `metadata`, NOT `data`, so the
-// data shape is constrained: one entry per Secret key, each pulled from
-// OpenBao directly. For git-credentials the build pipeline only needs the
-// `password` field (the GitHub token); HTTPS auth ignores the username
-// for token-based bearer use.
-//
-//   spec:
-//     refreshInterval: 30s
-//     data:
-//       - secretKey: password
-//         remoteRef: { key: secret/data/asdlc/{ocOrgId}/git/{repoSlug}, property: value }
-//     template:
-//       type: kubernetes.io/basic-auth
-//
-// Mirrors the legacy GitSecret-derived shape (see existing
-// phase2-prb-app-test-git-pat for reference). Compatible with the
-// dockerfile-builder workflow's git-clone step.
-type secretReference struct {
-	APIVersion string              `json:"apiVersion"`
-	Kind       string              `json:"kind"`
-	Metadata   secretReferenceMeta `json:"metadata"`
-	Spec       secretReferenceSpec `json:"spec"`
-}
-
-type secretReferenceMeta struct {
-	Name      string            `json:"name"`
-	Namespace string            `json:"namespace"`
-	Labels    map[string]string `json:"labels,omitempty"`
-}
-
-type secretReferenceSpec struct {
-	RefreshInterval string               `json:"refreshInterval"`
-	Data            []secretRefDataEntry `json:"data"`
-	Template        secretRefTemplate    `json:"template"`
-}
-
-type secretRefDataEntry struct {
-	SecretKey string             `json:"secretKey"`
-	RemoteRef secretRefRemoteRef `json:"remoteRef"`
-}
-
-type secretRefRemoteRef struct {
-	Key      string `json:"key"`
-	Property string `json:"property,omitempty"`
-}
-
-type secretRefTemplate struct {
-	Type     string            `json:"type"`
-	Metadata *secretRefTplMeta `json:"metadata,omitempty"`
-}
-
-type secretRefTplMeta struct {
-	Labels map[string]string `json:"labels,omitempty"`
+	return &secretRefClient{oc: oc}
 }
 
 func (c *secretRefClient) EnsureSecretReference(ctx context.Context, namespace, name, vaultPath string) error {
-	ns := namespace
-	body := secretReference{
-		APIVersion: "openchoreo.dev/v1alpha1",
-		Kind:       "SecretReference",
-		Metadata: secretReferenceMeta{
+	resp, err := c.oc.CreateSecretReferenceWithResponse(ctx, namespace, buildEnsureSecretReferenceBody(namespace, name, vaultPath))
+	if err != nil {
+		return fmt.Errorf("failed to create secret reference: %w", err)
+	}
+
+	switch resp.StatusCode() {
+	case http.StatusCreated, http.StatusOK:
+		return nil
+	case http.StatusConflict:
+		// Idempotent: pre-existing CR with the same (namespace, name) is fine.
+		return nil
+	}
+
+	// Defensive: if the gen typed body lookup misses (unexpected status from
+	// a flaky gateway, etc.) handleErrorResponse still classifies by raw
+	// status — and ErrConflict still folds into success in case OC's API
+	// surfaces a conflict outside the typed JSON409 path.
+	classified := handleErrorResponse(resp.StatusCode(), ErrorResponses{
+		JSON400: resp.JSON400,
+		JSON401: resp.JSON401,
+		JSON403: resp.JSON403,
+		JSON409: resp.JSON409,
+		JSON500: resp.JSON500,
+	})
+	if errors.Is(classified, ErrConflict) {
+		return nil
+	}
+	return classified
+}
+
+// buildEnsureSecretReferenceBody returns the SecretReference body we POST.
+// Mirrors the live CRD schema — `spec.template` accepts only `type` and
+// `metadata`, NOT `data`, so the data shape is constrained: one entry per
+// Secret key, each pulled from OpenBao directly. For git-credentials the
+// build pipeline only needs the `password` field (the GitHub token); HTTPS
+// auth ignores the username for token-based bearer use.
+func buildEnsureSecretReferenceBody(namespace, name, vaultPath string) gen.CreateSecretReferenceJSONRequestBody {
+	property := "value"
+	refreshInterval := "30s"
+	tplType := gen.KubernetesIobasicAuth
+	labels := map[string]string{
+		string(LabelKeyManagedBy):         LabelValueManagedBy,
+		string(LabelKeySecretType):        LabelValueSecretTypeBasicAuth,
+		string(LabelKeyOCSecretType):      LabelValueSecretTypeGitCreds,
+		string(LabelKeyWorkflowPlaneKind): LabelValueClusterWorkflowKind,
+		string(LabelKeyWorkflowPlaneName): LabelValueWorkflowPlaneName,
+	}
+	return gen.CreateSecretReferenceJSONRequestBody{
+		Metadata: gen.ObjectMeta{
 			Name:      name,
-			Namespace: ns,
-			Labels: map[string]string{
-				"managed-by":                       "asdlc",
-				"kubernetes.io/secret-type":        "basic-auth",
-				"openchoreo.dev/secret-type":       "git-credentials",
-				"openchoreo.dev/workflow-plane-kind": "ClusterWorkflowPlane",
-				"openchoreo.dev/workflow-plane-name": "default",
-			},
+			Namespace: &namespace,
+			Labels:    &labels,
 		},
-		Spec: secretReferenceSpec{
-			RefreshInterval: "30s",
-			Data: []secretRefDataEntry{
+		Spec: &gen.SecretReferenceSpec{
+			RefreshInterval: &refreshInterval,
+			Data: []gen.SecretDataSource{
 				{
 					SecretKey: "password",
-					RemoteRef: secretRefRemoteRef{
+					RemoteRef: gen.RemoteReference{
 						Key:      vaultPath,
-						Property: "value",
+						Property: &property,
 					},
 				},
 			},
-			Template: secretRefTemplate{
-				Type: "kubernetes.io/basic-auth",
+			Template: gen.SecretTemplate{
+				Type: &tplType,
 			},
 		},
 	}
-
-	httpReq := c.newRequest(ctx, "openchoreo.EnsureSecretReference", http.MethodPost, c.secretReferencesURL(ns))
-	httpReq.SetJSON(body)
-
-	if err := c.send(ctx, httpReq, nil, http.StatusCreated); err != nil {
-		var httpErr *requests.HttpError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusConflict {
-			return nil
-		}
-		return fmt.Errorf("ensure secretreference %s/%s: %w", ns, name, err)
-	}
-	return nil
 }

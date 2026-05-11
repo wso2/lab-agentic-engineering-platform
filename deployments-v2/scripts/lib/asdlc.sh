@@ -101,6 +101,47 @@ bootstrap_workloads() {
   fi
 }
 
+# migrate_components_autodeploy patches every existing OC Component to
+# `spec.autoDeploy: true`. New components dispatched after this commit
+# get autoDeploy=true at creation time (dispatch_service.go), but any
+# component that pre-dates the switch was created with autoDeploy=false
+# and would otherwise sit forever waiting for the legacy
+# DeployFromBuild call that no longer exists. The patch is a merge
+# patch, so re-applying is a no-op once spec.autoDeploy is already true.
+# Skipped on dry-run.
+migrate_components_autodeploy() {
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    log_skip "[dry-run] would patch every existing Component to spec.autoDeploy=true"
+    return
+  fi
+
+  local ns name auto count=0 patched=0
+  # One JSON-Lines row per Component, "<namespace>:<name>:<autoDeploy>".
+  # Using newline-terminated rows + IFS=: avoids zsh/bash word-splitting
+  # surprises with a trailing-space-delimited namespace list.
+  while IFS=: read -r ns name auto; do
+    [ -z "$name" ] && continue
+    count=$((count + 1))
+    if [ "$auto" = "true" ]; then
+      continue
+    fi
+    if kubectl patch components.openchoreo.dev "$name" -n "$ns" --type merge \
+        -p '{"spec":{"autoDeploy":true}}' >/dev/null 2>&1; then
+      patched=$((patched + 1))
+      log_info "patched $ns/$name autoDeploy=true"
+    else
+      log_warn "failed to patch $ns/$name; will retry on next setup"
+    fi
+  done < <(kubectl get components.openchoreo.dev -A \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{":"}{.metadata.name}{":"}{.spec.autoDeploy}{"\n"}{end}' \
+    2>/dev/null || true)
+  if [ "$count" -eq 0 ]; then
+    log_info "no existing Components found — skipping autoDeploy migration"
+    return
+  fi
+  log_ok "autoDeploy migration: $patched of $count Component(s) updated"
+}
+
 # discover_console_origin polls for the console HTTPRoute hostname (OpenChoreo
 # creates it asynchronously during workload bootstrap).  Returns the origin URL
 # on stdout, or empty string on timeout.

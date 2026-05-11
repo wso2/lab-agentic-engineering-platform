@@ -177,12 +177,15 @@ content (especially never paste OpenAPI YAML into the issue).
 
 After your body, the platform automatically appends:
   - A "Component Reference" card (name, type, language, app path, OpenAPI pointer).
-  - Component dependency wiring (workload.yaml env-binding boilerplate).
-  - Project structure hints for the language.
-  - "Local Developer Setup", "How To Submit", "Constraints", "Do Not".
+  - Component dependency wiring (workload.yaml env-binding boilerplate), when the component declares dependsOn.
+  - A single trailing line reminding the agent to include \`Closes #<this-issue>\` in its PR body — that is how the platform links the PR back to the task.
 
-So do NOT restate constraints, deny-lists, submission flow, project layout,
-Dockerfile rules, env-var rules, or branch / PR mechanics. Focus on this task.
+The platform's coding-agent loads the \`asdlc\` skill at dispatch — that
+skill carries the workflow (the agent creates its own branch and opens
+its own PR), constraints, deny-list, project-structure conventions, and
+the OpenChoreo \`workload.yaml\` reference. So do NOT restate constraints,
+deny-lists, submission flow, project layout, Dockerfile rules, env-var
+rules, or branch / PR mechanics. Focus on this task.
 
 # Phase 2 — Detail
 

@@ -42,12 +42,16 @@ export default function ComponentDeployPage() {
   const [deployments, setDeployments] = useState<Deployment[]>([]);
   const [builds, setBuilds] = useState<Build[]>([]);
   const [loading, setLoading] = useState(true);
-  const [deploying, setDeploying] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const hasSuccessfulBuild = builds.some(
     (b) => b.status === 'Succeeded' || b.status === 'WorkflowSucceeded' || b.status === 'Completed',
   );
+  // Auto-deploy is in flight when a build has succeeded but OC has not yet
+  // materialised a ReleaseBinding for this component. OC's Component
+  // controller normally reacts within seconds of the build's
+  // generate-workload-cr step POSTing the Workload, so this state is brief.
+  const awaitingAutoDeploy = hasSuccessfulBuild && deployments.length === 0;
 
   const loadData = useCallback(async () => {
     if (!projectId || !componentId) return;
@@ -66,12 +70,15 @@ export default function ComponentDeployPage() {
     loadData();
   }, [loadData]);
 
-  // Poll while deploying
+  // Poll while we are either waiting for autoDeploy to fan out into a
+  // ReleaseBinding, or while a binding is in a non-terminal status. The
+  // BFF doesn't push these — the page just polls OC via ListDeployments.
   useEffect(() => {
-    const hasActive = deployments.some(
+    const hasActiveBinding = deployments.some(
       (d) => d.status && !d.status.includes('Ready') && !d.status.includes('Failed'),
     );
-    if (hasActive && projectId && componentId) {
+    const shouldPoll = awaitingAutoDeploy || hasActiveBinding;
+    if (shouldPoll && projectId && componentId) {
       pollRef.current = setInterval(async () => {
         const updated = await api.listDeployments(routeOrgId, projectId, componentId);
         setDeployments(updated);
@@ -80,16 +87,7 @@ export default function ComponentDeployPage() {
     return () => {
       if (pollRef.current) clearInterval(pollRef.current);
     };
-  }, [deployments, routeOrgId, projectId, componentId]);
-
-  const handleDeploy = async () => {
-    if (!projectId || !componentId) return;
-    setDeploying(true);
-    await api.deploy(routeOrgId, projectId, componentId, 'development');
-    const updated = await api.listDeployments(routeOrgId, projectId, componentId);
-    setDeployments(updated);
-    setDeploying(false);
-  };
+  }, [deployments, awaitingAutoDeploy, routeOrgId, projectId, componentId]);
 
   const handleRefresh = async () => {
     if (!projectId || !componentId) return;
@@ -127,39 +125,42 @@ export default function ComponentDeployPage() {
             Deploy
           </Typography>
         </Box>
-        <Stack direction="row" gap={1}>
-          <Button
-            variant="outlined"
-            size="small"
-            startIcon={<RefreshCw />}
-            onClick={handleRefresh}
-          >
-            Refresh
-          </Button>
-          <Button
-            variant="contained"
-            size="small"
-            startIcon={<Rocket />}
-            onClick={handleDeploy}
-            disabled={deploying || deployments.length > 0 || !hasSuccessfulBuild}
-          >
-            {deploying ? 'Deploying...' : 'Deploy to Development'}
-          </Button>
-        </Stack>
+        <Button
+          variant="outlined"
+          size="small"
+          startIcon={<RefreshCw />}
+          onClick={handleRefresh}
+        >
+          Refresh
+        </Button>
       </Stack>
 
       {deployments.length === 0 ? (
         <Card variant="outlined">
           <CardContent>
-            <Stack alignItems="center" gap={2} sx={{ py: 6 }}>
+            <Stack alignItems="center" gap={2} sx={{ py: 6, textAlign: 'center' }}>
               <Rocket size={48} opacity={0.4} />
-              <Typography variant="h6" color="text.secondary">
-                No deployments yet
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                Trigger a build from the Build page first. With auto-deploy enabled,
-                the component will be deployed automatically after a successful build.
-              </Typography>
+              {awaitingAutoDeploy ? (
+                <>
+                  <Typography variant="h6" color="text.secondary">
+                    Deploying…
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    The build finished and OpenChoreo is rolling out the new release.
+                    This page will pick up the deployment automatically.
+                  </Typography>
+                </>
+              ) : (
+                <>
+                  <Typography variant="h6" color="text.secondary">
+                    No deployments yet
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    Trigger a build from the Build page. Once the build succeeds,
+                    OpenChoreo will deploy this component automatically.
+                  </Typography>
+                </>
+              )}
             </Stack>
           </CardContent>
         </Card>

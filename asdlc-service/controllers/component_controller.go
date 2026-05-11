@@ -1,12 +1,10 @@
 package controllers
 
 import (
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
-	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/utils"
 )
@@ -19,7 +17,6 @@ type ComponentController interface {
 	ListBuilds(w http.ResponseWriter, r *http.Request)
 	GetBuildStatus(w http.ResponseWriter, r *http.Request)
 	GetBuildLogs(w http.ResponseWriter, r *http.Request)
-	Deploy(w http.ResponseWriter, r *http.Request)
 	ListDeployments(w http.ResponseWriter, r *http.Request)
 }
 
@@ -181,44 +178,6 @@ func (c *componentController) GetBuildLogs(w http.ResponseWriter, r *http.Reques
 	}
 
 	utils.WriteSuccessResponse(w, http.StatusOK, logs)
-}
-
-func (c *componentController) Deploy(w http.ResponseWriter, r *http.Request) {
-	org := r.PathValue("orgHandle")
-	projectName := r.PathValue("projectName")
-	componentName := r.PathValue("componentName")
-	if !requireOrgHandle(w, org) || !requireProjectName(w, projectName) || !requireComponentName(w, componentName) {
-		return
-	}
-
-	var req models.DeployRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	if req.Environment == "" {
-		req.Environment = "development"
-	}
-
-	// Port comes from the request body; Phase 0 no longer pins port at task
-	// dispatch time (the legacy MCP submit path did). DeployFromBuild's
-	// schema defaults handle a zero value.
-	err := c.service.DeployFromBuild(r.Context(), org, projectName, componentName, req.Environment, 0)
-	if err != nil {
-		if errors.Is(err, services.ErrUnauthorized) {
-			utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid or expired token")
-			return
-		}
-		slog.ErrorContext(r.Context(), "deploy failed", "error", err, "org", org, "component", componentName)
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to deploy")
-		return
-	}
-
-	utils.WriteSuccessResponse(w, http.StatusCreated, map[string]string{
-		"status":      "deploying",
-		"environment": req.Environment,
-		"component":   componentName,
-	})
 }
 
 func (c *componentController) ListDeployments(w http.ResponseWriter, r *http.Request) {

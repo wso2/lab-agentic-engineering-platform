@@ -30,6 +30,12 @@ const (
 	// Emitted by services/webhook/coding_agent_watcher.go on terminal failure
 	// of the per-task `app-factory-coding-agent` WorkflowRun.
 	TaskEventCodingAgentFailed TaskEvent = "coding_agent.failed"
+	// Build dispatch was skipped because the task's own merge push contained
+	// no file under its design.json appPath. This is a configuration/contract
+	// violation (architect emitted a path that doesn't match what the
+	// coding-agent committed) — failing loudly is better than orphaning the
+	// task in `building` with no WorkflowRun behind it. Drives merged → failed.
+	TaskEventBuildPathMismatch TaskEvent = "build.path_mismatch"
 )
 
 // EventCause maps a TaskEvent to the value written into ComponentTask.Cause
@@ -55,6 +61,8 @@ func EventCause(event TaskEvent) string {
 		return "org.disconnected"
 	case TaskEventRepoUnselected:
 		return "repo.unselected"
+	case TaskEventBuildPathMismatch:
+		return "build.component_path_mismatch"
 	default:
 		return ""
 	}
@@ -106,6 +114,11 @@ var allowedTransitions = []stateTransition{
 	// PR-ready state. The webhook path (pr.ready_for_review) is preferred
 	// when both fire — first-write-wins on the projector.
 	{models.TaskStatusInProgress, models.TaskStatusFailed, TaskEventCodingAgentFailed},
+	// Push containing this task's own merge SHA arrived, but the task's
+	// design.json appPath matched no file in the push — build was never
+	// dispatched. Drives merged → failed so the orphan is visible rather
+	// than silently stuck in `building`.
+	{models.TaskStatusMerged, models.TaskStatusFailed, TaskEventBuildPathMismatch},
 }
 
 // ErrInvalidTransition is returned by Apply when the current status doesn't

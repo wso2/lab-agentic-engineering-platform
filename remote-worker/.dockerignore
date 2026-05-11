@@ -1,0 +1,21 @@
+# Anything we DON'T want streamed into the build context. The COPY . .
+# step in the Dockerfile pulls everything not listed here into the image,
+# so excluding node_modules / dist alone is what stops the image from
+# carrying a 700 MB local-install duplicate of what `npm ci` produces
+# fresh in-image.
+node_modules
+dist
+.git
+.github
+.idea
+.vscode
+*.log
+*.tmp
+*.bak
+.DS_Store
+.npm
+.cache
+coverage
+.env
+.env.*
+plugin/node_modules

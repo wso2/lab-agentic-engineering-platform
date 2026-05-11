@@ -335,14 +335,14 @@ func (s *taskService) ensureIssueForTask(
 		return fmt.Errorf("git client not configured")
 	}
 
-	if task.BranchName == "" && task.ID != "" {
-		task.BranchName = computeBranchName(task)
-	}
+	// The agent owns branch + PR creation, so the issue body intentionally
+	// doesn't pre-name a branch. BranchName is filled in later by the
+	// pull_request.opened webhook handler when the agent opens its PR.
 
 	issue, err := s.gitClient.CreateIssue(ctx, task.OrgID, task.ProjectID, &gitservice.CreateIssueRequest{
 		Title:  issueTitle(task),
 		Body:   buildIssueBody(task, comp, repoURL, repoSlug),
-		Labels: []string{"asdlc", "implementation", "pending"},
+		Labels: []string{"asdlc", "implementation"},
 	})
 	if err != nil {
 		return err

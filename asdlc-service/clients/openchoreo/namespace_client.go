@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/httpx"
-	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
+	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo/gen"
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
+
+//go:generate go run github.com/matryer/moq@v0.7.1 -rm -fmt goimports -pkg mocks -out mocks/namespace_client_mock.go . NamespaceClient
 
 // NamespaceClient defines operations for managing OpenChoreo namespaces. An
 // OC namespace *is* an ASDLC organization — there is no separate Organization
@@ -19,54 +20,33 @@ type NamespaceClient interface {
 }
 
 type namespaceClient struct {
-	clientBase
+	oc *gen.ClientWithResponses
 }
 
-func NewNamespaceClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider) NamespaceClient {
-	return &namespaceClient{
-		clientBase: clientBase{
-			baseURL:       baseURL,
-			hostHeader:    hostHeader,
-			httpClient:    &http.Client{Transport: httpx.WrapTransport(nil)},
-			tokenProvider: tokenProvider,
-		},
+func NewNamespaceClient(cfg Config) NamespaceClient {
+	oc, err := newGenClient(cfg)
+	if err != nil {
+		panic(fmt.Errorf("init openchoreo namespace client: %w", err))
 	}
-}
-
-func (c *namespaceClient) namespacesURL() string {
-	return fmt.Sprintf("%s/api/v1/namespaces", c.baseURL)
-}
-
-func (c *namespaceClient) namespaceURL(name string) string {
-	return fmt.Sprintf("%s/api/v1/namespaces/%s", c.baseURL, name)
-}
-
-func normalizeNamespace(n ocNamespace) models.OrganizationView {
-	ann := n.Metadata.Annotations
-	var displayName, description string
-	if ann != nil {
-		displayName = ann["openchoreo.dev/display-name"]
-		description = ann["openchoreo.dev/description"]
-	}
-	return models.OrganizationView{
-		Name:        n.Metadata.Name,
-		DisplayName: displayName,
-		Description: description,
-		Status:      n.Status.Phase,
-	}
+	return &namespaceClient{oc: oc}
 }
 
 func (c *namespaceClient) ListNamespaces(ctx context.Context) ([]models.OrganizationView, error) {
-	req := c.newRequest(ctx, "openchoreo.ListNamespaces", http.MethodGet, c.namespacesURL())
-
-	var raw ocNamespaceList
-	if err := c.send(ctx, req, &raw, http.StatusOK); err != nil {
-		return nil, fmt.Errorf("list namespaces: %w", err)
+	resp, err := c.oc.ListNamespacesWithResponse(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list namespaces: %w", err)
 	}
-
-	items := make([]models.OrganizationView, len(raw.Items))
-	for i, n := range raw.Items {
-		items[i] = normalizeNamespace(n)
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return nil, handleErrorResponse(resp.StatusCode(), ErrorResponses{
+			JSON400: resp.JSON400,
+			JSON401: resp.JSON401,
+			JSON403: resp.JSON403,
+			JSON500: resp.JSON500,
+		})
+	}
+	items := make([]models.OrganizationView, len(resp.JSON200.Items))
+	for i, n := range resp.JSON200.Items {
+		items[i] = namespaceToView(n)
 	}
 	return items, nil
 }
@@ -77,12 +57,31 @@ func (c *namespaceClient) ListNamespaces(ctx context.Context) ([]models.Organiza
 // caller's tenant has been provisioned (by `platform-api-service` in
 // hosted, or by `seed-admin-org.sh` locally).
 func (c *namespaceClient) GetNamespace(ctx context.Context, name string) (*models.OrganizationView, error) {
-	req := c.newRequest(ctx, "openchoreo.GetNamespace", http.MethodGet, c.namespaceURL(name))
-
-	var raw ocNamespace
-	if err := c.send(ctx, req, &raw, http.StatusOK); err != nil {
-		return nil, fmt.Errorf("get namespace: %w", err)
+	resp, err := c.oc.GetNamespaceWithResponse(ctx, name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get namespace: %w", err)
 	}
-	v := normalizeNamespace(raw)
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return nil, handleErrorResponse(resp.StatusCode(), ErrorResponses{
+			JSON401: resp.JSON401,
+			JSON403: resp.JSON403,
+			JSON404: resp.JSON404,
+			JSON500: resp.JSON500,
+		})
+	}
+	v := namespaceToView(*resp.JSON200)
 	return &v, nil
+}
+
+func namespaceToView(n gen.Namespace) models.OrganizationView {
+	var phase string
+	if n.Status != nil && n.Status.Phase != nil {
+		phase = string(*n.Status.Phase)
+	}
+	return models.OrganizationView{
+		Name:        n.Metadata.Name,
+		DisplayName: annotation(n.Metadata.Annotations, AnnotationKeyDisplayName),
+		Description: annotation(n.Metadata.Annotations, AnnotationKeyDescription),
+		Status:      phase,
+	}
 }

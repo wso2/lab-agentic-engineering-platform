@@ -42,7 +42,7 @@ const statusLabels: Record<string, string> = {
   in_progress: 'Implementing',
   implementing: 'Implementing',
   completed: 'Completed',
-  deployed: 'Deployed',
+  deployed: 'Deploying',
   done: 'Ready',
   failed: 'Failed',
 };
@@ -130,7 +130,7 @@ function computePipelineSteps(task: ComponentTask): PipelineStep[] {
     label: 'Deploy',
     description:
       status === 'deployed'
-        ? 'Component running in development environment'
+        ? 'Auto-deploy in progress — check the Deploy page for endpoint status'
         : 'Not yet deployed',
     state: stateFor(['deployed']),
   });

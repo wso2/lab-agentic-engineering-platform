@@ -22,7 +22,6 @@ import type {
   ArtifactVersion,
   Tasks,
   Organization,
-  CreateOrganizationInput,
   ProjectBoard,
   TaskStatusResponse,
   TaskProgressResponse,
@@ -127,6 +126,11 @@ function slugify(input: string): string {
 
 export const restApi = {
   // -- Organizations (real backend) ------------------------------------------
+  //
+  // The BFF is read-only over OC namespaces. Org creation is an out-of-band
+  // onboarding flow (Thunder signup → platform-api-service in hosted;
+  // seed-admin-org.sh in local). See
+  // asdlc-service/controllers/organization_controller.go.
 
   async listOrganizations(): Promise<Organization[]> {
     try {
@@ -135,17 +139,6 @@ export const restApi = {
     } catch {
       return [];
     }
-  },
-
-  async createOrganization(input: CreateOrganizationInput): Promise<Organization> {
-    return fetchJSON<Organization>(`/api/v1/organizations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: slugify(input.displayName),
-        displayName: input.displayName,
-        description: input.description || '',
-      }),
-    });
   },
 
   // -- Projects (real backend) -----------------------------------------------
@@ -627,17 +620,9 @@ export const restApi = {
   },
 
   // -- Deployments (ReleaseBindings) ------------------------------------------
-
-  async deploy(orgHandle: string, projectId: string, componentId: string, environment: string): Promise<Deployment | undefined> {
-    try {
-      return await fetchJSON<Deployment>(`${projectPrefix(orgHandle, projectId)}/components/${componentId}/deployments`, {
-        method: 'POST',
-        body: JSON.stringify({ environment }),
-      });
-    } catch {
-      return undefined;
-    }
-  },
+  // No POST: deploys are driven entirely by OC's Component controller
+  // (AutoDeploy=true) once the build's generate-workload-cr step posts the
+  // Workload CR. The deploy page only reads.
 
   async listDeployments(orgHandle: string, projectId: string, componentId: string): Promise<Deployment[]> {
     try {

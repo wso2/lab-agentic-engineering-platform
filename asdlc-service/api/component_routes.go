@@ -18,7 +18,10 @@ func registerComponentRoutes(mux *http.ServeMux, c controllers.ComponentControll
 	mux.HandleFunc("GET "+prefix+"/{componentName}/builds/{buildName}", c.GetBuildStatus)
 	mux.HandleFunc("GET "+prefix+"/{componentName}/builds/{buildName}/logs", c.GetBuildLogs)
 
-	// Deploy operations
-	mux.HandleFunc("POST "+prefix+"/{componentName}/deployments", c.Deploy)
+	// Deploy operations — the deploy chain is driven entirely by OC's
+	// Component controller (AutoDeploy=true) once the build's
+	// generate-workload-cr step posts a Workload, so the BFF only exposes
+	// the read path. The list reflects whatever OC has materialised into
+	// ReleaseBindings for this component.
 	mux.HandleFunc("GET "+prefix+"/{componentName}/deployments", c.ListDeployments)
 }

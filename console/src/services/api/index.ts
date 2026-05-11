@@ -19,7 +19,6 @@ export type {
   ComponentStatus,
   ArtifactVersion,
   Organization,
-  CreateOrganizationInput,
   Task,
   ProjectBoard,
   LabelInfo,

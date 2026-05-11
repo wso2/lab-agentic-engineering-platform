@@ -10,7 +10,7 @@ const slim = (overrides: Partial<SlimComponent> = {}): SlimComponent => ({
   dependsOn: [],
   entrypoint: "deployment/service",
   buildpack: "docker",
-  appPath: "/todo-api",
+  appPath: "todo-api",
   componentAgentInstructions: "implement a Go service",
   ...overrides,
 });

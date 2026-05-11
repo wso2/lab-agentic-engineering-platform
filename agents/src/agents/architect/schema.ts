@@ -34,7 +34,9 @@ export const SlimComponent = z.object({
   buildpack: z.literal("docker").describe("Build strategy"),
   appPath: z
     .string()
-    .describe("Path within the mono-repo, e.g. '/user-api'"),
+    .describe(
+      "Folder (directory) within the monorepo where this component's source code lives, relative to the repo root. This is NOT an HTTP route or API path — it is a filesystem path. Must NOT start with a leading slash. Examples: 'user-api', 'services/auth'. The coding agent will create files like '<appPath>/main.go', '<appPath>/Dockerfile', '<appPath>/workload.yaml'.",
+    ),
   componentAgentInstructions: z
     .string()
     .describe(

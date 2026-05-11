@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/requests"
+	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/utils"
@@ -28,6 +28,24 @@ type projectController struct {
 
 func NewProjectController(service services.ProjectService) ProjectController {
 	return &projectController{service: service}
+}
+
+// openchoreoErrorStatus maps an OC sentinel error to its HTTP status. ok is
+// false when err carries no OC sentinel — caller should fall back to 500.
+func openchoreoErrorStatus(err error) (int, bool) {
+	switch {
+	case errors.Is(err, openchoreo.ErrBadRequest):
+		return http.StatusBadRequest, true
+	case errors.Is(err, openchoreo.ErrForbidden):
+		return http.StatusForbidden, true
+	case errors.Is(err, openchoreo.ErrNotFound):
+		return http.StatusNotFound, true
+	case errors.Is(err, openchoreo.ErrConflict):
+		return http.StatusConflict, true
+	case errors.Is(err, openchoreo.ErrInternalServerError):
+		return http.StatusInternalServerError, true
+	}
+	return 0, false
 }
 
 func (c *projectController) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -94,14 +112,16 @@ func (c *projectController) CreateProject(w http.ResponseWriter, r *http.Request
 
 	project, err := c.service.CreateProject(r.Context(), org, &req)
 	if err != nil {
-		if errors.Is(err, services.ErrUnauthorized) {
+		if errors.Is(err, services.ErrUnauthorized) || errors.Is(err, openchoreo.ErrUnauthorized) {
 			utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid or expired token")
 			return
 		}
-		var httpErr *requests.HttpError
-		if errors.As(err, &httpErr) {
-			slog.ErrorContext(r.Context(), "create project failed", "error", err, "org", org, "status", httpErr.StatusCode)
-			utils.WriteErrorResponse(w, httpErr.StatusCode, httpErr.Body)
+		// Pass OC's sentinel-classified errors through to the client with the
+		// underlying message preserved (validation failures, name conflict,
+		// forbidden, etc. — agent-manager's controller does the same switch).
+		if status, ok := openchoreoErrorStatus(err); ok {
+			slog.ErrorContext(r.Context(), "create project failed", "error", err, "org", org, "status", status)
+			utils.WriteErrorResponse(w, status, err.Error())
 			return
 		}
 		slog.ErrorContext(r.Context(), "create project failed", "error", err, "org", org)

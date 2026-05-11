@@ -340,12 +340,22 @@ func (c *client) InitProjectComponents(ctx context.Context, req *CreateRepoReque
 		return nil, fmt.Errorf("git-service error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var result RepoInfo
-	if err := json.Unmarshal(respBody, &result); err != nil {
+	// git-service wraps the repo row in {"projectId": "<gh project node id>",
+	// "repo": {<GitRepository>}} (org-neutrality refactor). Decode the
+	// wrapper, then take the nested repo as the canonical RepoInfo —
+	// otherwise OcSecretRefName / RepoSlug / RepoURL all end up empty and
+	// the downstream SecretReference creation silently no-ops.
+	var wrapper struct {
+		ProjectID string    `json:"projectId"`
+		Repo      *RepoInfo `json:"repo"`
+	}
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-
-	return &result, nil
+	if wrapper.Repo == nil {
+		return nil, fmt.Errorf("git-service init response missing 'repo' field; body=%s", string(respBody))
+	}
+	return wrapper.Repo, nil
 }
 
 // repoURL builds the orgId-scoped path that PR 0 introduced. All per-repo

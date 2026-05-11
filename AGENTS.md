@@ -323,14 +323,13 @@ bash deployments-v2/scripts/teardown.sh # remove asdlc workloads (cluster stays)
 
 ## Design Review (OpenChoreo + WSO2 Cloud compliance)
 
-This repo ships two specialised reviewer subagents under `.claude/agents/`. They are pure subject-matter experts — not aware of App Factory's specifics — and you query them with the relevant design context:
+This repo ships one specialised reviewer subagent under `.claude/agents/`. It is a pure subject-matter expert — not aware of App Factory's specifics — and you query it with the relevant design context:
 
-- **`oc-design-expert`** — answers questions and reviews designs strictly from the OpenChoreo perspective. Verifies against the OC sources at `/Users/wso2/openchoreo-sources/openchoreo` and docs at `/Users/wso2/openchoreo-sources/openchoreo.github.io`.
-- **`wso2cloud-expert`** — answers questions and reviews designs strictly from the WSO2 Cloud hosting perspective (GUIDELINES.md compliance, controlplane/dataplane layout, GitOps promotion, secrets, auth, gateway). Verifies against `/Users/wso2/repos/wso2cloud-deployment` (all branches) and the `agent-manager` reference at `/Users/wso2/repos/agent-manager`.
+- **`platform-design-expert`** — answers questions and reviews designs from the combined OpenChoreo + WSO2 Cloud platform perspective. WSO2 Cloud is the deployment platform built on OpenChoreo, so every answer reconciles BOTH surfaces: OC primitive correctness AND WSO2 Cloud hostability (GUIDELINES.md compliance, controlplane/dataplane layout, GitOps promotion, secrets, auth, gateway). It verifies against `/Users/wso2/repos/wso2cloud-deployment` (all branches), the `agent-manager` reference at `/Users/wso2/repos/agent-manager`, and the OC docs at `/Users/wso2/openchoreo-sources/openchoreo.github.io`. It falls back to OC source code at `/Users/wso2/openchoreo-sources/openchoreo` only when the docs don't cover the area or deeper detail is needed.
 
-**When to invoke them (do this proactively, in parallel):**
+**When to invoke it (do this proactively):**
 
-Any task that meaningfully touches one of the following must be reviewed by **both agents in parallel** (single message, multiple Agent tool calls) before the change is considered complete:
+Any task that meaningfully touches one of the following must be reviewed by `platform-design-expert` before the change is considered complete:
 
 - New / changed OC primitives: Project, Component, Workload, ComponentType, Trait, Workflow, ReleaseBinding, SecretReference, ClusterWorkflow.
 - Changes to `asdlc-service/clients/openchoreo/` or `services/workflowrun_service.go`.
@@ -343,15 +342,15 @@ Any task that meaningfully touches one of the following must be reviewed by **bo
 **How to run the review:**
 
 1. Read the design / change locally and identify the OC and cloud surfaces it touches.
-2. Send a single message with two `Agent` tool calls — one to `oc-design-expert`, one to `wso2cloud-expert`. Each prompt should describe the design in self-contained terms (do not assume the agents know App Factory) and point at the relevant App Factory files for the agents to read.
-3. Reconcile their feedback: hard violations must be fixed; soft concerns should be discussed; conflicts between the two reviewers should be surfaced explicitly to the user.
-4. Compare against `agent-manager` (the reference implementation) for any choice the reviewers flag as ambiguous.
+2. Send one `Agent` call to `platform-design-expert`. The prompt should describe the design in self-contained terms (do not assume the agent knows App Factory) and point at the relevant App Factory files for the agent to read. The agent will return a combined review covering OC primitive mapping, WSO2 Cloud layout placement, GUIDELINES.md compliance, anti-patterns, and recommendations in one pass.
+3. Apply the feedback: hard violations must be fixed; soft concerns should be discussed; if the agent flags a tension between OC-idiomatic and WSO2 Cloud-idiomatic, surface that to the user explicitly.
+4. Compare against `agent-manager` (the reference implementation) for any choice the agent flags as ambiguous.
 
-Skip the dual review only for purely local code-quality changes that have no OC or WSO2 Cloud surface (e.g. lint-only refactors inside a single function, frontend cosmetic tweaks).
+Skip the review only for purely local code-quality changes that have no OC or WSO2 Cloud surface (e.g. lint-only refactors inside a single function, frontend cosmetic tweaks).
 
 ## Practices
 - **Important**: Always do the proper fix, stick to patterns used by agent manager and integration platform. No hacks.
 - **Important**: If you come across a bug, fix it even if its not releted to your current task.
-- **Important**: Any change touching OpenChoreo primitives, the OC client, or WSO2 Cloud hosting (deployments, secrets, ingress, auth, env overlays, the `deployments-v2/wso2cloud-deployment` submodule) MUST go through the parallel `oc-design-expert` + `wso2cloud-expert` review described above. See the **Design Review** section.
+- **Important**: Any change touching OpenChoreo primitives, the OC client, or WSO2 Cloud hosting (deployments, secrets, ingress, auth, env overlays, the `deployments-v2/wso2cloud-deployment` submodule) MUST go through the `platform-design-expert` review described above. See the **Design Review** section.
 - **Important**: Cluster health pre-flight (local dev). Before any operation that talks to the local k3d cluster — `kubectl`, `dev-cycle.sh`, BFF / OC API calls, dispatching a task, running tests — **delegate the check to an isolated subagent** (e.g. `general-purpose`) with a prompt that says: "Read [`docs/operations/cluster-health.md`](docs/operations/cluster-health.md), run the **Detect** block, and if anything trips run **Recover** until the cluster is clean. Report back in under 100 words: healthy / what was wrong / what you did." Run it in a subagent (not in the main context) so the kubectl/event output doesn't pollute the parent. Only proceed with the requested action after the subagent reports healthy. The laptop's sleep/wake cycle frequently leaves pods transiently unhealthy and OC's mutating webhook serving 502s; without this check the agent will surface those as confusing `INTERNAL_ERROR`s instead of waiting them out.
 

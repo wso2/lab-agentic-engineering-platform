@@ -2,15 +2,17 @@
 //
 // On dispatch the BFF creates a WorkflowRun of `app-factory-coding-agent`
 // and Argo schedules an ephemeral pod whose entrypoint (src/oneshot.ts)
-// calls this function. We clone the task's feature branch into
-// $WORKSPACE_BASE_PATH/<orgId>/<projectId>/<taskId>/ and configure
-// `.git/config` + `gh` so the agent can git/gh against GitHub without ever
-// seeing a token in environment variables.
+// calls this function. We clone the project's repo on its **default
+// branch** into $WORKSPACE_BASE_PATH/<orgId>/<projectId>/<taskId>/ and
+// configure `.git/config` + `gh` so the agent can git/gh against GitHub
+// without ever seeing a token in environment variables. The agent itself
+// creates the feature branch and opens the PR with `Closes #<issueNumber>`
+// — see remote-worker/plugin/skills/asdlc/SKILL.md.
 //
 // Layout inside the workspace:
 //
 //   <workspace>/
-//     .git/                     ← cloned repo, branch checked out
+//     .git/                     ← cloned repo, default branch checked out
 //     .gh-config/hosts.yml      ← gh's auth config (rewritten by ghWrapper)
 //     .asdlc/
 //       bearer                  ← chmod 600 — per-task JWT
@@ -43,7 +45,6 @@ export interface ProvisionRequest {
   orgId: string;
   projectId: string;
   taskId: string;
-  branchName: string;
   repoUrl: string;
   bearer: string;
   identity: { name: string; email: string; login?: string };
@@ -173,7 +174,10 @@ export async function provisionWorkspace(req: ProvisionRequest): Promise<Workspa
       GIT_TERMINAL_PROMPT: "0",
     };
     const authedURL = req.repoUrl.replace("https://", `https://x-access-token:${patResp}@`);
-    const cloneCmd = `git clone --branch ${shellQuote(req.branchName)} ${shellQuote(authedURL)} ${shellQuote(layout.workspace)}`;
+    // No --branch: clone the remote's default branch (HEAD). The agent
+    // creates its own feature branch via `git checkout -b ...` once it
+    // starts working, per the asdlc skill workflow.
+    const cloneCmd = `git clone ${shellQuote(authedURL)} ${shellQuote(layout.workspace)}`;
     await execAsync(cloneCmd, { env: cloneEnv, maxBuffer: 16 * 1024 * 1024 });
 
     // Materialise the runtime layout inside the cloned tree.

@@ -5,7 +5,6 @@ import AuthGuard from './auth/AuthGuard';
 import { setTokenAccessor } from './services/api/rest';
 import AsdlcLayout from './layouts/AsdlcLayout';
 import OrgOverviewPage from './pages/OrgOverviewPage';
-import OrganizationCreatePage from './pages/OrganizationCreatePage';
 import ProjectCreatePage from './pages/ProjectCreatePage';
 import ProjectArchitecturePage from './pages/ProjectArchitecturePage';
 import ProjectTasksPage from './pages/ProjectTasksPage';
@@ -21,7 +20,7 @@ import OrgGitHubSettings from './pages/OrgGitHubSettings';
 import OrgGitHubAppPicker from './pages/OrgGitHubAppPicker';
 import NoOrganizationPage from './pages/NoOrganizationPage';
 import { setOrgGithubTokenAccessor } from './services/api/orgGithub';
-import { organizationCreatePath, organizationOverviewPath } from './lib/paths';
+import { organizationOverviewPath } from './lib/paths';
 import { resolveOuHandle } from './utils/orgClaims';
 
 // Forwards the parent layout's outlet context (e.g. setSidebarCollapsed) through
@@ -50,7 +49,9 @@ export function App() {
   // silently substituting a placeholder org.
   const orgId = useMemo(() => resolveOuHandle(claims), [claims]);
 
-  const defaultLandingPath = orgId ? organizationOverviewPath(orgId) : organizationCreatePath();
+  // When the user has no org claim, land on `/` which renders NoOrganizationPage.
+  // Org creation happens out-of-band via Thunder/platform-api-service — not in the BFF.
+  const defaultLandingPath = orgId ? organizationOverviewPath(orgId) : '/';
 
   if (isSignedIn && isClaimsLoading) {
     return null;
@@ -66,7 +67,6 @@ export function App() {
           path="/"
           element={isSignedIn && !orgId ? <NoOrganizationPage /> : <Navigate to={defaultLandingPath} replace />}
         />
-        <Route path="/organizations/new" element={<OrganizationCreatePage />} />
         <Route path="/organizations/:orgId" element={<OrgOverviewPage />} />
         <Route path="/organizations/:orgId/projects/new" element={<ProjectCreatePage />} />
 

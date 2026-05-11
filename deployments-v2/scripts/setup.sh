@@ -59,6 +59,7 @@ register_thunder_cors_origin
 register_service_oauth_clients
 seed_admin_org
 seed_admin_github
+migrate_components_autodeploy
 
 log_section "Done"
 print_login_banner

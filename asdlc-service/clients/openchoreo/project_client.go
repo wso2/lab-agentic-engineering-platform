@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/httpx"
-	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
+	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo/gen"
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
+
+//go:generate go run github.com/matryer/moq@v0.7.1 -rm -fmt goimports -pkg mocks -out mocks/project_client_mock.go . ProjectClient
 
 // ProjectClient defines operations for managing OpenChoreo projects.
 type ProjectClient interface {
@@ -19,123 +20,144 @@ type ProjectClient interface {
 }
 
 type projectClient struct {
-	clientBase
+	oc *gen.ClientWithResponses
 }
 
-func NewProjectClient(baseURL, hostHeader string, tokenProvider *oauth.TokenProvider) ProjectClient {
-	return &projectClient{
-		clientBase: clientBase{
-			baseURL:       baseURL,
-			hostHeader:    hostHeader,
-			httpClient:    &http.Client{Transport: httpx.WrapTransport(nil)},
-			tokenProvider: tokenProvider,
-		},
+func NewProjectClient(cfg Config) ProjectClient {
+	oc, err := newGenClient(cfg)
+	if err != nil {
+		panic(fmt.Errorf("init openchoreo project client: %w", err))
 	}
-}
-
-func (c *projectClient) projectsURL(namespace string) string {
-	return fmt.Sprintf("%s/api/v1/namespaces/%s/projects", c.baseURL, namespace)
-}
-
-func (c *projectClient) projectURL(namespace, projectName string) string {
-	return fmt.Sprintf("%s/api/v1/namespaces/%s/projects/%s", c.baseURL, namespace, projectName)
-}
-
-func normalizeProject(p ocProject) models.Project {
-	ann := p.Metadata.Annotations
-	var displayName, description string
-	if ann != nil {
-		displayName = ann["openchoreo.dev/display-name"]
-		description = ann["openchoreo.dev/description"]
-	}
-
-	var deploymentPipeline string
-	if p.Spec.DeploymentPipelineRef != nil {
-		deploymentPipeline = p.Spec.DeploymentPipelineRef.Name
-	}
-
-	return models.Project{
-		UID:                p.Metadata.UID,
-		Name:               p.Metadata.Name,
-		NamespaceName:      p.Metadata.Namespace,
-		DisplayName:        displayName,
-		Description:        description,
-		DeploymentPipeline: deploymentPipeline,
-		CreatedAt:          p.Metadata.CreationTimestamp,
-		Status:             latestConditionReason(p.Status.Conditions),
-	}
-}
-
-func buildCreateProjectBody(req *models.CreateProjectRequest) ocProject {
-	body := ocProject{
-		Metadata: ocObjectMeta{
-			Name: req.Name,
-		},
-	}
-	if req.DisplayName != "" || req.Description != "" {
-		body.Metadata.Annotations = map[string]string{}
-		if req.DisplayName != "" {
-			body.Metadata.Annotations["openchoreo.dev/display-name"] = req.DisplayName
-		}
-		if req.Description != "" {
-			body.Metadata.Annotations["openchoreo.dev/description"] = req.Description
-		}
-	}
-	if req.DeploymentPipeline != "" {
-		body.Spec.DeploymentPipelineRef = &ocRef{Name: req.DeploymentPipeline}
-	}
-	return body
+	return &projectClient{oc: oc}
 }
 
 func (c *projectClient) ListProjects(ctx context.Context, orgName string, limit int, cursor string) (*models.ProjectList, error) {
-	req := c.newRequest(ctx, "openchoreo.ListProjects", http.MethodGet, c.projectsURL(orgName))
+	params := &gen.ListProjectsParams{}
 	if limit > 0 {
-		req.SetQuery("limit", fmt.Sprintf("%d", limit))
+		l := gen.LimitParam(limit)
+		params.Limit = &l
 	}
 	if cursor != "" {
-		req.SetQuery("cursor", cursor)
+		cur := gen.CursorParam(cursor)
+		params.Cursor = &cur
 	}
-
-	var raw ocProjectList
-	if err := c.send(ctx, req, &raw, http.StatusOK); err != nil {
-		return nil, fmt.Errorf("list projects: %w", err)
+	resp, err := c.oc.ListProjectsWithResponse(ctx, orgName, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list projects: %w", err)
 	}
-
-	items := make([]models.Project, len(raw.Items))
-	for i, p := range raw.Items {
-		items[i] = normalizeProject(p)
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return nil, handleErrorResponse(resp.StatusCode(), ErrorResponses{
+			JSON400: resp.JSON400,
+			JSON401: resp.JSON401,
+			JSON403: resp.JSON403,
+			JSON404: resp.JSON404,
+			JSON500: resp.JSON500,
+		})
+	}
+	items := make([]models.Project, len(resp.JSON200.Items))
+	for i, p := range resp.JSON200.Items {
+		items[i] = projectToModel(p)
 	}
 	return &models.ProjectList{Items: items}, nil
 }
 
 func (c *projectClient) GetProject(ctx context.Context, orgName, projectName string) (*models.Project, error) {
-	req := c.newRequest(ctx, "openchoreo.GetProject", http.MethodGet, c.projectURL(orgName, projectName))
-
-	var raw ocProject
-	if err := c.send(ctx, req, &raw, http.StatusOK); err != nil {
-		return nil, fmt.Errorf("get project: %w", err)
+	resp, err := c.oc.GetProjectWithResponse(ctx, orgName, projectName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get project: %w", err)
 	}
-	p := normalizeProject(raw)
+	if resp.StatusCode() != http.StatusOK || resp.JSON200 == nil {
+		return nil, handleErrorResponse(resp.StatusCode(), ErrorResponses{
+			JSON401: resp.JSON401,
+			JSON403: resp.JSON403,
+			JSON404: resp.JSON404,
+			JSON500: resp.JSON500,
+		})
+	}
+	p := projectToModel(*resp.JSON200)
 	return &p, nil
 }
 
 func (c *projectClient) CreateProject(ctx context.Context, orgName string, body *models.CreateProjectRequest) (*models.Project, error) {
-	req := c.newRequest(ctx, "openchoreo.CreateProject", http.MethodPost, c.projectsURL(orgName))
-	req.SetJSON(buildCreateProjectBody(body))
-
-	var raw ocProject
-	if err := c.send(ctx, req, &raw, http.StatusCreated); err != nil {
-		return nil, fmt.Errorf("create project: %w", err)
+	resp, err := c.oc.CreateProjectWithResponse(ctx, orgName, buildCreateProjectBody(body))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create project: %w", err)
 	}
-	p := normalizeProject(raw)
+	// OC's POST returns 201 on success; tolerate 200 in case a future build flips to it.
+	if (resp.StatusCode() != http.StatusCreated && resp.StatusCode() != http.StatusOK) || resp.JSON201 == nil {
+		return nil, handleErrorResponse(resp.StatusCode(), ErrorResponses{
+			JSON400: resp.JSON400,
+			JSON401: resp.JSON401,
+			JSON403: resp.JSON403,
+			JSON409: resp.JSON409,
+			JSON500: resp.JSON500,
+		})
+	}
+	p := projectToModel(*resp.JSON201)
 	return &p, nil
 }
 
 func (c *projectClient) DeleteProject(ctx context.Context, orgName, projectName string) error {
-	req := c.newRequest(ctx, "openchoreo.DeleteProject", http.MethodDelete, c.projectURL(orgName, projectName))
-
-	if err := c.send(ctx, req, nil, http.StatusNoContent); err != nil {
-		return fmt.Errorf("delete project: %w", err)
+	resp, err := c.oc.DeleteProjectWithResponse(ctx, orgName, projectName)
+	if err != nil {
+		return fmt.Errorf("failed to delete project: %w", err)
+	}
+	if resp.StatusCode() != http.StatusNoContent && resp.StatusCode() != http.StatusOK {
+		return handleErrorResponse(resp.StatusCode(), ErrorResponses{
+			JSON401: resp.JSON401,
+			JSON403: resp.JSON403,
+			JSON404: resp.JSON404,
+			JSON500: resp.JSON500,
+		})
 	}
 	return nil
+}
+
+func projectToModel(p gen.Project) models.Project {
+	var deploymentPipeline string
+	if p.Spec != nil && p.Spec.DeploymentPipelineRef != nil {
+		deploymentPipeline = p.Spec.DeploymentPipelineRef.Name
+	}
+	return models.Project{
+		UID:                derefStr(p.Metadata.Uid),
+		Name:               p.Metadata.Name,
+		NamespaceName:      derefStr(p.Metadata.Namespace),
+		DisplayName:        annotation(p.Metadata.Annotations, AnnotationKeyDisplayName),
+		Description:        annotation(p.Metadata.Annotations, AnnotationKeyDescription),
+		DeploymentPipeline: deploymentPipeline,
+		CreatedAt:          derefTimeRFC3339(p.Metadata.CreationTimestamp),
+		Status:             latestProjectStatusReason(p.Status),
+	}
+}
+
+func buildCreateProjectBody(req *models.CreateProjectRequest) gen.CreateProjectJSONRequestBody {
+	body := gen.Project{
+		Metadata: gen.ObjectMeta{Name: req.Name},
+	}
+	if req.DisplayName != "" || req.Description != "" {
+		ann := map[string]string{}
+		if req.DisplayName != "" {
+			ann[AnnotationKeyDisplayName] = req.DisplayName
+		}
+		if req.Description != "" {
+			ann[AnnotationKeyDescription] = req.Description
+		}
+		body.Metadata.Annotations = &ann
+	}
+	if req.DeploymentPipeline != "" {
+		body.Spec = &gen.ProjectSpec{
+			DeploymentPipelineRef: &struct {
+				Kind *gen.ProjectSpecDeploymentPipelineRefKind `json:"kind,omitempty"`
+				Name string                                    `json:"name"`
+			}{Name: req.DeploymentPipeline},
+		}
+	}
+	return body
+}
+
+func latestProjectStatusReason(status *gen.ProjectStatus) string {
+	if status == nil {
+		return ""
+	}
+	return latestConditionReason(status.Conditions)
 }

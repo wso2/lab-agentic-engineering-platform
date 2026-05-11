@@ -1,5 +1,4 @@
 import { Box, Button, PageContent, Stack, Typography } from '@wso2/oxygen-ui';
-import { organizationCreatePath } from '../lib/paths';
 
 /**
  * Rendered when an authenticated user's JWT has no organization claim
@@ -15,6 +14,11 @@ import { organizationCreatePath } from '../lib/paths';
  *
  * We do NOT silently fall back to a placeholder org; that hid all
  * three modes behind the same "everything works" UX.
+ *
+ * Org creation is intentionally not offered here — orgs are provisioned
+ * out-of-band (Thunder signup → platform-api-service in hosted;
+ * seed-admin-org.sh in local dev). The BFF is read-only over OC
+ * namespaces; see asdlc-service/controllers/organization_controller.go.
  */
 export default function NoOrganizationPage() {
   const handleSignOut = () => {
@@ -28,13 +32,9 @@ export default function NoOrganizationPage() {
         <Typography variant="h4">No organization assigned</Typography>
         <Typography variant="body1" color="text.secondary">
           Your account has not been assigned to an organization. Contact
-          your administrator if you expect to see one, or create a new
-          organization to get started.
+          your administrator to get onboarded.
         </Typography>
         <Box sx={{ display: 'flex', gap: 2 }}>
-          <Button variant="contained" href={organizationCreatePath()}>
-            Create organization
-          </Button>
           <Button variant="outlined" onClick={handleSignOut}>
             Sign out
           </Button>

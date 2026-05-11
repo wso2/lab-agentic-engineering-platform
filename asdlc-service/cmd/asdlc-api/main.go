@@ -113,11 +113,19 @@ func main() {
 	}
 
 	// OpenChoreo clients. Each one resolves the OC namespace as the OC
-	// org handle directly (== ouHandle); there is no override map.
-	projectClient := openchoreo.NewProjectClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider)
-	componentClient := openchoreo.NewComponentClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider)
-	secretRefClient := openchoreo.NewSecretRefClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider)
-	namespaceClient := openchoreo.NewNamespaceClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider)
+	// org handle directly (== ouHandle); there is no override map. Migrated
+	// clients (namespace, project) take an openchoreo.Config; the still-hand-
+	// rolled clients (component, secretref) keep the legacy positional args
+	// until they migrate too.
+	ocConfig := openchoreo.Config{
+		BaseURL:      cfg.PlatformAPI.BaseURL,
+		HostHeader:   cfg.PlatformAPI.HostHeader,
+		AuthProvider: tokenProvider,
+	}
+	projectClient := openchoreo.NewProjectClient(ocConfig)
+	namespaceClient := openchoreo.NewNamespaceClient(ocConfig)
+	secretRefClient := openchoreo.NewSecretRefClient(ocConfig)
+	componentClient := openchoreo.NewComponentClient(ocConfig)
 
 	// Observability client (optional — build logs disabled when URL not set)
 	var observClient observability.Client
@@ -181,11 +189,13 @@ func main() {
 	// git-service. The BFF no longer mounts /data/repos.
 	artifactStore := services.NewArtifactStore(gitClient)
 
-	// Services
-	configService := services.NewConfigService(configRepo)
+	// Services. componentService is constructed before configService so
+	// configService can call back into it to mirror env-var edits onto
+	// the OC Component's workflow params.
 	projectService := services.NewProjectService(projectClient, gitClient, secretRefClient, artifactStore, taskRepo)
 	organizationService := services.NewOrganizationService(db, namespaceClient)
-	componentService := services.NewComponentService(componentClient, observClient, configService, cfg.PlatformAPI.BuildRegistry)
+	componentService := services.NewComponentService(componentClient, observClient)
+	configService := services.NewConfigService(configRepo, componentService)
 	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
 
@@ -267,7 +277,7 @@ func main() {
 	webhookRouter := webhook.NewRouter()
 	projector := webhook.NewProjector(db)
 
-	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, tokenInject)
+	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, projector, tokenInject)
 
 	// Dispatch service — replaces the legacy RemoteWorkerService. Routes to
 	// WorkflowRunService.TriggerCodingAgent (ClusterWorkflow `app-factory-coding-agent`)
@@ -277,7 +287,7 @@ func main() {
 	if agentGitServiceURL == "" {
 		agentGitServiceURL = cfg.GitService.BaseURL
 	}
-	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, artifactStore, taskTokens, tokenInject, wfRunService, agentGitServiceURL)
+	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, agentGitServiceURL)
 	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
 
 	webhook.Register(webhookRouter, db, projector, wfRunService)

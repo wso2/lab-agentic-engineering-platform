@@ -1,67 +1,150 @@
 ---
 name: asdlc
-description: Load when working a component task dispatched by the ASDLC platform. The cwd is a per-task workspace cloned on a `task/...` branch; the task is anchored by a GitHub issue and a draft PR. Defines the workflow: read the issue, edit code, commit, push, post progress, mark the PR ready. Authentication is configured at the workspace level — run `git` and `gh` normally.
+description: Load when working a component task dispatched by the ASDLC platform. The cwd is a clone of the project's repo on its default branch; the task is anchored by a GitHub issue passed in your prompt. You create your own working branch and open the PR. Defines the workflow, the mandatory `Closes #N` PR-body link, constraints, deny-list, project-structure conventions, and the OpenChoreo workload.yaml format. Authentication is handled at the workspace level — run `git` and `gh` normally.
 ---
 
 # ASDLC component task
 
-You are working a single component task on the ASDLC platform. The current working directory is a per-task workspace: a fresh clone of the project's GitHub repo with the task's feature branch already checked out, and `git` + `gh` already authenticated for that repo.
+You are working a single component task on the ASDLC platform. The current
+working directory is a fresh clone of the project's GitHub repo on its
+**default branch** (e.g. `main`); `git` and `gh` are already authenticated
+for that repo. The platform passes you the issue URL in your prompt —
+start there.
 
-> **If you're running this task locally** rather than via the platform's remote worker, follow the **Local Developer Setup** section in the issue body before reading further — the assertions below assume that setup is complete.
+You don't need to handle authentication. `git push` and `gh ...` work
+because the workspace is preconfigured (credential helper for `git`,
+wrapper for `gh`). Don't try to `gh auth login`, set tokens, or change
+`.git/config`'s credential helper — the platform writes those at
+provisioning and refreshes them on every call.
 
-You don't need to handle authentication. `git push` and `gh ...` work because the workspace is preconfigured (credential helper for `git`, wrapper for `gh`). Don't try to `gh auth login`, set tokens, or change `.git/config`'s credential helper — the platform writes those at provisioning and refreshes them on every call.
+> **Local-flow developers**: install this plugin into your own Claude Code
+> (`claude plugin install <repo>/remote-worker/plugin`), then use your own
+> `gh auth login`. The workflow below is identical.
 
 ## Find the issue
 
-Every ASDLC task is anchored by a GitHub issue with the `asdlc-task` label. The current branch maps to the issue:
+The platform passes you the GitHub issue URL in the user prompt — read it
+with `gh issue view <url>` and start there. The issue body has the
+task-specific spec: rationale, Overview, Scope, Acceptance criteria,
+References, Task dependencies, the Component Reference card, and any
+Component Dependencies wiring. **The platform does NOT pre-create your
+branch or your PR — you create both.**
+
+If you ever need to discover the issue from scratch (e.g. running
+locally without a prompt), the issue is labelled `asdlc` +
+`implementation`:
 
 ```bash
-branch=$(git rev-parse --abbrev-ref HEAD)
-gh issue list --label asdlc-task --state open --search "$branch" --json number,title,url
-gh issue view <number>
+gh issue list --label asdlc --label implementation --state open \
+  --json number,title,url
 ```
-
-The issue body has everything you need: architecture context, component constraints, responsibilities, the working contract, and the deny-list. Read it before editing anything.
 
 ## Workflow
 
-1. **Read the issue.** Don't skip this. The issue body is the spec for this task.
-2. **Post a brief opening comment** on the issue so the platform shows your task is in flight:
+1. **Read the issue.** It is the spec for this task. Capture the issue
+   number — you'll need it in your PR body.
+2. **Post a brief opening comment** so the platform shows your task is
+   in flight:
    ```bash
    gh issue comment <issue-number> --body "Starting: <one-line plan>"
    ```
-3. **Stay on the current branch.** Do not switch branches except for `git pull --rebase`. Do not create new branches.
-4. **Edit, commit, push.** Standard `git add`, `git commit -m "..."`, `git push origin HEAD`. The committer identity is already set in `.git/config` — don't override it.
-5. **Post progress comments** at meaningful milestones (after exploration, before committing, on completion). Keep them short.
-6. **Finish by marking the PR ready for review.** The PR number is in the issue body; or look it up:
+3. **Create a feature branch with a descriptive, kebab-case name.** Do
+   NOT work on the default branch.
    ```bash
-   git push origin HEAD
-   gh pr ready <pr-number>
+   git checkout -b feature/<short-slug>      # e.g. feature/hello-api-endpoint
    ```
-   After this, a human reviews and merges. **You do not merge.**
+4. **Edit, commit, push.** Standard `git add`, `git commit -m "..."`,
+   `git push -u origin HEAD`. The committer identity is already set in
+   `.git/config` — don't override it. The first push creates the remote
+   branch.
+5. **Post progress comments** at meaningful milestones (after
+   exploration, before committing, on completion). Keep them short.
+6. **Open the PR with `Closes #<issue-number>` in the body.** This is
+   how the platform links your PR back to the task — without it, the
+   task is orphaned and never moves out of `in_progress`.
+   ```bash
+   gh pr create \
+     --title "<short PR title>" \
+     --body $'Closes #<issue-number>\n\n<short summary of changes>'
+   ```
+   `gh pr create` opens the PR ready-for-review by default. Pass
+   `--draft` only if you genuinely have more work to do; in that case
+   you must come back later and run `gh pr ready <pr-number>` yourself.
+   After the PR is open and ready, **a human reviews and merges. You
+   do not merge.**
+
+## Project structure
+
+Create a production-ready project structure under your component's
+**App Path** (from the issue's Component Reference card). The App Path
+is a **folder name** relative to the repo root (e.g. `user-api`,
+`services/auth`) — it is NOT an HTTP route. All of this component's
+files (source, `Dockerfile`, `workload.yaml`) must live under that
+directory and nowhere else; the platform watches that path to decide
+which component to rebuild on a push, so a file committed outside it
+will not trigger your build. Match the language/stack:
+
+- **Go**: `go.mod` with proper module path; `cmd/` or `main.go` entry
+  point; `Dockerfile` (multi-stage build); internal packages as needed
+  (`handlers/`, `services/`, `models/`).
+- **TypeScript / Node**: `package.json` with dependencies and scripts;
+  `tsconfig.json`; `src/` with entry point; `Dockerfile` (multi-stage
+  with `node:alpine`).
+- **React (SPA)**: `package.json`; `tsconfig.json`; `src/` with App
+  component and entry point; `vite.config.ts`; `Dockerfile` (build +
+  nginx for serving — see SPA section below).
+- **Python**: `requirements.txt` or `pyproject.toml`; `src/` or `app/`
+  directory with entry point; `Dockerfile`.
+- **Other**: appropriate dependency manifest, clear entry point,
+  `Dockerfile` for containerised builds.
+
+Every component must have a `workload.yaml` at the root of its app path
+(format below). The platform commits, pushes, builds, and deploys for
+you.
 
 ## Constraints
 
-- Implement the full API contract described in the issue. Every endpoint must be functional.
+- Implement the full API contract described in the issue. Every endpoint
+  must be functional.
 - The component must have a `Dockerfile` for containerized builds.
-- The app must start with no required environment variables — use sensible hardcoded defaults for all config (JWT secrets, DB paths, API URLs, etc.). Env vars may override defaults but must never be required.
+- The app must start with **no required environment variables** — use
+  sensible hardcoded defaults for all config (JWT secrets, DB paths,
+  API URLs, etc.). Env vars may override defaults but must never be
+  required.
 - No stubs or mocks. Write real, working implementations.
-- Do not run, start, or execute the application server. Only write source files. The platform builds and deploys automatically; local execution causes port conflicts. Quick compile checks (`go build`, `tsc --noEmit`) are fine; never use `go run`, `npm start`, `node server.js`, or any command that starts a long-running process.
+- Do not run, start, or execute the application server. Only write
+  source files. The platform builds and deploys automatically; local
+  execution causes port conflicts. Quick compile checks (`go build`,
+  `tsc --noEmit`) are fine; never use `go run`, `npm start`,
+  `node server.js`, or any command that starts a long-running process.
 
 ## Do not
 
-- Push to any branch other than the current task branch. Never force-push.
-- Run `gh pr merge`, `gh pr close`, `gh repo create`, `gh repo delete`, `gh repo fork`, or `gh repo edit`.
+- Push directly to the default branch (`main`). Always work on the
+  feature branch you created. Never force-push (`git push --force`).
+- Open a PR without `Closes #<issue-number>` in the body — the platform
+  uses that to link your PR to the task.
+- Open more than one PR for this task.
+- Run `gh pr merge`, `gh pr close`, `gh repo create`, `gh repo delete`,
+  `gh repo fork`, or `gh repo edit`.
 - Delete remote branches (`git push --delete`, `git push origin :branch`).
-- Modify branch protection, secrets, repository settings, collaborators, or webhooks.
-- Touch repos other than this one, or work outside the current working directory.
+- Modify branch protection, secrets, repository settings, collaborators,
+  or webhooks.
+- Touch repos other than this one, or work outside the current working
+  directory.
 
 
 ## OpenChoreo Workload Configuration
 
-Every component must have a `workload.yaml` at its root. This file uses the **flat WorkloadDescriptor** format — **not** a Kubernetes CR. Do **not** use `kind: Workload`, `spec:`, `autoBuild`, or `autoDeploy`.
+Every component must have a `workload.yaml` at its root. This file uses
+the **flat WorkloadDescriptor** format — **not** a Kubernetes CR. Do
+**not** use `kind: Workload`, `spec:`, `autoBuild`, or `autoDeploy`.
 
-- If the issue lists **Component Dependencies**, you MUST declare each one in `workload.yaml` under `dependencies.endpoints` AND use the injected environment variable in your application code. Never hardcode service URLs — OpenChoreo injects the resolved URL via the env var at runtime.
+- If the issue lists **Component Dependencies**, you MUST declare each
+  one in `workload.yaml` under `dependencies.endpoints` AND use the
+  injected environment variable in your application code. Never
+  hardcode service URLs — OpenChoreo injects the resolved URL via the
+  env var at runtime.
 
 ### Format
 

@@ -2,10 +2,6 @@ export function organizationOverviewPath(orgId: string): string {
   return `/organizations/${orgId}`;
 }
 
-export function organizationCreatePath(): string {
-  return `/organizations/new`;
-}
-
 export function projectCreatePath(orgId: string): string {
   return `/organizations/${orgId}/projects/new`;
 }

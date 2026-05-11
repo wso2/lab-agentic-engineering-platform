@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
@@ -13,35 +12,33 @@ import (
 )
 
 // DispatchResult represents the outcome of dispatching a single task.
+// BranchName / PullRequestURL are populated later by the
+// pull_request.opened webhook handler when the agent opens its PR — they
+// are not known at dispatch time anymore.
 type DispatchResult struct {
-	TaskID         string `json:"taskId"`
-	ComponentName  string `json:"componentName"`
-	RunName        string `json:"runName,omitempty"`
-	BranchName     string `json:"branchName"`
-	PullRequestURL string `json:"pullRequestUrl,omitempty"`
-	Status         string `json:"status"`
-	Error          string `json:"error,omitempty"`
+	TaskID        string `json:"taskId"`
+	ComponentName string `json:"componentName"`
+	RunName       string `json:"runName,omitempty"`
+	Status        string `json:"status"`
+	Error         string `json:"error,omitempty"`
 }
 
 // DispatchService orchestrates dispatching pending tasks. Per task it:
 //
 //  1. Verifies a GitHub issue exists (created at task generation).
-//  2. Idempotently creates the feature branch + seed commit + draft PR.
-//  3. Ensures the OC Component exists (with AutoBuild=false).
-//  4. Mints a fresh per-task RS256 JWT.
-//  5. Creates a WorkflowRun of ClusterWorkflow `app-factory-coding-agent`
-//     via WorkflowRunService.TriggerCodingAgent — replaces the legacy
-//     POST to remote-worker /dispatch. The Argo pod runs the same
-//     provisionWorkspace + Claude Agent SDK code as the legacy in-process
-//     worker, but in an ephemeral per-task container.
+//  2. Ensures the OC Component exists (with AutoBuild=false).
+//  3. Mints a fresh per-task RS256 JWT.
+//  4. Creates a WorkflowRun of ClusterWorkflow `app-factory-coding-agent`
+//     via WorkflowRunService.TriggerCodingAgent. The Argo pod clones
+//     the project repo on its default branch and runs the Claude Agent
+//     SDK with the asdlc skill loaded; the agent itself creates the
+//     feature branch and opens the PR with `Closes #<issue>` so the
+//     webhook handler can link the PR back to the task.
 //
-// Each step is idempotent on its persisted column so re-dispatch is safe
-// across crashes:
-//
-//	IssueNumber set        → skip create-issue
-//	BranchName set         → skip create-branch
-//	PullRequestNumber set  → skip create-PR
-//	DispatchedAt set       → skip WorkflowRun create
+// Idempotency: dispatch is gated on `DispatchedAt` — once set, re-dispatch
+// is a no-op. The agent owns branch+PR creation, and the
+// pull_request.opened webhook persists `BranchName` and
+// `PullRequestNumber` once the agent opens its PR.
 type DispatchService interface {
 	DispatchTasks(ctx context.Context, orgID, projectID string) ([]DispatchResult, error)
 }
@@ -50,6 +47,7 @@ type dispatchService struct {
 	taskRepo      repositories.TaskRepository
 	gitClient     gitservice.Client
 	componentSvc  ComponentService
+	configSvc     ConfigService
 	store         *ArtifactStore
 	taskTokens    *TaskTokenManager
 	tokenInject   func(ctx context.Context) context.Context
@@ -61,6 +59,7 @@ func NewDispatchService(
 	taskRepo repositories.TaskRepository,
 	gitClient gitservice.Client,
 	componentSvc ComponentService,
+	configSvc ConfigService,
 	store *ArtifactStore,
 	taskTokens *TaskTokenManager,
 	tokenInject func(ctx context.Context) context.Context,
@@ -71,6 +70,7 @@ func NewDispatchService(
 		taskRepo:      taskRepo,
 		gitClient:     gitClient,
 		componentSvc:  componentSvc,
+		configSvc:     configSvc,
 		store:         store,
 		taskTokens:    taskTokens,
 		tokenInject:   tokenInject,
@@ -167,57 +167,11 @@ func (s *dispatchService) dispatchOne(
 	repoInfo *gitservice.RepoInfo,
 	identity *gitservice.IdentityProjection,
 ) DispatchResult {
-	defaultBranch := repoInfo.DefaultBranch
 	res := DispatchResult{TaskID: task.ID, ComponentName: task.ComponentName}
 
 	if task.IssueNumber == 0 || task.IssueURL == "" {
 		s.markFailed(ctx, task, "no GitHub issue on task — generation must precede dispatch")
 		return failResult(res, task.ErrorMessage)
-	}
-
-	branchName := task.BranchName
-	if branchName == "" {
-		branchName = computeBranchName(task)
-	}
-	if _, err := s.gitClient.CreateBranch(ctx, task.OrgID, task.ProjectID, branchName, defaultBranch); err != nil {
-		s.markFailed(ctx, task, fmt.Sprintf("create branch %s: %v", branchName, err))
-		return failResult(res, task.ErrorMessage)
-	}
-	if task.BranchName == "" {
-		task.BranchName = branchName
-		if err := s.taskRepo.Update(ctx, task); err != nil {
-			s.markFailed(ctx, task, fmt.Sprintf("persist branch: %v", err))
-			return failResult(res, task.ErrorMessage)
-		}
-	}
-
-	seedPayload := fmt.Sprintf(`{"taskId":"%s","componentName":"%s","issueNumber":%d}`+"\n",
-		task.ID, task.ComponentName, task.IssueNumber)
-	seedMsg := fmt.Sprintf("chore: seed task %s for %s", task.ID, task.ComponentName)
-	if err := s.gitClient.SeedBranchCommit(ctx, task.OrgID, task.ProjectID, branchName, ".asdlc/task.json", seedMsg, seedPayload); err != nil {
-		s.markFailed(ctx, task, fmt.Sprintf("seed branch commit: %v", err))
-		return failResult(res, task.ErrorMessage)
-	}
-
-	if task.PullRequestNumber == 0 {
-		prTitle := fmt.Sprintf("[%s] %s", task.ComponentName, task.Title)
-		prBody := fmt.Sprintf("Implementation for component **%s**.\n\nCloses #%d", task.ComponentName, task.IssueNumber)
-		pr, err := s.gitClient.CreateDraftPR(ctx, task.OrgID, task.ProjectID, &gitservice.CreateDraftPRRequest{
-			Title: prTitle,
-			Body:  prBody,
-			Head:  branchName,
-			Base:  defaultBranch,
-		})
-		if err != nil {
-			s.markFailed(ctx, task, fmt.Sprintf("create draft PR: %v", err))
-			return failResult(res, task.ErrorMessage)
-		}
-		task.PullRequestNumber = pr.Number
-		task.PullRequestURL = pr.URL
-		if err := s.taskRepo.Update(ctx, task); err != nil {
-			s.markFailed(ctx, task, fmt.Sprintf("persist PR: %v", err))
-			return failResult(res, task.ErrorMessage)
-		}
 	}
 
 	if s.componentSvc != nil {
@@ -266,12 +220,9 @@ func (s *dispatchService) dispatchOne(
 	}
 
 	slog.InfoContext(ctx, "task dispatched",
-		"task", task.ID, "component", task.ComponentName,
-		"branch", branchName, "pr", task.PullRequestNumber, "run", runName)
+		"task", task.ID, "component", task.ComponentName, "run", runName)
 
 	res.RunName = runName
-	res.BranchName = branchName
-	res.PullRequestURL = task.PullRequestURL
 	res.Status = "running"
 	return res
 }
@@ -291,51 +242,31 @@ func (s *dispatchService) markFailed(ctx context.Context, task *models.Component
 	slog.ErrorContext(ctx, "dispatch step failed", "task", task.ID, "error", msg)
 }
 
-func computeBranchName(task *models.ComponentTask) string {
-	slug := strings.ToLower(task.ComponentName)
-	slug = strings.NewReplacer(" ", "-", "_", "-", "/", "-").Replace(slug)
-	slug = trimNonSlug(slug)
-	if slug == "" {
-		slug = "component"
-	}
-	short := task.ID
-	if len(short) > 8 {
-		short = short[:8]
-	}
-	short = strings.ReplaceAll(short, "-", "")
-	return "task/" + slug + "-" + short
-}
-
-func trimNonSlug(s string) string {
-	var b strings.Builder
-	for _, r := range s {
-		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
-			b.WriteRune(r)
-		}
-	}
-	out := b.String()
-	for strings.Contains(out, "--") {
-		out = strings.ReplaceAll(out, "--", "-")
-	}
-	return strings.Trim(out, "-")
-}
-
-// buildAgentPrompt returns the user prompt given to the Claude agent. The full
-// task context lives in the GitHub issue body (services/issue_body.go); the
-// prompt points the agent at the issue and tells them the working branch is
-// already checked out.
+// buildAgentPrompt returns the user prompt given to the Claude agent. The
+// full task context lives in the GitHub issue body
+// (services/issue_body.go); the prompt points the agent at the issue and
+// tells them how to link their PR back to the task. The asdlc skill
+// loaded in the runner image carries the rest of the workflow.
 func buildAgentPrompt(task *models.ComponentTask) string {
-	if task.BranchName != "" {
-		return fmt.Sprintf("Work on this GitHub issue: %s\n\nYour working branch %s is already checked out in this directory.",
-			task.IssueURL, task.BranchName)
-	}
-	return fmt.Sprintf("Work on this GitHub issue: %s", task.IssueURL)
+	return fmt.Sprintf(
+		"Work on this GitHub issue: %s\n\n"+
+			"You are at the project repo root, on its default branch. Create your "+
+			"own feature branch, implement the task, and open a PR whose body "+
+			"includes the literal text `Closes #%d` so the platform links the "+
+			"PR back to this task.",
+		task.IssueURL, task.IssueNumber,
+	)
 }
 
 // ensureOCComponent creates the OC Component (one per task component) needed
 // for the build to fire when the merge push arrives. AutoBuild=false — every
 // build is driven by the BFF's push-webhook handler creating a WorkflowRun
-// pinned to the merge SHA.
+// pinned to the merge SHA. AutoDeploy=true — OC's Component controller
+// watches the Workload the build's generate-workload-cr step posts and
+// creates the ReleaseBinding into the first environment of the project's
+// DeploymentPipeline (development) with empty ComponentTypeEnvironmentConfigs;
+// schema defaults on the `service` ClusterComponentType supply replicas,
+// resources, and imagePullPolicy.
 func (s *dispatchService) ensureOCComponent(
 	ctx context.Context,
 	task *models.ComponentTask,
@@ -374,13 +305,20 @@ func (s *dispatchService) ensureOCComponent(
 		description = task.Title + " — " + task.Rationale
 	}
 
+	// Stamp the current per-component env vars onto the Component's
+	// workflow parameters so the build's generate-workload-cr step writes
+	// them into the Workload CR. autoDeploy then carries them into the
+	// ReleaseBinding. Env-var changes after first dispatch flow in via
+	// componentEnvVarsUpdated below.
+	envVars := s.workflowEnvVars(ctx, task.OrgID, task.ProjectID, componentName)
+
 	_, err = s.componentSvc.CreateComponent(ctx, task.OrgID, task.ProjectID, &models.CreateComponentRequest{
 		Name:        componentName,
 		DisplayName: task.ComponentName,
 		Description: description,
 		Type:        ocEntrypoint(comp.ComponentType),
 		AutoBuild:   false,
-		AutoDeploy:  false,
+		AutoDeploy:  true,
 		Workflow: &models.ComponentWorkflowSpec{
 			Kind: "ClusterWorkflow",
 			Name: "dockerfile-builder",
@@ -395,6 +333,7 @@ func (s *dispatchService) ensureOCComponent(
 					Context:  dockerContext,
 					FilePath: dockerFilePath,
 				},
+				EnvironmentVariables: envVars,
 			},
 		},
 	})
@@ -402,4 +341,29 @@ func (s *dispatchService) ensureOCComponent(
 		return fmt.Errorf("create component: %w", err)
 	}
 	return nil
+}
+
+// workflowEnvVars reads the stored env vars for this component and shapes
+// them into the WorkflowEnvVarRef slice that the dockerfile-builder
+// ClusterWorkflow's `environmentVariables` schema expects. Returns nil
+// when nothing is configured or the lookup fails — the build workflow's
+// `default: []` covers that case.
+func (s *dispatchService) workflowEnvVars(ctx context.Context, orgID, projectID, componentName string) []models.WorkflowEnvVarRef {
+	if s.configSvc == nil {
+		return nil
+	}
+	stored, err := s.configSvc.GetEnvVarsForDeploy(ctx, orgID, projectID, componentName)
+	if err != nil {
+		slog.WarnContext(ctx, "fetch env vars for component workflow params; proceeding without",
+			"org", orgID, "project", projectID, "component", componentName, "error", err)
+		return nil
+	}
+	if len(stored) == 0 {
+		return nil
+	}
+	out := make([]models.WorkflowEnvVarRef, 0, len(stored))
+	for _, ev := range stored {
+		out = append(out, models.WorkflowEnvVarRef{Key: ev.Key, Value: ev.Value})
+	}
+	return out
 }

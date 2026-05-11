@@ -6,8 +6,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
 )
 
 type configReader struct {
@@ -29,9 +27,8 @@ func Load() (Config, error) {
 		ServerPort: r.readOptionalInt("SERVER_PORT", 8080),
 		LogLevel:   r.readOptionalString("LOG_LEVEL", "info"),
 		PlatformAPI: PlatformAPIConfig{
-			BaseURL:       r.readRequiredString("PLATFORM_API_SERVICE_BASE_URL"),
-			HostHeader:    r.readOptionalString("PLATFORM_API_SERVICE_HOST", ""),
-			BuildRegistry: r.readOptionalString("OPENCHOREO_BUILD_REGISTRY", openchoreo.DefaultBuildRegistry),
+			BaseURL:    r.readRequiredString("PLATFORM_API_SERVICE_BASE_URL"),
+			HostHeader: r.readOptionalString("PLATFORM_API_SERVICE_HOST", ""),
 		},
 		DatabaseURL:            r.readOptionalString("DATABASE_URL", ""),
 		TestMode:               r.readOptionalBool("TEST_MODE", false),

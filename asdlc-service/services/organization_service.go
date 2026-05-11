@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"strings"
 	"sync"
 	"time"
@@ -15,7 +14,6 @@ import (
 	"gorm.io/gorm"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
-	"github.com/wso2/asdlc/asdlc-service/clients/requests"
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
@@ -177,8 +175,7 @@ func (s *organizationService) verifyForOuHandle(ctx context.Context, ouHandle st
 
 	view, err := s.nsCli.GetNamespace(ctx, ouHandle)
 	if err != nil {
-		var httpErr *requests.HttpError
-		if errors.As(err, &httpErr) && httpErr.StatusCode == http.StatusNotFound {
+		if errors.Is(err, openchoreo.ErrNotFound) {
 			return fmt.Errorf("%w: %s", ErrOrganizationNotProvisioned, ouHandle)
 		}
 		return translateHTTPError(err)
