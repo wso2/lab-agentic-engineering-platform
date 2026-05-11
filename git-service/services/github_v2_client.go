@@ -186,7 +186,130 @@ func (c *githubV2Client) CreateGitHubV2Project(ctx context.Context, orgID, pat, 
 
 	url := updateData.UpdateProjectV2.ProjectV2.URL
 	slog.InfoContext(ctx, "GitHub project created", "title", title, "projectId", p.ID, "url", url)
+
+	// Initialize the Status field with all 5 options (Todo, In Progress, Done, On Hold, Failed).
+	if err := c.initProjectStatusOptions(ctx, p.ID, pat); err != nil {
+		slog.WarnContext(ctx, "failed to init project status options", "projectId", p.ID, "error", err)
+		// non-fatal — board still works with the 3 default columns
+	}
+
 	return p.ID, nil
+}
+
+// initProjectStatusOptions initializes the Status field with all 5 options: Todo, In Progress, Done, On Hold, Failed.
+// It queries the existing Status field ID and options, then adds any missing options (On Hold, Failed).
+func (c *githubV2Client) initProjectStatusOptions(ctx context.Context, projectID, pat string) error {
+	// Query the Status field and its existing options.
+	query := `
+		query($projectId: ID!) {
+			node(id: $projectId) {
+				... on ProjectV2 {
+					fields(first: 20) {
+						nodes {
+							... on ProjectV2SingleSelectField {
+								id
+								name
+								options { id name }
+							}
+						}
+					}
+				}
+			}
+		}`
+
+	var data struct {
+		Node struct {
+			Fields struct {
+				Nodes []struct {
+					ID      string `json:"id"`
+					Name    string `json:"name"`
+					Options []struct {
+						ID   string `json:"id"`
+						Name string `json:"name"`
+					} `json:"options"`
+				} `json:"nodes"`
+			} `json:"fields"`
+		} `json:"node"`
+	}
+	if err := c.graphqlRequest(ctx, pat, query, map[string]any{"projectId": projectID}, &data); err != nil {
+		return fmt.Errorf("query project status field: %w", err)
+	}
+
+	// Find the Status field.
+	var statusFieldID string
+	existingSet := make(map[string]string) // name -> id
+	for _, f := range data.Node.Fields.Nodes {
+		if f.Name == "Status" {
+			statusFieldID = f.ID
+			for _, opt := range f.Options {
+				existingSet[opt.Name] = opt.ID
+			}
+			break
+		}
+	}
+	if statusFieldID == "" {
+		return fmt.Errorf("status field not found in project")
+	}
+
+	// Build the full option list: preserve existing options (with their IDs) and add missing ones.
+	// Colors: Todo (GRAY), In Progress (YELLOW), Done (GREEN), On Hold (ORANGE), Failed (RED).
+	optionNames := []string{"Todo", "In Progress", "Done", "On Hold", "Failed"}
+	optionColors := map[string]string{
+		"Todo":         "GRAY",
+		"In Progress":  "YELLOW",
+		"Done":         "GREEN",
+		"On Hold":      "ORANGE",
+		"Failed":       "RED",
+	}
+
+	// Build the input options list: preserve existing (with ID), add missing (without ID).
+	type optionInput struct {
+		ID    string `json:"id,omitempty"`
+		Name  string `json:"name"`
+		Color string `json:"color"`
+	}
+	var inputOptions []optionInput
+	for _, name := range optionNames {
+		if existingID, exists := existingSet[name]; exists {
+			// Preserve existing option with its ID.
+			inputOptions = append(inputOptions, optionInput{
+				ID:    existingID,
+				Name:  name,
+				Color: optionColors[name],
+			})
+		} else {
+			// Add new option without ID (GitHub will create it).
+			inputOptions = append(inputOptions, optionInput{
+				Name:  name,
+				Color: optionColors[name],
+			})
+		}
+	}
+
+	// Mutation to update the Status field with all options.
+	mutation := `
+		mutation($projectId: ID!, $fieldId: ID!, $options: [ProjectV2SingleSelectFieldOptionInput!]!) {
+			updateProjectV2Field(input: {
+				projectId: $projectId
+				fieldId: $fieldId
+				singleSelectOptions: $options
+			}) {
+				projectV2Field {
+					... on ProjectV2SingleSelectField { id }
+				}
+			}
+		}`
+
+	if err := c.graphqlRequest(ctx, pat, mutation, map[string]any{
+		"projectId": projectID,
+		"fieldId":   statusFieldID,
+		"options":   inputOptions,
+	}, nil); err != nil {
+		return fmt.Errorf("update project status field options: %w", err)
+	}
+
+	slog.InfoContext(ctx, "initialized project status field options", "projectId", projectID)
+	return nil
 }
 
 func (c *githubV2Client) GetProjectBoard(ctx context.Context, githubProjectID, pat string) (*ProjectBoardResult, error) {
