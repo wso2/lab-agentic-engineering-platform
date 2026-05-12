@@ -97,17 +97,45 @@ func (c *clientBase) send(ctx context.Context, req *requests.HttpRequest, dest a
 		}
 		return r
 	}
+	slog.InfoContext(ctx, "openchoreo request",
+		"op", req.Name, "method", req.Method, "url", req.URL, "host", c.hostHeader)
 	result := requests.SendRequest(ctx, c.httpClient, attach(req))
 	err := result.ScanResponse(dest, expectedStatus)
 	if err == nil {
+		slog.InfoContext(ctx, "openchoreo response",
+			"op", req.Name, "method", req.Method, "url", req.URL, "status", result.StatusCode)
 		return nil
 	}
 	var httpErr *requests.HttpError
 	if c.tokenProvider == nil || !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusUnauthorized {
+		c.logResponseError(ctx, req, err)
 		return err
 	}
-	slog.WarnContext(ctx, "service token rejected, invalidating and retrying", "body", httpErr.Body)
+	slog.WarnContext(ctx, "service token rejected, invalidating and retrying",
+		"op", req.Name, "url", req.URL, "body", httpErr.Body)
 	c.tokenProvider.Invalidate()
 	result = requests.SendRequest(ctx, c.httpClient, attach(req))
-	return result.ScanResponse(dest, expectedStatus)
+	err = result.ScanResponse(dest, expectedStatus)
+	if err != nil {
+		c.logResponseError(ctx, req, err)
+		return err
+	}
+	slog.InfoContext(ctx, "openchoreo response (after retry)",
+		"op", req.Name, "method", req.Method, "url", req.URL, "status", result.StatusCode)
+	return nil
+}
+
+// logResponseError emits a single structured error log for a failed OC call,
+// including the upstream status and body when available so 4xx/5xx root causes
+// (e.g. "namespaces ... not found") show up directly in service logs.
+func (c *clientBase) logResponseError(ctx context.Context, req *requests.HttpRequest, err error) {
+	var httpErr *requests.HttpError
+	if errors.As(err, &httpErr) {
+		slog.ErrorContext(ctx, "openchoreo response error",
+			"op", req.Name, "method", req.Method, "url", req.URL,
+			"status", httpErr.StatusCode, "body", httpErr.Body)
+		return
+	}
+	slog.ErrorContext(ctx, "openchoreo request failed",
+		"op", req.Name, "method", req.Method, "url", req.URL, "error", err)
 }
