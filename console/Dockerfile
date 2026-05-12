@@ -24,8 +24,12 @@ FROM nginx:1.28-alpine
 
 USER root
 
-# Pull latest Alpine security patches on top of the base image (Trivy/CVE hygiene).
-RUN apk upgrade --no-cache
+# Pull latest patched versions of CVE-flagged packages. Scoped (not blanket
+# `apk upgrade`) so alpine-baselayout's pre-upgrade script doesn't try to clean
+# /var/run when this image is built inside a pod that bind-mounts it read-only.
+RUN apk upgrade --no-cache \
+      libcrypto3 libssl3 libexpat libpng libxml2 \
+      musl musl-utils nghttp2-libs zlib
 
 RUN addgroup -g 10001 -S asdlcuser && \
     adduser -u 10001 -S asdlcuser -G asdlcuser
