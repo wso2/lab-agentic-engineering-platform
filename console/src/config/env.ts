@@ -6,6 +6,7 @@ interface RuntimeEnv {
   VITE_SIGN_IN_REDIRECT_URL?: string;
   VITE_SIGN_OUT_REDIRECT_URL?: string;
   VITE_DEV_BYPASS_AUTH?: string;
+  BILLING_API_BASE_URL?: string;
 }
 
 declare global {
@@ -32,4 +33,5 @@ export const env = {
   VITE_SIGN_IN_REDIRECT_URL: getEnv('VITE_SIGN_IN_REDIRECT_URL') || undefined,
   VITE_SIGN_OUT_REDIRECT_URL: getEnv('VITE_SIGN_OUT_REDIRECT_URL') || undefined,
   VITE_DEV_BYPASS_AUTH: getEnv('VITE_DEV_BYPASS_AUTH') === 'true',
+  BILLING_API_BASE_URL: getEnv('BILLING_API_BASE_URL') || '',
 } as const;

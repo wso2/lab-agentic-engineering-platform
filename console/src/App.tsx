@@ -21,6 +21,7 @@ import OrgSettingsLayout from './pages/OrgSettingsLayout';
 import OrgGitHubSettings from './pages/OrgGitHubSettings';
 import OrgGitHubAppPicker from './pages/OrgGitHubAppPicker';
 import { setOrgGithubTokenAccessor } from './services/api/orgGithub';
+import { useBillingOrg } from './hooks/useBillingOrg';
 import { organizationOverviewPath } from './lib/paths';
 
 export function App() {
@@ -34,6 +35,9 @@ export function App() {
     setTokenAccessor(null);
     setOrgGithubTokenAccessor(null);
   }
+
+  // Triggers server-side org/subscription provisioning so downstream entitlement checks pass.
+  useBillingOrg('app-factory', isSignedIn);
 
   const orgId = useMemo(() => {
     if (!claims) return 'default';

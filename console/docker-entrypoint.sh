@@ -10,6 +10,7 @@ THUNDER_SCOPES="${VITE_THUNDER_SCOPES:-openid profile email}"
 SIGN_IN_REDIRECT_URL="${VITE_SIGN_IN_REDIRECT_URL:-}"
 SIGN_OUT_REDIRECT_URL="${VITE_SIGN_OUT_REDIRECT_URL:-}"
 DEV_BYPASS_AUTH="${VITE_DEV_BYPASS_AUTH:-}"
+BILLING_API_BASE_URL_VAL="${BILLING_API_BASE_URL:-}"
 
 # env-config.js is generated at start so the SPA can read runtime config.
 # The heredoc is unquoted so $VAR and ${VAR:-default} expand. We fall back
@@ -27,6 +28,7 @@ window._env_ = {
   VITE_THUNDER_CLIENT_ID: "${THUNDER_CLIENT_ID}",
   VITE_THUNDER_SCOPES: "${THUNDER_SCOPES}",
   VITE_DEV_BYPASS_AUTH: "${DEV_BYPASS_AUTH}",
+  BILLING_API_BASE_URL: "${BILLING_API_BASE_URL_VAL}",
 EOF_INNER
 
 if [ -n "$SIGN_IN_REDIRECT_URL" ]; then
