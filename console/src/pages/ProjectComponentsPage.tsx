@@ -32,7 +32,7 @@ function computeDisplayStatus(task: ComponentTask): { label: string; color: Chip
     case 'rejected':
       return { label: 'Rejected', color: 'error' };
     case 'deployed':
-      return { label: 'Deploying', color: 'success' };
+      return { label: 'Deployed', color: 'success' };
     case 'building':
       return { label: 'Building', color: 'primary' };
     case 'merged':

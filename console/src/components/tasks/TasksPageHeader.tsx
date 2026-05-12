@@ -61,9 +61,9 @@ export function TasksPageHeader({
         </Box>
 
         <Stack direction="row" spacing={1} alignItems="center">
-          {!hideGenerateButton && totalTasks === 0 && (
+          {!hideGenerateButton && (
             <Button
-              variant="contained"
+              variant={totalTasks === 0 ? 'contained' : 'outlined'}
               size="small"
               startIcon={isGenerating ? <CircularProgress size={14} color="inherit" /> : <Sparkles size={15} />}
               disabled={isGenerating}
@@ -73,7 +73,7 @@ export function TasksPageHeader({
             </Button>
           )}
 
-          {(hideGenerateButton || totalTasks > 0) && (
+          {totalTasks > 0 && (
             <>
               <Button
                 variant="contained"

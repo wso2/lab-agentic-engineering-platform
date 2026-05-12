@@ -30,7 +30,7 @@ const STATUS_DISPLAY: Record<TaskStatus, { label: string; tone: 'primary' | 'suc
   ready_for_review: { label: 'Awaiting review',   tone: 'primary' },
   merged:           { label: 'Merged',            tone: 'primary' },
   building:         { label: 'Building',          tone: 'primary' },
-  deployed:         { label: 'Deploying',         tone: 'success' },
+  deployed:         { label: 'Deployed',          tone: 'success' },
   rejected:         { label: 'Rejected',          tone: 'warning' },
   failed:           { label: 'Failed',            tone: 'error'   },
   abandoned:        { label: 'Abandoned',         tone: 'muted'   },
