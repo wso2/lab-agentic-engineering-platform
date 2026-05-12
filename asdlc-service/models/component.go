@@ -131,6 +131,19 @@ type DeploymentList struct {
 	Items []Deployment `json:"items"`
 }
 
+// -- ComponentOpenAPI (Test tab) ----------------------------------------------
+
+// ComponentOpenAPI is the response shape returned by
+// GET /api/v1/.../components/{name}/openapi. The spec is the raw YAML string
+// from .asdlc/design.json (already canonicalised on write by
+// openapi_normalize.go), shipped verbatim so the console's swagger-ui can
+// parse it without an extra round-trip.
+type ComponentOpenAPI struct {
+	ComponentName string `json:"componentName"`
+	ComponentType string `json:"componentType"`
+	Spec          string `json:"spec"`
+}
+
 // -- Build Logs ---------------------------------------------------------------
 
 type BuildLogEntry struct {
@@ -143,4 +156,3 @@ type BuildLogs struct {
 	Logs       []BuildLogEntry `json:"logs"`
 	TotalCount int             `json:"totalCount,omitempty"`
 }
-

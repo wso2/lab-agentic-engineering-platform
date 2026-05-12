@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ChevronRightCircle,
   Compass,
+  FlaskConical,
   LayoutDashboard,
   Package,
   Plus,
@@ -46,6 +47,7 @@ import {
   componentBuildPath,
   componentDeployPath,
   componentConfigsPath,
+  componentTestPath,
   projectCreatePath,
 } from '../lib/paths';
 import { resolveOuHandle } from '../utils/orgClaims';
@@ -142,6 +144,9 @@ export default function AsdlcLayout() {
   const componentConfigsRoute = hasComponentRouteParams
     ? componentConfigsPath(routeOrgId, projectId!, routeComponentId)
     : '';
+  const componentTestRoute = hasComponentRouteParams
+    ? componentTestPath(routeOrgId, projectId!, routeComponentId)
+    : '';
 
   // Determine active sidebar item based on current route
   const activeSidebarItem = (() => {
@@ -161,6 +166,11 @@ export default function AsdlcLayout() {
         matchPath('/organizations/:orgId/projects/:projectId/components/:componentId/configs', location.pathname)
       ) {
         return 'configs';
+      }
+      if (
+        matchPath('/organizations/:orgId/projects/:projectId/components/:componentId/test', location.pathname)
+      ) {
+        return 'test';
       }
       return 'overview';
     }
@@ -205,6 +215,9 @@ export default function AsdlcLayout() {
           return;
         case 'configs':
           navigate(componentConfigsRoute);
+          return;
+        case 'test':
+          navigate(componentTestRoute);
           return;
         default:
           return;
@@ -603,6 +616,12 @@ export default function AsdlcLayout() {
                     <Rocket size={20} />
                   </Sidebar.ItemIcon>
                   <Sidebar.ItemLabel>Deploy</Sidebar.ItemLabel>
+                </Sidebar.Item>
+                <Sidebar.Item id="test">
+                  <Sidebar.ItemIcon>
+                    <FlaskConical size={20} />
+                  </Sidebar.ItemIcon>
+                  <Sidebar.ItemLabel>Test</Sidebar.ItemLabel>
                 </Sidebar.Item>
               </Sidebar.Category>
             )}
