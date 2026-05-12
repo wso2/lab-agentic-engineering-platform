@@ -88,6 +88,68 @@ type GitHubClient interface {
 	// to make platform disconnect symmetric with the GitHub side — without
 	// this, disconnects leave orphan installs visible to discover.
 	DeleteInstallation(ctx context.Context, minter *credentials.AppTokenMinter, installationID int64) error
+
+	// ----- Artifact-store v2 (docs/design/artifact-store-v2.md V1) -----
+	//
+	// Save-path GitHub API methods. All authed via the per-org credential.
+	// These replace the `git commit + push` flow in SaveDesign/SaveRequirements;
+	// the working-tree clone remains the source of truth for draft content
+	// (Postgres drafts are V2). Errors map onto typed sentinels so the save
+	// flow can branch (ErrSHAMismatch → retry, ErrRefNotFastForward → retry,
+	// ErrTagAlreadyExists → recompute next tag).
+
+	// GetContents returns the file blob at `ref` (branch tip or tag) plus the
+	// blob SHA used as the precondition on subsequent PutContents.
+	// 404 → returns (nil, HTTPStatusError{404}); the caller treats it as
+	// "no file at this ref yet."
+	GetContents(ctx context.Context, owner, repo string, cred credentials.Credential, path, ref string) (*ContentsResult, error)
+
+	// PutContents creates or updates a single file via the Contents API,
+	// committing atomically to `branch`. `req.SHA` is the blob SHA of the
+	// file's current state on `branch` (the OCC precondition); empty =
+	// create-only, non-empty = update-only with CAS. A SHA mismatch returns
+	// ErrSHAMismatch. `req.Author` / `req.Committer` are GitIdentity.
+	PutContents(ctx context.Context, owner, repo string, cred credentials.Credential, req PutContentsRequest) (*PutContentsResult, error)
+
+	// GetRef returns the tip SHA of a ref. `ref` is the ref name without
+	// "refs/" prefix (e.g. "heads/main" or "tags/v1").
+	GetRef(ctx context.Context, owner, repo string, cred credentials.Credential, ref string) (string, error)
+
+	// GetCommit returns the tree SHA and parents of a commit object.
+	GetCommit(ctx context.Context, owner, repo string, cred credentials.Credential, sha string) (*CommitObject, error)
+
+	// GetTree returns the entries of a tree object. `recursive=true` walks
+	// nested trees in one call (capped by GitHub at ~100k entries).
+	GetTree(ctx context.Context, owner, repo string, cred credentials.Credential, treeSHA string, recursive bool) (*TreeObject, error)
+
+	// CreateBlob stores raw content as a blob and returns its SHA.
+	CreateBlob(ctx context.Context, owner, repo string, cred credentials.Credential, content []byte) (string, error)
+
+	// CreateTree assembles a tree from `baseTree` plus a partial overlay of
+	// entries. Entries with empty SHA represent deletions (sha: null on the
+	// wire); GitHub returns 422 if the deleted path is absent in baseTree.
+	CreateTree(ctx context.Context, owner, repo string, cred credentials.Credential, baseTree string, entries []TreeEntry) (string, error)
+
+	// CreateCommit creates a commit object pointing at the given tree.
+	CreateCommit(ctx context.Context, owner, repo string, cred credentials.Credential, req CreateCommitRequest) (string, error)
+
+	// UpdateRef atomically advances a ref to `sha`. With `force=false` the
+	// call is fast-forward-only — non-FF moves return ErrRefNotFastForward.
+	UpdateRef(ctx context.Context, owner, repo string, cred credentials.Credential, ref, sha string, force bool) error
+
+	// CreateTagObject creates an annotated tag object pointing at `objectSHA`
+	// (typically a commit). Returns the tag object's SHA; the caller still
+	// needs CreateTagRef to make the tag visible.
+	CreateTagObject(ctx context.Context, owner, repo string, cred credentials.Credential, req CreateTagObjectRequest) (string, error)
+
+	// CreateTagRef creates the refs/tags/<name> ref pointing at the supplied
+	// tag-object SHA. Returns ErrTagAlreadyExists if another writer has
+	// claimed the name.
+	CreateTagRef(ctx context.Context, owner, repo string, cred credentials.Credential, tagName, tagObjectSHA string) error
+
+	// ListMatchingRefs lists all refs under the given prefix (e.g. "tags/v").
+	// Returns an empty slice (not 404) when no refs match.
+	ListMatchingRefs(ctx context.Context, owner, repo string, cred credentials.Credential, prefix string) ([]MatchingRef, error)
 }
 
 // AppInstallationSummary is the flat projection of /app/installations[i]

@@ -654,6 +654,21 @@ export default function ProjectRequirementsPage() {
         Object.keys(savedFiles).map((k) => [k, liveContents[k] ?? savedFiles[k] ?? '']),
       );
 
+  // Streaming bootstrap (fresh project from a prompt): the first delta hasn't
+  // landed yet, so there are no files for the Explorer to render. Show a
+  // dedicated "Generating…" state instead of the Explorer chrome — otherwise
+  // the sidebar briefly flashes "No files" until the first delta arrives.
+  if (Object.keys(explorerFiles).length === 0 && streamingMain) {
+    return (
+      <PageContent>
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12 }}>
+          <CircularProgress size={48} sx={{ mb: 3 }} />
+          <Typography variant="h6" color="text.secondary">Generating requirements…</Typography>
+        </Box>
+      </PageContent>
+    );
+  }
+
   if (Object.keys(explorerFiles).length === 0 && !streamingMain && !connected) {
     return (
       <PageContent>

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ChevronRightCircle,
   Compass,
+  FlaskConical,
   LayoutDashboard,
   Package,
   Plus,
@@ -46,6 +47,7 @@ import {
   componentBuildPath,
   componentDeployPath,
   componentConfigsPath,
+  componentTestPath,
   projectCreatePath,
 } from '../lib/paths';
 import { resolveOuHandle } from '../utils/orgClaims';
@@ -142,6 +144,9 @@ export default function AsdlcLayout() {
   const componentConfigsRoute = hasComponentRouteParams
     ? componentConfigsPath(routeOrgId, projectId!, routeComponentId)
     : '';
+  const componentTestRoute = hasComponentRouteParams
+    ? componentTestPath(routeOrgId, projectId!, routeComponentId)
+    : '';
 
   // Determine active sidebar item based on current route
   const activeSidebarItem = (() => {
@@ -161,6 +166,11 @@ export default function AsdlcLayout() {
         matchPath('/organizations/:orgId/projects/:projectId/components/:componentId/configs', location.pathname)
       ) {
         return 'configs';
+      }
+      if (
+        matchPath('/organizations/:orgId/projects/:projectId/components/:componentId/test', location.pathname)
+      ) {
+        return 'test';
       }
       return 'overview';
     }
@@ -205,6 +215,9 @@ export default function AsdlcLayout() {
           return;
         case 'configs':
           navigate(componentConfigsRoute);
+          return;
+        case 'test':
+          navigate(componentTestRoute);
           return;
         default:
           return;
@@ -298,7 +311,16 @@ export default function AsdlcLayout() {
                 label="Organizations"
               >
                 {(orgs.length > 0 ? orgs : [{ name: claimsOrgId, displayName: claimsOrgName, uuid: '', createdAt: '' }]).map((org) => (
-                  <ComplexSelect.MenuItem key={org.name} value={org.name}>
+                  // onClick fires on every click (including the currently-selected
+                  // item), so clicking the active org in the dropdown lands on the
+                  // org overview — onChange alone only fires on a value change.
+                  <ComplexSelect.MenuItem
+                    key={org.name}
+                    value={org.name}
+                    onClick={() => {
+                      if (org.name) navigate(organizationOverviewPath(org.name));
+                    }}
+                  >
                     <ComplexSelect.MenuItem.Icon>
                       <Building size={16} />
                     </ComplexSelect.MenuItem.Icon>
@@ -343,7 +365,11 @@ export default function AsdlcLayout() {
                       <ComplexSelect.MenuItem.Text primary="Create a Project" />
                     </ComplexSelect.MenuItem>
                     {projects.map((project) => (
-                      <ComplexSelect.MenuItem key={project.id} value={project.id}>
+                      <ComplexSelect.MenuItem
+                        key={project.id}
+                        value={project.id}
+                        onClick={() => navigate(projectOverviewPath(routeOrgId, project.id))}
+                      >
                         <ComplexSelect.MenuItem.Icon>
                           <ScrollText size={16} />
                         </ComplexSelect.MenuItem.Icon>
@@ -431,7 +457,13 @@ export default function AsdlcLayout() {
                         label="Components"
                       >
                         {components.map((component) => (
-                          <ComplexSelect.MenuItem key={component.id} value={component.id}>
+                          <ComplexSelect.MenuItem
+                            key={component.id}
+                            value={component.id}
+                            onClick={() =>
+                              navigate(componentDetailPath(routeOrgId, projectId!, component.id))
+                            }
+                          >
                             <ComplexSelect.MenuItem.Icon>
                               <Package size={16} />
                             </ComplexSelect.MenuItem.Icon>
@@ -603,6 +635,12 @@ export default function AsdlcLayout() {
                     <Rocket size={20} />
                   </Sidebar.ItemIcon>
                   <Sidebar.ItemLabel>Deploy</Sidebar.ItemLabel>
+                </Sidebar.Item>
+                <Sidebar.Item id="test">
+                  <Sidebar.ItemIcon>
+                    <FlaskConical size={20} />
+                  </Sidebar.ItemIcon>
+                  <Sidebar.ItemLabel>Test</Sidebar.ItemLabel>
                 </Sidebar.Item>
               </Sidebar.Category>
             )}

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { lazy, Suspense, useMemo } from 'react';
 import { Navigate, Outlet, Route, Routes, useOutletContext } from 'react-router-dom';
 import { useAuth, useUserClaims } from './auth';
 import AuthGuard from './auth/AuthGuard';
@@ -15,6 +15,8 @@ import ComponentDetailPage from './pages/ComponentDetailPage';
 import ComponentBuildPage from './pages/ComponentBuildPage';
 import ComponentDeployPage from './pages/ComponentDeployPage';
 import ComponentConfigsPage from './pages/ComponentConfigsPage';
+// Lazy-load swagger-ui (~1MB) so it only ships when the Test tab is opened.
+const ComponentTestPage = lazy(() => import('./pages/ComponentTestPage'));
 import OrgSettingsLayout from './pages/OrgSettingsLayout';
 import OrgGitHubSettings from './pages/OrgGitHubSettings';
 import OrgGitHubAppPicker from './pages/OrgGitHubAppPicker';
@@ -95,6 +97,14 @@ export function App() {
             <Route path="build" element={<ComponentBuildPage />} />
             <Route path="deploy" element={<ComponentDeployPage />} />
             <Route path="configs" element={<ComponentConfigsPage />} />
+            <Route
+              path="test"
+              element={
+                <Suspense fallback={null}>
+                  <ComponentTestPage />
+                </Suspense>
+              }
+            />
           </Route>
         </Route>
       </Route>

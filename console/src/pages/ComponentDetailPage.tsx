@@ -42,7 +42,7 @@ const statusLabels: Record<string, string> = {
   in_progress: 'Implementing',
   implementing: 'Implementing',
   completed: 'Completed',
-  deployed: 'Deploying',
+  deployed: 'Deployed',
   done: 'Ready',
   failed: 'Failed',
 };

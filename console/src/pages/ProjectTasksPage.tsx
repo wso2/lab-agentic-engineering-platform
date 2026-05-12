@@ -282,7 +282,7 @@ export default function ProjectTasksPage() {
 
         {/* Task sections */}
         <Box sx={{ flex: 1, overflowY: 'auto', pr: 0.25 }}>
-          {totalTasks === 0 && (
+          {totalTasks === 0 && !isGenerating && !generateBanner && (
             <Box
               sx={{
                 display: 'flex',

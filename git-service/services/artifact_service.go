@@ -393,9 +393,15 @@ func (s *artifactService) DeleteRequirementFile(ctx context.Context, projectID, 
 
 // ----- Save -----
 
-// SaveRequirements stages every file under `.asdlc/requirements/` (creates,
-// edits, deletes), commits, pushes, then creates the next `v<N>` tag. Empty
-// directory is rejected — a save must produce at least one requirement file.
+// SaveRequirements persists the working-tree `.asdlc/requirements/` snapshot
+// as a new commit on remote main and creates the next `v<N>` annotated tag.
+// Replaces the legacy `git commit + push + tag` flow with GitHub API calls
+// (Git Data API path) per docs/design/artifact-store-v2.md V1.
+//
+// The local clone's HEAD provides the "what we last saved" baseline for
+// computing the changeset (adds / modifies / deletes), so users' explicit
+// deletions still land as tombstones. Unrelated files on remote main are
+// preserved by `base_tree=current main tree`.
 func (s *artifactService) SaveRequirements(ctx context.Context, projectID string, req SaveRequest) (*RequirementsSaveResult, error) {
 	mu := s.gitOps.getRepoLock(projectID)
 	mu.Lock()
@@ -408,114 +414,20 @@ func (s *artifactService) SaveRequirements(ctx context.Context, projectID string
 	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
 		return nil, fmt.Errorf("ensure clone: %w", err)
 	}
-	clonePath := repoRecord.ClonePath
 
-	// Reject saves that would produce zero requirement files. We require
-	// requirements.md to exist as the main document.
-	mainAbs := filepath.Join(clonePath, RequirementsDir, requirementsMainFile)
-	if _, err := os.Stat(mainAbs); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s/%s missing — populate requirements before saving",
-				ErrArtifactPathInvalid, RequirementsDir, requirementsMainFile)
-		}
-		return nil, fmt.Errorf("stat %s: %w", mainAbs, err)
-	}
-
-	authedEnv, identity, cleanup, err := s.gitOps.prepareAuthedEnv(ctx, repoRecord)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	// Step 0: self-heal — push --tags so any local-only tag from a previous
-	// crash lands on remote.
-	if err := pushAllTags(ctx, clonePath, authedEnv); err != nil {
-		slog.WarnContext(ctx, "self-heal push --tags failed (continuing)",
-			"project", projectID, "error", err)
-	}
-
-	// Step 1: stage every change under .asdlc/requirements/ — including
-	// deletions. `git add -A` on a path picks up adds, modifies, and removes.
-	if err := runGit(ctx, clonePath, "add", "-A", "--", RequirementsDir); err != nil {
-		return nil, fmt.Errorf("git add %s: %w", RequirementsDir, err)
-	}
-
-	// Step 2: commit (skip cleanly if nothing-to-commit).
 	commitMsg := req.Message
 	if commitMsg == "" {
 		commitMsg = "Update requirements"
 	}
-	commitErr := runCommit(ctx, clonePath, commitMsg, identity)
-	commitHadChanges := commitErr == nil
-	if commitErr != nil && !isNothingToCommit(commitErr) {
-		return nil, commitErr
-	}
-
-	// Step 3: push commit if any.
-	if commitHadChanges {
-		if err := runGitWithEnv(ctx, clonePath, authedEnv, "push", "origin", repoRecord.DefaultBranch); err != nil {
-			return nil, fmt.Errorf("git push: %w", err)
-		}
-	}
-
-	// Step 4: list tags + decide next version.
-	if err := bestEffortFetchTags(ctx, clonePath, authedEnv); err != nil {
-		slog.WarnContext(ctx, "fetch --tags failed (continuing with local view)",
-			"project", projectID, "error", err)
-	}
-	tags, err := listAllTags(ctx, clonePath)
-	if err != nil {
-		return nil, fmt.Errorf("list tags: %w", err)
-	}
-
-	headHash, err := runGitOutput(ctx, clonePath, "rev-parse", "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
-	}
-	headHash = strings.TrimSpace(headHash)
-
-	// Unchanged-detection: compare the current HEAD's requirements tree to
-	// the latest `v<N>` tag's tree.
-	if existing := latestRequirementsTag(tags); existing != "" {
-		same, err := treesEqualAtPath(ctx, clonePath, existing, "HEAD", RequirementsDir)
-		if err != nil {
-			slog.WarnContext(ctx, "tree-equal check failed (continuing)",
-				"project", projectID, "error", err)
-		}
-		if same {
-			latestVer := latestRequirementsVersion(tags)
-			return &RequirementsSaveResult{
-				Status:  "unchanged",
-				Tag:     existing,
-				Version: latestVer,
-			}, nil
-		}
-	}
-
-	// Step 5: create + push next tag.
-	nextVer, tagName := nextRequirementsTag(tags)
-	tagBody := fmt.Sprintf("Requirements v%d", nextVer)
-	if commitMsg != "" && commitMsg != "Update requirements" {
-		tagBody = fmt.Sprintf("%s\n\n%s", tagBody, commitMsg)
-	}
-	if err := createAndPushTag(ctx, clonePath, authedEnv, identity, tagName, tagBody); err != nil {
-		return nil, err
-	}
-
-	slog.InfoContext(ctx, "requirements saved + tagged",
-		"project", projectID, "tag", tagName, "head", headHash)
-
-	return &RequirementsSaveResult{
-		Status:     "approved",
-		Tag:        tagName,
-		Version:    nextVer,
-		CommitHash: headHash,
-	}, nil
+	return s.saveRequirementsViaAPI(ctx, repoRecord, repoRecord.ClonePath, commitMsg)
 }
 
-// SaveDesign stages `.asdlc/design.json`, commits, pushes, then creates the
-// next `v<N>-<M>` tag where N is the latest requirements version. Returns
-// ErrNoRequirementsBaseline (409) if no `v<N>` tag exists yet.
+// SaveDesign persists the working-tree `.asdlc/design.json` as a new commit
+// on remote main, then creates the next `v<N>-<M>` annotated tag. Replaces
+// the legacy `git commit + push + tag` flow with GitHub API calls
+// (Contents API path) per docs/design/artifact-store-v2.md V1.
+//
+// Returns ErrNoRequirementsBaseline (409) if no `v<N>` tag exists yet.
 func (s *artifactService) SaveDesign(ctx context.Context, projectID string, req SaveRequest) (*DesignSaveResult, error) {
 	mu := s.gitOps.getRepoLock(projectID)
 	mu.Lock()
@@ -528,103 +440,12 @@ func (s *artifactService) SaveDesign(ctx context.Context, projectID string, req 
 	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
 		return nil, fmt.Errorf("ensure clone: %w", err)
 	}
-	clonePath := repoRecord.ClonePath
-
-	abs := filepath.Join(clonePath, DesignFilePath)
-	if _, err := os.Stat(abs); err != nil {
-		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s missing", ErrArtifactPathInvalid, DesignFilePath)
-		}
-		return nil, fmt.Errorf("stat %s: %w", abs, err)
-	}
-
-	authedEnv, identity, cleanup, err := s.gitOps.prepareAuthedEnv(ctx, repoRecord)
-	if err != nil {
-		return nil, err
-	}
-	defer cleanup()
-
-	if err := pushAllTags(ctx, clonePath, authedEnv); err != nil {
-		slog.WarnContext(ctx, "self-heal push --tags failed (continuing)",
-			"project", projectID, "error", err)
-	}
-
-	if err := runGit(ctx, clonePath, "add", "--", DesignFilePath); err != nil {
-		return nil, fmt.Errorf("git add %s: %w", DesignFilePath, err)
-	}
 
 	commitMsg := req.Message
 	if commitMsg == "" {
 		commitMsg = "Update design"
 	}
-	commitErr := runCommit(ctx, clonePath, commitMsg, identity)
-	commitHadChanges := commitErr == nil
-	if commitErr != nil && !isNothingToCommit(commitErr) {
-		return nil, commitErr
-	}
-
-	if commitHadChanges {
-		if err := runGitWithEnv(ctx, clonePath, authedEnv, "push", "origin", repoRecord.DefaultBranch); err != nil {
-			return nil, fmt.Errorf("git push: %w", err)
-		}
-	}
-
-	if err := bestEffortFetchTags(ctx, clonePath, authedEnv); err != nil {
-		slog.WarnContext(ctx, "fetch --tags failed (continuing with local view)",
-			"project", projectID, "error", err)
-	}
-	tags, err := listAllTags(ctx, clonePath)
-	if err != nil {
-		return nil, fmt.Errorf("list tags: %w", err)
-	}
-
-	parentN := latestRequirementsVersion(tags)
-	if parentN == 0 {
-		return nil, ErrNoRequirementsBaseline
-	}
-
-	headHash, err := runGitOutput(ctx, clonePath, "rev-parse", "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
-	}
-	headHash = strings.TrimSpace(headHash)
-
-	// Unchanged-detection vs. the latest `v<N>-<M>` for this same parent N.
-	if latestM := latestDesignRevision(tags, parentN); latestM > 0 {
-		existing := designTagFor(parentN, latestM)
-		taggedContent, err := runGitOutput(ctx, clonePath, "show", existing+":"+DesignFilePath)
-		if err == nil {
-			currentRaw, _ := os.ReadFile(abs)
-			if strings.TrimSpace(taggedContent) == strings.TrimSpace(string(currentRaw)) {
-				return &DesignSaveResult{
-					Status:              "unchanged",
-					Tag:                 existing,
-					RequirementsVersion: parentN,
-					DesignRevision:      latestM,
-				}, nil
-			}
-		}
-	}
-
-	nextRev, tagName := nextDesignTag(tags, parentN)
-	tagBody := fmt.Sprintf("Design v%d-%d", parentN, nextRev)
-	if commitMsg != "" && commitMsg != "Update design" {
-		tagBody = fmt.Sprintf("%s\n\n%s", tagBody, commitMsg)
-	}
-	if err := createAndPushTag(ctx, clonePath, authedEnv, identity, tagName, tagBody); err != nil {
-		return nil, err
-	}
-
-	slog.InfoContext(ctx, "design saved + tagged",
-		"project", projectID, "tag", tagName, "head", headHash)
-
-	return &DesignSaveResult{
-		Status:              "approved",
-		Tag:                 tagName,
-		RequirementsVersion: parentN,
-		DesignRevision:      nextRev,
-		CommitHash:          headHash,
-	}, nil
+	return s.saveDesignViaAPI(ctx, repoRecord, repoRecord.ClonePath, commitMsg)
 }
 
 // ----- Discard -----

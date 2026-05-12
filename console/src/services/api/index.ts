@@ -5,6 +5,7 @@ export type {
   Design,
   DesignComponent,
   ComponentDefinition,
+  ComponentOpenAPI,
   ComponentTask,
   ComponentConfig,
   EnvVar,

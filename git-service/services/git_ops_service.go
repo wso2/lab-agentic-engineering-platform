@@ -91,10 +91,17 @@ type gitOpsService struct {
 	resolver     credentials.Resolver
 	repoBasePath string
 	locks        sync.Map // per-project mutex
+	// gitHub is the GitHubClient injected for artifact-store v2 (V1) save flows.
+	// May be nil in legacy test wiring that doesn't exercise SaveDesign /
+	// SaveRequirements; the save flows nil-check before dereferencing.
+	gitHub GitHubClient
 }
 
-func NewGitOpsService(repo repositories.RepoRepository, resolver credentials.Resolver, repoBasePath string) GitOpsService {
-	return &gitOpsService{repo: repo, resolver: resolver, repoBasePath: repoBasePath}
+// NewGitOpsService builds the service. The optional `github` arg is the
+// GitHub HTTP client used by the artifact-store v2 save flow. Pass nil from
+// tests that don't exercise save paths.
+func NewGitOpsService(repo repositories.RepoRepository, resolver credentials.Resolver, repoBasePath string, github GitHubClient) GitOpsService {
+	return &gitOpsService{repo: repo, resolver: resolver, repoBasePath: repoBasePath, gitHub: github}
 }
 
 func (s *gitOpsService) getRepoLock(projectID string) *sync.Mutex {

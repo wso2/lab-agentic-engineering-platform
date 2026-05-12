@@ -194,7 +194,7 @@ func main() {
 	// the OC Component's workflow params.
 	projectService := services.NewProjectService(projectClient, gitClient, secretRefClient, artifactStore, taskRepo)
 	organizationService := services.NewOrganizationService(db, namespaceClient)
-	componentService := services.NewComponentService(componentClient, observClient)
+	componentService := services.NewComponentService(componentClient, observClient, artifactStore)
 	configService := services.NewConfigService(configRepo, componentService)
 	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)

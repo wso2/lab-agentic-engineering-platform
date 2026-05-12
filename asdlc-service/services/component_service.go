@@ -35,6 +35,11 @@ type ComponentService interface {
 	// Deploy (read-only — autoDeploy on the Component drives the chain)
 	ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error)
 
+	// OpenAPI for the Test tab. Reads the spec from .asdlc/design.json.
+	// The Test tab's swagger-ui invokes the deployed endpoint directly;
+	// CORS is enabled on the service ClusterComponentType's HTTPRoute.
+	GetComponentOpenAPI(ctx context.Context, orgName, projectName, componentName string) (*models.ComponentOpenAPI, error)
+
 	// Build (workflow runs)
 	TriggerBuild(ctx context.Context, orgName, projectName, componentName string) (*models.WorkflowRun, error)
 	ListBuilds(ctx context.Context, orgName, projectName, componentName string, limit int, cursor string) (*models.WorkflowRunList, error)
@@ -43,14 +48,16 @@ type ComponentService interface {
 }
 
 type componentService struct {
-	client       openchoreo.ComponentClient
-	observClient observability.Client
+	client        openchoreo.ComponentClient
+	observClient  observability.Client
+	artifactStore *ArtifactStore
 }
 
-func NewComponentService(client openchoreo.ComponentClient, observClient observability.Client) ComponentService {
+func NewComponentService(client openchoreo.ComponentClient, observClient observability.Client, artifactStore *ArtifactStore) ComponentService {
 	return &componentService{
-		client:       client,
-		observClient: observClient,
+		client:        client,
+		observClient:  observClient,
+		artifactStore: artifactStore,
 	}
 }
 
@@ -88,6 +95,46 @@ func (s *componentService) UpdateWorkflowEnvVars(ctx context.Context, orgName, p
 		return translateComponentHTTPError(err)
 	}
 	return nil
+}
+
+// GetComponentOpenAPI reads .asdlc/design.json via the ArtifactStore and
+// returns the OpenAPI spec for the named component. The URL param is the
+// k8s-shaped slug; we match it against toK8sName(design.Name) so callers
+// can use the same identifier they use everywhere else (build, deploy,
+// configs). Returns ErrComponentNotFound when design.json is missing or
+// no component matches, ErrComponentNotService when the component exists
+// but isn't a "service".
+func (s *componentService) GetComponentOpenAPI(ctx context.Context, orgName, projectName, componentName string) (*models.ComponentOpenAPI, error) {
+	if s.artifactStore == nil {
+		return nil, fmt.Errorf("artifact store not configured")
+	}
+	design, err := s.artifactStore.ReadDesign(ctx, orgName, projectName)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil, ErrComponentNotFound
+		}
+		return nil, fmt.Errorf("read design: %w", err)
+	}
+	if design == nil {
+		return nil, ErrComponentNotFound
+	}
+	for _, c := range design.Components {
+		if toK8sName(c.Name) != componentName {
+			continue
+		}
+		if c.ComponentType != "service" {
+			return &models.ComponentOpenAPI{
+				ComponentName: componentName,
+				ComponentType: c.ComponentType,
+			}, ErrComponentNotService
+		}
+		return &models.ComponentOpenAPI{
+			ComponentName: componentName,
+			ComponentType: c.ComponentType,
+			Spec:          c.OpenAPISpec,
+		}, nil
+	}
+	return nil, ErrComponentNotFound
 }
 
 func (s *componentService) ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error) {

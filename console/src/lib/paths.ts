@@ -50,3 +50,7 @@ export function componentDeployPath(orgId: string, projectId: string, componentI
 export function componentConfigsPath(orgId: string, projectId: string, componentId: string): string {
   return `/organizations/${orgId}/projects/${projectId}/components/${componentId}/configs`;
 }
+
+export function componentTestPath(orgId: string, projectId: string, componentId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/components/${componentId}/test`;
+}

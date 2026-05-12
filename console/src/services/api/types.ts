@@ -69,6 +69,17 @@ export interface Design {
   sourceSpec?: string;
 }
 
+// -- ComponentOpenAPI (drives the Test tab) ---------------------------------
+
+export interface ComponentOpenAPI {
+  componentName: string;
+  componentType: 'service' | 'web-app' | 'scheduled-task';
+  // Raw OpenAPI 3.0 YAML, canonicalised by the BFF. Always present on a 200
+  // response. On a 409 (non-service component) the BFF returns the same
+  // envelope without a spec — the UI can render a typed empty state.
+  spec: string;
+}
+
 // -- Legacy ComponentDefinition (from OC, used in component list/detail) -----
 
 export interface ComponentDefinition {

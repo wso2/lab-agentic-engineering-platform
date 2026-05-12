@@ -11,6 +11,7 @@ import type {
   Design,
   DesignComponent,
   ComponentDefinition,
+  ComponentOpenAPI,
   CreateProjectInput,
   Build,
   BuildLogs,
@@ -630,6 +631,38 @@ export const restApi = {
       return data.items || [];
     } catch {
       return [];
+    }
+  },
+
+  // -- OpenAPI (Test tab) -----------------------------------------------------
+  // 200  → ComponentOpenAPI (spec is a YAML string)
+  // 409  → { error: 'not-service', componentType }  — exists but isn't a service
+  // 404  → { error: 'not-found' }                   — design.json missing or no match
+
+  async getComponentOpenAPI(
+    orgHandle: string,
+    projectId: string,
+    componentId: string,
+  ): Promise<
+    | ComponentOpenAPI
+    | { error: 'not-service'; componentType: string }
+    | { error: 'not-found' }
+  > {
+    try {
+      return await fetchJSON<ComponentOpenAPI>(
+        `${projectPrefix(orgHandle, projectId)}/components/${componentId}/openapi`,
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // The 409 body is the same envelope, just without a spec.
+        try {
+          const parsed = JSON.parse(e.message) as Partial<ComponentOpenAPI>;
+          return { error: 'not-service', componentType: parsed.componentType || 'unknown' };
+        } catch {
+          return { error: 'not-service', componentType: 'unknown' };
+        }
+      }
+      return { error: 'not-found' };
     }
   },
 

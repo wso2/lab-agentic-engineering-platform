@@ -110,11 +110,13 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 	}
 
 	// Idempotency guard: if non-rejected tasks already exist for the current
-	// (spec, design) version pair, generation is a no-op. The Tasks page
-	// auto-opens this stream on mount; this is what makes that safe — when
-	// nothing's changed, the stream returns data-finish immediately without
-	// touching the agent. When the design or spec has been re-tagged, no
-	// task will match, and full Phase 1 + Phase 2 runs.
+	// (spec, design) version pair, generation is a no-op. The console's
+	// "Generate Tasks" button is always visible (including after iteration
+	// 1) so the user may click it on a project that is already up to date;
+	// this is what makes that safe — when nothing's changed, the stream
+	// returns data-finish immediately without touching the agent. When the
+	// design or spec has been re-tagged, no task will match, and full
+	// Phase 1 + Phase 2 runs.
 	freshCount := 0
 	for _, t := range allTasks {
 		switch t.Status {
