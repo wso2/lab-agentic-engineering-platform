@@ -55,6 +55,22 @@ func SlugForURL(repoURL string) string {
 	return strings.ToLower(strings.ReplaceAll(m[1], "/", "-"))
 }
 
+// OwnerRepoFromURL extracts (owner, repo) from a GitHub HTTPS URL, preserving
+// the original case (unlike SlugForURL which lowercases). Returns empty
+// strings if the URL doesn't match the GitHub HTTPS pattern. Used by the
+// artifact-store v2 save flow to address the repo over the GitHub REST API.
+func OwnerRepoFromURL(repoURL string) (owner, repo string) {
+	m := repoURLPattern.FindStringSubmatch(repoURL)
+	if len(m) < 2 {
+		return "", ""
+	}
+	parts := strings.SplitN(m[1], "/", 2)
+	if len(parts) != 2 {
+		return "", ""
+	}
+	return parts[0], parts[1]
+}
+
 // SecretRefNameFor returns the deterministic OC SecretReference CR name for
 // a repo identified by (ocOrgID, repoSlug). The name is bounded by the K8s
 // DNS-label limit (63 chars); over-long names are trimmed with a SHA-256

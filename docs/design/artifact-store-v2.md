@@ -1,8 +1,25 @@
 # Artifact Store v2 — clone-less `.asdlc/` persistence
 
-**Status:** Draft v1 — under architectural review.
+**Status:** Approved for V1 implementation. Subsequent versions track in §0.
 **Replaces:** the long-lived `git-service` working copy for `.asdlc/` reads, writes, and saves. Adjacent design: `docs/design/git-integration.md`, `docs/design/api-service.md`, `docs/design/github-integration-phase2.md` (credential trust model — preserved here).
 **Out of scope:** the coding-agent's per-task ephemeral feature-branch clone (untouched), build dispatch / project board / PR / issue flows (already pure-API).
+
+## 0. Phased delivery
+
+The full design here lands across multiple versions. Implementers should read each section's body, then check this table for what's V1 vs deferred.
+
+| Version | Scope | What it changes | What it preserves |
+|---|---|---|---|
+| **V1 (this PR)** | Save-path GitHub API + conflict retry | `SaveDesign` switches to Contents API; `SaveRequirements` switches to Git Data API; retry loop + leaky bucket; tag creation via API (two-step annotated). | Drafts still live in the working-tree clone. `PutFile`/`Delete` unchanged. Reads still go through the working tree. Console UX unchanged. No new Postgres tables. No cross-tab polling. |
+| **V2** | Postgres drafts | Add `design_drafts` / `requirements_drafts` (§4.1). Route `PutFile`/`Delete` to Postgres. `Save*` reads from Postgres instead of working tree. Canonicalisation + line-ending normalisation (§16.2). `migrate-drafts` backfill (§15 Step 2). Atomic flip + rollback runbook (§15 Step 3). | Reads still go through the working tree (until V3). |
+| **V3** | GitHub-API reads + cross-tab UX | Reads via Contents/Tree API with ETag cache (§6). `/artifacts/state` polling endpoint (§5). Console `LineageLabel`/`StalenessChip` composition (§10.1). ConflictBanner. Cache invalidation triggers (§6.4) + periodic sweep. | Working-tree clone still exists for rollback. |
+| **V4** | Clone code removal | Cleanup deploy (§15 Step 6): delete `ensureCloneReady`, `cloneIntoPath`, `pushAllTags`, `bestEffortFetchTags`, `REPO_BASE_PATH`, disk-volume mount, `migrate-drafts*`. Drop `cloning` from `git_repositories.status` enum. Point of no return. | Nothing — terminal state. |
+
+**Why this carve-up.** V1 alone fixes the production bug class (non-fast-forward push, stale-clone re-introduction, `treesEqualAtPath` lies — all consequences of pushing from a stale clone). It's the smallest unit that lands customer value. V2 adds multi-replica safety and cross-tab readiness without changing user-visible UX. V3 lights up the cross-tab UX. V4 cleans up.
+
+**What V1 explicitly does NOT do.** No Postgres draft tables. No `If-Match` semantics on PutFile. No `/artifacts/state` endpoint. No console changes. No cache invalidation logic. No `migrate-drafts`. The per-project mutex in git-service stays. `pushAllTags` and `bestEffortFetchTags` stay (they're harmless self-heal; removal is V4 territory). The §8.2/§8.3 pseudo-code is implemented; the §7 PutFile-to-Postgres flow is **not** (PutFile keeps writing to the working tree).
+
+**Where to read for V1.** §6 (cache layer) is **V3** — skim only. §7.1 PutFile semantics are V2 — skip. §8 save flow IS V1 — read carefully (the in-txn-Postgres-advisory-lock framing becomes the existing in-process mutex for V1; everything else carries over). §9 concurrency model is V1. §11 author attribution is V1 (needs the sibling `authorIdentity` resolver). §13 observability is V1 (the new save calls log the new fields).
 
 ---
 

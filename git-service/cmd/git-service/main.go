@@ -200,7 +200,7 @@ func main() {
 		cfg.GitHubRepoVisibility,
 		cfg.RepoBasePath,
 	)
-	gitOpsService := services.NewGitOpsService(repoRepo, resolver, cfg.RepoBasePath)
+	gitOpsService := services.NewGitOpsService(repoRepo, resolver, cfg.RepoBasePath, githubClient)
 	artifactService := services.NewArtifactService(repoRepo, gitOpsService)
 	githubV2Client := services.NewGitHubV2Client()
 	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, resolver)
