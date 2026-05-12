@@ -3,7 +3,6 @@ package openchoreo
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"net/http"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/httpx"
@@ -91,8 +90,6 @@ func buildCreateProjectBody(req *models.CreateProjectRequest) ocProject {
 
 func (c *projectClient) ListProjects(ctx context.Context, orgName string, limit int, cursor string) (*models.ProjectList, error) {
 	ns := c.resolveNamespace(orgName)
-	slog.InfoContext(ctx, "openchoreo.ListProjects: resolved namespace",
-		"orgHandle", orgName, "namespace", ns, "limit", limit, "cursor", cursor)
 	req := c.newRequest(ctx, "openchoreo.ListProjects", http.MethodGet, c.projectsURL(ns))
 	if limit > 0 {
 		req.SetQuery("limit", fmt.Sprintf("%d", limit))
@@ -115,8 +112,6 @@ func (c *projectClient) ListProjects(ctx context.Context, orgName string, limit 
 
 func (c *projectClient) GetProject(ctx context.Context, orgName, projectName string) (*models.Project, error) {
 	ns := c.resolveNamespace(orgName)
-	slog.InfoContext(ctx, "openchoreo.GetProject: resolved namespace",
-		"orgHandle", orgName, "namespace", ns, "project", projectName)
 	req := c.newRequest(ctx, "openchoreo.GetProject", http.MethodGet, c.projectURL(ns, projectName))
 
 	var raw ocProject
@@ -129,10 +124,6 @@ func (c *projectClient) GetProject(ctx context.Context, orgName, projectName str
 
 func (c *projectClient) CreateProject(ctx context.Context, orgName string, body *models.CreateProjectRequest) (*models.Project, error) {
 	ns := c.resolveNamespace(orgName)
-	slog.InfoContext(ctx, "openchoreo.CreateProject: resolved namespace",
-		"orgHandle", orgName, "namespace", ns,
-		"projectName", body.Name, "displayName", body.DisplayName,
-		"deploymentPipeline", body.DeploymentPipeline)
 	req := c.newRequest(ctx, "openchoreo.CreateProject", http.MethodPost, c.projectsURL(ns))
 	req.SetJSON(buildCreateProjectBody(body))
 
@@ -146,8 +137,6 @@ func (c *projectClient) CreateProject(ctx context.Context, orgName string, body 
 
 func (c *projectClient) DeleteProject(ctx context.Context, orgName, projectName string) error {
 	ns := c.resolveNamespace(orgName)
-	slog.InfoContext(ctx, "openchoreo.DeleteProject: resolved namespace",
-		"orgHandle", orgName, "namespace", ns, "project", projectName)
 	req := c.newRequest(ctx, "openchoreo.DeleteProject", http.MethodDelete, c.projectURL(ns, projectName))
 
 	if err := c.send(ctx, req, nil, http.StatusNoContent); err != nil {
