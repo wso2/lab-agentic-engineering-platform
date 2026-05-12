@@ -19,9 +19,12 @@ COPY ui-components/ ./ui-components/
 RUN pnpm --filter asdlc-console build
 
 # Stage 2: Serve with nginx
-FROM nginx:1.27-alpine
+FROM nginx:1.28-alpine
 
 USER root
+
+# Pull latest Alpine security patches on top of the base image (Trivy/CVE hygiene).
+RUN apk upgrade --no-cache
 
 RUN addgroup -g 10001 -S asdlcuser && \
     adduser -u 10001 -S asdlcuser -G asdlcuser
