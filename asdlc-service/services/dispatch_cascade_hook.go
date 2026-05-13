@@ -56,6 +56,15 @@ func (h *DispatchCascadeHook) OnTaskDeployed(ctx context.Context, orgID, project
 			"project", projectID, "error", err)
 		return
 	}
+	// Announce the newly-deployed dep's URL on every dependent task's
+	// issue BEFORE dispatching. Tasks waiting in `pending_deps` may flip
+	// to `pending` and dispatch within the same lock; their agent reads
+	// the issue + its comment trail as its first move, so the comment
+	// must already be there. Best-effort: never errors. If commenting
+	// fails offline, dispatch's own resolveDependencyEndpoints still
+	// enforces the §1.3 URL invariant.
+	h.dispatch.AnnounceDependencyDeployed(ctx, orgID, projectID, componentName)
+
 	results, err := h.dispatch.DispatchTasks(ctx, orgID, projectID)
 	if err != nil {
 		slog.WarnContext(ctx, "dispatch cascade: DispatchTasks failed",

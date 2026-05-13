@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
@@ -55,6 +53,15 @@ type DispatchService interface {
 	// so a fresh WorkflowRun is created with a freshly minted bearer.
 	// Returns the resulting DispatchResult.
 	RetryTask(ctx context.Context, taskID string) (DispatchResult, error)
+	// AnnounceDependencyDeployed posts a `## Dependency endpoint resolved`
+	// comment on the GitHub issue of every task in this project that lists
+	// componentName in its DependsOnComponents and hasn't yet wrapped up
+	// (status ∈ {pending, pending_deps, in_progress}). Fired by the
+	// cascade hook the moment a task lands `deployed`. Used by both
+	// cluster-flow and local-flow agents — the comment is the single
+	// source of truth for upstream URLs (the prompt no longer carries
+	// them). Best-effort: per-task failures are logged but never bubble.
+	AnnounceDependencyDeployed(ctx context.Context, orgID, projectID, componentName string)
 }
 
 type dispatchService struct {
@@ -214,19 +221,25 @@ func (s *dispatchService) dispatchOne(
 		s.markFailed(ctx, task, "workflow run service not configured")
 		return failResult(res, task.ErrorMessage)
 	}
-	// F3a — resolve URLs for every component this task depends on so the
-	// agent can bake them into the artifact and verify them before opening
-	// the PR. Under F2 deploy-gating, every dep is `deployed` at this point
-	// so ListDeployments must return a non-empty external URL — if any URL
-	// is empty, the deps invariant is broken (probably a missing
-	// `visibility: external` on the provider's spec.endpoints) and we
-	// fail loudly rather than dispatching a task that will fail to verify.
+	// F3a — assert that every component this task depends on has a
+	// non-empty external URL at dispatch time. Under F2 deploy-gating,
+	// every dep is `deployed` at this point so ListDeployments must
+	// return a non-empty external URL — if any URL is empty, the deps
+	// invariant is broken (probably a missing `visibility: external` on
+	// the provider's spec.endpoints) and we fail loudly rather than
+	// dispatching a task that will fail to verify.
+	//
+	// The resolved URLs are NOT passed through the prompt. The agent
+	// receives them via `## Dependency endpoint resolved` comments on
+	// its GitHub issue, posted by AnnounceDependencyDeployed when each
+	// upstream landed `deployed`. Keeping the prompt thin makes the
+	// cluster and local flows read from the same source.
 	depEndpoints, err := s.resolveDependencyEndpoints(ctx, task)
 	if err != nil {
 		s.markFailed(ctx, task, fmt.Sprintf("resolve dependency endpoints: %v", err))
 		return failResult(res, task.ErrorMessage)
 	}
-	prompt := buildAgentPrompt(task, depEndpoints)
+	prompt := buildAgentPrompt(task)
 	slog.InfoContext(ctx, "dispatched with dep endpoints",
 		"task", task.ID,
 		"component", task.ComponentName,
@@ -365,10 +378,133 @@ func (s *dispatchService) RetryTask(ctx context.Context, taskID string) (Dispatc
 	return res, nil
 }
 
-// DependencyEndpoint is one row in the agent prompt's "Dependency
-// endpoints" section: an upstream component name + its resolved external
-// URL. Sorted by Component for determinism (so the same task produces the
-// same prompt bytes — matters for prompt caching and test snapshots).
+// AnnounceDependencyDeployed posts a `## Dependency endpoint resolved`
+// comment on every dependent task's issue. The comment trail on the issue
+// is the single source of truth for upstream URLs — both cluster-flow
+// agents (which would otherwise have to receive the URL inside a runtime
+// prompt block) and local-flow agents (which only ever see the issue) read
+// from the same place. The agent's skill instructs it to pick the most
+// recent matching comment per upstream component, so a redeploy with a
+// changed URL is self-healing on the next retry.
+//
+// Best-effort: never returns an error. Per-task failures (issue gone, git
+// service unreachable, etc.) are logged and the loop continues; the
+// deploy transition that triggered this call has already committed.
+func (s *dispatchService) AnnounceDependencyDeployed(ctx context.Context, orgID, projectID, deployedComponent string) {
+	if s.componentSvc == nil || s.gitClient == nil || s.taskRepo == nil {
+		return
+	}
+	if s.tokenInject != nil {
+		ctx = s.tokenInject(ctx)
+	}
+
+	url := s.resolveExternalURL(ctx, orgID, projectID, deployedComponent)
+	if url == "" {
+		// Don't bail loudly — the same condition is enforced at dispatch
+		// time by resolveDependencyEndpoints, where it becomes a §1.3
+		// invariant error. Here, with no consumer to fail, just log.
+		slog.WarnContext(ctx, "announce dep deployed: no external URL",
+			"project", projectID, "deployedComponent", deployedComponent)
+		return
+	}
+
+	tasks, err := s.taskRepo.ListByProjectID(ctx, orgID, projectID)
+	if err != nil {
+		slog.WarnContext(ctx, "announce dep deployed: list tasks failed",
+			"project", projectID, "error", err)
+		return
+	}
+
+	body := buildDepEndpointComment(deployedComponent, url)
+	posted := 0
+	for i := range tasks {
+		dependent := &tasks[i]
+		if !shouldAnnounceTo(dependent, deployedComponent) {
+			continue
+		}
+		if err := s.gitClient.CommentIssue(ctx, orgID, projectID, dependent.IssueNumber, body); err != nil {
+			slog.WarnContext(ctx, "announce dep deployed: comment failed",
+				"project", projectID,
+				"deployedComponent", deployedComponent,
+				"dependent", dependent.ID,
+				"issue", dependent.IssueNumber,
+				"error", err,
+			)
+			continue
+		}
+		posted++
+	}
+	slog.InfoContext(ctx, "announced dep deployed",
+		"project", projectID,
+		"deployedComponent", deployedComponent,
+		"url", url,
+		"dependentsCommented", posted,
+	)
+}
+
+// resolveExternalURL resolves a single component's first external URL, or
+// "" if the component has no deployed endpoint with `visibility: external`.
+// Mirrors resolveDependencyEndpoints' inner step but for a single
+// component, since AnnounceDependencyDeployed doesn't need a per-task
+// task object — only the component name that just deployed.
+func (s *dispatchService) resolveExternalURL(ctx context.Context, orgID, projectID, componentName string) string {
+	list, err := s.componentSvc.ListDeployments(ctx, orgID, projectID, toK8sName(componentName))
+	if err != nil {
+		slog.WarnContext(ctx, "announce dep deployed: list deployments failed",
+			"project", projectID, "component", componentName, "error", err)
+		return ""
+	}
+	return firstExternalURL(list)
+}
+
+// shouldAnnounceTo returns true when the dependent task lists
+// deployedComponent as one of its deps and is still in a state where the
+// comment is useful — i.e. the agent hasn't yet started its PR's
+// verification step. Once the task is past in_progress, its build is
+// underway / done and a new dep URL no longer affects the artifact.
+func shouldAnnounceTo(dependent *models.ComponentTask, deployedComponent string) bool {
+	if dependent == nil || dependent.IssueNumber == 0 {
+		return false
+	}
+	switch models.TaskStatus(dependent.Status) {
+	case models.TaskStatusPending,
+		models.TaskStatusPendingDeps,
+		models.TaskStatusInProgress:
+		// ok — agent hasn't yet opened a non-draft PR
+	default:
+		return false
+	}
+	for _, dep := range dependent.DependsOnComponents {
+		if dep == deployedComponent {
+			return true
+		}
+	}
+	return false
+}
+
+// buildDepEndpointComment renders the markdown for a single dep-resolved
+// comment. The format is structured enough for the asdlc skill to
+// scan-and-reduce comments to "latest URL per upstream component", while
+// still readable for a human browsing the issue.
+func buildDepEndpointComment(component, url string) string {
+	return fmt.Sprintf(
+		"## Dependency endpoint resolved\n"+
+			"\n"+
+			"- **%s**: %s\n"+
+			"\n"+
+			"Posted by the platform when `%s` reached `deployed`. Bake this URL "+
+			"into your component as a build-time constant (Vite/React: "+
+			"`VITE_<UPSTREAM>_URL`; other stacks: the idiomatic equivalent). "+
+			"If a later comment resolves the same component, use the most recent.",
+		component, url, component,
+	)
+}
+
+// DependencyEndpoint is one row in the legacy dep-prompt block. Kept for
+// resolveDependencyEndpoints' return shape — used at dispatch time as a
+// §1.3 invariant guard ("every dep this task lists has a non-empty
+// external URL"). The actual URL handoff to the agent now goes through
+// AnnounceDependencyDeployed → GitHub issue comments, not the prompt.
 type DependencyEndpoint struct {
 	Component string
 	URL       string
@@ -376,49 +512,26 @@ type DependencyEndpoint struct {
 
 // buildAgentPrompt returns the user prompt given to the Claude agent. The
 // full task context lives in the GitHub issue body
-// (services/issue_body.go); the prompt points the agent at the issue and
-// tells them how to link their PR back to the task. When the task has
-// resolved dependency endpoints (F3a — under F2 deploy-gating, the URLs
-// are guaranteed present at this point), they are listed in a stable,
-// sorted block so the agent can bake them into the artifact (e.g.
-// VITE_<UPSTREAM>_URL for Vite/React) and curl-verify before opening
-// its PR. The asdlc skill loaded in the runner image carries the rest
-// of the workflow.
-func buildAgentPrompt(task *models.ComponentTask, deps []DependencyEndpoint) string {
-	var sb strings.Builder
-	sb.WriteString("Work on this GitHub issue: ")
-	sb.WriteString(task.IssueURL)
-	sb.WriteString("\n\n")
-	if len(deps) > 0 {
-		// Sort by component name for deterministic output. Mutating a
-		// caller-owned slice would be a surprise — copy first.
-		sorted := append([]DependencyEndpoint(nil), deps...)
-		sort.Slice(sorted, func(i, j int) bool { return sorted[i].Component < sorted[j].Component })
-		sb.WriteString("## Dependency endpoints (resolved at dispatch)\n")
-		for _, d := range sorted {
-			sb.WriteString(fmt.Sprintf("- %s: %s\n", d.Component, d.URL))
-		}
-		sb.WriteString("\n")
-		sb.WriteString("Each URL above points to a live, deployed upstream component. ")
-		sb.WriteString("Bake each one into this component as a build-time constant ")
-		sb.WriteString("(for Vite/React: `.env` → `VITE_<UPSTREAM>_URL`, read via ")
-		sb.WriteString("`import.meta.env.VITE_<UPSTREAM>_URL`; for other stacks, use ")
-		sb.WriteString("the idiomatic build-time-constant mechanism). Do NOT add a ")
-		sb.WriteString("`dependencies.endpoints` block to `workload.yaml` — consumer-side ")
-		sb.WriteString("runtime URL injection is not used in this platform for v1.\n\n")
-		sb.WriteString("Before marking your PR ready-for-review, run the integration ")
-		sb.WriteString("verification step from the `asdlc` skill against each ")
-		sb.WriteString("Dependency endpoint above. If verification fails, keep the ")
-		sb.WriteString("PR a draft and follow the skill's recovery steps.\n\n")
-	}
-	sb.WriteString(fmt.Sprintf(
-		"You are at the project repo root, on its default branch. Create your "+
+// (services/issue_body.go); the prompt only points the agent at the issue
+// and reminds it how to link the PR back. Dependency endpoint URLs come
+// through `## Dependency endpoint resolved` comments on the issue, posted
+// by AnnounceDependencyDeployed when each upstream lands `deployed` —
+// not through this prompt. Keeping the prompt thin means the cluster
+// flow (this prompt) and the local flow (no prompt; user types something
+// like "work on issue #N") read URLs from the same place.
+//
+// The asdlc skill loaded in the runner image carries the rest of the
+// workflow (read the issue + its comments, harvest dep URLs, bake them
+// in, verify before PR, recovery).
+func buildAgentPrompt(task *models.ComponentTask) string {
+	return fmt.Sprintf(
+		"Work on this GitHub issue: %s\n\n"+
+			"You are at the project repo root, on its default branch. Create your "+
 			"own feature branch, implement the task, and open a PR whose body "+
 			"includes the literal text `Closes #%d` so the platform links the "+
 			"PR back to this task.",
-		task.IssueNumber,
-	))
-	return sb.String()
+		task.IssueURL, task.IssueNumber,
+	)
 }
 
 // resolveDependencyEndpoints turns the task's DependsOnComponents list into
