@@ -27,9 +27,13 @@ export function buildProjectStages(
       : hasSpec || specStatus === 'approved' || specStatus === 'draft' ? 'done'
       : 'pending',
     headline:
-      specStatus === 'generating' ? 'Generating spec…'
+      specStatus === 'generating' ? 'Drafting'
       : hasSpec ? 'Spec ready'
       : 'Not started',
+    help:
+      specStatus === 'generating' ? 'Hang tight — your requirements are being drafted'
+      : hasSpec ? 'Review and edit the requirements before continuing'
+      : 'Describe what you want to build to get started',
   };
 
   const architecture: Stage = {
@@ -41,9 +45,13 @@ export function buildProjectStages(
       : hasDesign || designStatus === 'approved' || designStatus === 'draft' ? 'done'
       : 'pending',
     headline:
-      designStatus === 'generating' ? 'Generating design…'
+      designStatus === 'generating' ? 'Generating'
       : hasDesign ? 'Design ready'
-      : 'Awaiting requirements',
+      : 'Awaits requirements',
+    help:
+      designStatus === 'generating' ? 'Hang tight — your architecture is being generated'
+      : hasDesign ? 'Review the architecture and start generating tasks when ready'
+      : 'Approve the requirements to begin generating the architecture',
   };
 
   const tasksTotal = tasks.length;
@@ -63,8 +71,15 @@ export function buildProjectStages(
       : tasksTotal === 0 ? 'pending'
       : 'pending',
     headline:
-      tasksTotal === 0 ? 'Awaiting design'
-      : `${tasksDone} / ${tasksTotal} tasks complete`,
+      tasksTotal === 0 ? 'Awaits design'
+      : tasksActive ? 'Generating'
+      : `${tasksDone} / ${tasksTotal} done`,
+    help:
+      tasksFailed ? 'A task failed — review and retry to keep building'
+      : tasksActive ? 'Generating tasks and code — this can take a few minutes'
+      : tasksAllDeployed ? 'All tasks complete and deployed'
+      : tasksTotal === 0 ? 'Approve the architecture to start generating tasks'
+      : `${tasksTotal - tasksDone} task(s) left — review and ship the remaining work`,
   };
 
   const deployedCount = tasks.filter((t) => t.status === 'deployed').length;
@@ -81,10 +96,16 @@ export function buildProjectStages(
       : buildFailed ? 'blocked'
       : 'pending',
     headline:
-      buildingCount > 0 ? `${buildingCount} building…`
-      : tasksAllDeployed ? 'Deployed'
-      : deployedCount > 0 ? `${deployedCount} / ${tasksTotal} deployed`
-      : 'Awaiting tasks',
+      buildingCount > 0 ? `${buildingCount} building`
+      : tasksAllDeployed ? 'Live'
+      : deployedCount > 0 ? `${deployedCount} / ${tasksTotal} live`
+      : 'Awaits tasks',
+    help:
+      buildFailed ? 'A build failed — check the logs and rebuild to unblock deployment'
+      : buildingCount > 0 ? 'Builds in flight — your app will be live shortly'
+      : tasksAllDeployed ? 'Your app is live — open it to see it working'
+      : deployedCount > 0 ? `${tasksTotal - deployedCount} component(s) still building`
+      : 'Finish the tasks above to begin deploying',
   };
 
   return [requirements, architecture, tasksStage, deployment];
