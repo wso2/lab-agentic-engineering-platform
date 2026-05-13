@@ -55,9 +55,11 @@ type DocumentGenerationRequest struct {
 
 // ArchitectRequest is the body sent to the architect endpoint.
 type ArchitectRequest struct {
-	ProjectName    string           `json:"projectName"`
-	Spec           string           `json:"spec"`
-	PreviousDesign *ArchitectDesign `json:"previousDesign,omitempty"`
+	ProjectName         string            `json:"projectName"`
+	Spec                string            `json:"spec"`
+	PreviousDesign      *ArchitectDesign  `json:"previousDesign,omitempty"`
+	Wireframes          map[string]string `json:"wireframes,omitempty"`
+	AvailableWireframes []string          `json:"availableWireframes,omitempty"`
 }
 
 // ArchitectDesign mirrors the architect output shape for incremental regen.

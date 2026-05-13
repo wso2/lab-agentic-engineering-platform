@@ -12,6 +12,23 @@ export interface AddFileMenuItem {
   disabled?: boolean;
 }
 
+/**
+ * A non-file entry in the Explorer. Custom views appear pinned above the
+ * regular file list in the sidebar; selecting one renders `content` in the
+ * editor pane instead of an `ActiveFileEditor`. View ids are used as the
+ * `activePath` sentinel and must not collide with real file paths — prefer a
+ * stable, namespaced id like `cell-diagram` or `__architecture__`.
+ *
+ * Custom views bypass the file-buffer system (no dirty tracking, no
+ * `onFileChange`) and are not rename-able or delete-able.
+ */
+export interface CustomView {
+  id: string;
+  label: string;
+  icon?: React.ReactNode;
+  content: React.ReactNode;
+}
+
 /** A heading entry parsed from a markdown document. */
 export interface TocEntry {
   /** Heading depth, 1..6. */
@@ -67,6 +84,21 @@ export interface ExplorerProps {
   addFileMenu?: { items: AddFileMenuItem[] };
   onRename?: (oldPath: string, newPath: string) => void;
   onDelete?: (path: string) => void;
+
+  // --- custom views ---
+  /**
+   * Non-file entries pinned above the file list. Selecting one renders its
+   * `content` in the editor pane. See {@link CustomView}.
+   */
+  customViews?: CustomView[];
+
+  /**
+   * Paths whose content is still being generated (e.g. by a streaming agent).
+   * Files in this set render with a spinner instead of their file icon; folders
+   * whose descendants are in the set render a spinner too. The set is purely
+   * presentational — caller still controls what's in `files`.
+   */
+  pendingPaths?: Set<string>;
 
   // --- layout / style ---
   /** Placeholder shown in the sidebar search input. Default: "Search documents" */

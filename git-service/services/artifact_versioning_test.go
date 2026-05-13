@@ -189,7 +189,9 @@ func TestValidateRelPath(t *testing.T) {
 	}{
 		{"requirements file", ".asdlc/requirements/requirements.md", false},
 		{"requirements other", ".asdlc/requirements/functional-requirements.md", false},
-		{"design", ".asdlc/design.json", false},
+		{"design root", ".asdlc/design/design.md", false},
+		{"design component", ".asdlc/design/components/user-api/design.md", false},
+		{"design openapi", ".asdlc/design/components/user-api/openapi.yaml", false},
 
 		{"empty", "", true},
 		{"absolute", "/etc/passwd", true},

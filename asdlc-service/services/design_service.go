@@ -45,10 +45,23 @@ func toK8sName(name string) string {
 	return s
 }
 
+// DesignBundle is the file-map view returned to the architecture page. It
+// pairs the raw per-file working-tree contents (used by the Explorer) with
+// the assembled flat Design (used by the cell diagram + downstream code).
+type DesignBundle struct {
+	Files  map[string]string `json:"files"`
+	Design *models.Design    `json:"design"`
+}
+
 type DesignService interface {
 	GetDesign(ctx context.Context, orgID, projectID string) (*models.Design, error)
+	GetDesignBundle(ctx context.Context, orgID, projectID string) (*DesignBundle, error)
 	GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*models.Design, error)
+	GetDesignBundleAtTag(ctx context.Context, orgID, projectID, tag string) (*DesignBundle, error)
 	StreamGenerateDesign(ctx context.Context, orgID, projectID string, out io.Writer, flush func()) error
+	UpdateDesignFile(ctx context.Context, orgID, projectID, subPath, content string) (*DesignBundle, error)
+	DeleteDesignFile(ctx context.Context, orgID, projectID, subPath string) (*DesignBundle, error)
+	DeleteComponent(ctx context.Context, orgID, projectID, componentName string) (*DesignBundle, error)
 	SaveAndProceed(ctx context.Context, orgID, projectID string) (*models.Design, error)
 	DiscardChanges(ctx context.Context, orgID, projectID string) (*models.Design, error)
 	ListDesignVersions(ctx context.Context, orgID, projectID string) ([]models.ArtifactVersion, error)
@@ -118,13 +131,18 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 		}
 	}
 
-	// has-unsaved-changes: working-tree raw bytes vs latest-tag bytes.
+	// has-unsaved-changes: working-tree files vs latest-tag files (compared
+	// as a flat map of trimmed contents). When no tag exists yet, any
+	// working-tree content is by definition unsaved (a draft awaiting its
+	// first publish).
 	unsaved := false
-	if tag != "" && s.gitClient != nil {
-		raw, err := s.store.ReadRawDesign(ctx, orgID, projectID)
+	if tag == "" {
+		unsaved = true
+	} else if s.gitClient != nil {
+		current, err := s.store.ListDesignFiles(ctx, orgID, projectID)
 		if err == nil {
 			tagged, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
-			if err == nil && strings.TrimSpace(tagged.Content) != strings.TrimSpace(raw) {
+			if err == nil && !designFilesEqual(current, tagged) {
 				unsaved = true
 			}
 		}
@@ -156,14 +174,14 @@ func (s *designService) GetDesignAtTag(ctx context.Context, orgID, projectID, ta
 	if s.gitClient == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-	res, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
+	files, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
 	if err != nil {
 		if errors.Is(err, gitservice.ErrArtifactNotFound) {
 			return nil, ErrDesignNotFound
 		}
 		return nil, fmt.Errorf("get design at %s: %w", tag, err)
 	}
-	designFile, err := ParseDesignJSON(res.Content)
+	designFile, err := AssembleDesignFromFiles(files)
 	if err != nil {
 		return nil, fmt.Errorf("parse design at %s: %w", tag, err)
 	}
@@ -237,10 +255,19 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 	slog.InfoContext(ctx, "streaming design via agents service",
 		"project", projectID, "hasPrevious", previousDesign != nil)
 
+	wireframes := extractWireframeDsls(files)
+	availableWireframes := make([]string, 0, len(wireframes))
+	for name := range wireframes {
+		availableWireframes = append(availableWireframes, name)
+	}
+	sort.Strings(availableWireframes)
+
 	upstream, err := s.agentsClient.StreamArchitect(ctx, orgID, agents.ArchitectRequest{
-		ProjectName:    projectID,
-		Spec:           specContent,
-		PreviousDesign: previousDesign,
+		ProjectName:         projectID,
+		Spec:                specContent,
+		PreviousDesign:      previousDesign,
+		Wireframes:          wireframes,
+		AvailableWireframes: availableWireframes,
 	})
 	if err != nil {
 		return fmt.Errorf("agents service request: %w", err)
@@ -309,13 +336,104 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 		SourceSpec:   sourceTag,
 	}
 
-	if _, err := s.store.WriteDesign(ctx, orgID, projectID, designFile); err != nil {
+	// Identify components that existed in the working tree before this
+	// generation but are NOT in the new design — their `components/<name>/`
+	// directories must be deleted so the file tree reflects the new shape.
+	existingFiles, _ := s.store.ListDesignFiles(ctx, orgID, projectID)
+	keep := make(map[string]struct{}, len(designFile.Components))
+	for _, c := range designFile.Components {
+		keep[c.Name] = struct{}{}
+	}
+	for _, name := range componentNamesIn(existingFiles) {
+		if _, ok := keep[name]; ok {
+			continue
+		}
+		if err := s.store.DeleteDesignDirectory(ctx, orgID, projectID, ComponentDirPath(name)); err != nil {
+			slog.WarnContext(ctx, "failed to delete removed component dir",
+				"project", projectID, "component", name, "error", err)
+		}
+	}
+
+	if err := s.store.WriteDesign(ctx, orgID, projectID, designFile); err != nil {
 		return fmt.Errorf("write design: %w", err)
 	}
 
 	slog.InfoContext(ctx, "design written from stream",
 		"project", projectID, "components", len(designFile.Components))
 	return nil
+}
+
+// GetDesignBundle returns the working-tree file map alongside the assembled
+// Design (so the Explorer can render the tree and the cell diagram can
+// render in one round-trip).
+func (s *designService) GetDesignBundle(ctx context.Context, orgID, projectID string) (*DesignBundle, error) {
+	files, err := s.store.ListDesignFiles(ctx, orgID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if files == nil {
+		files = map[string]string{}
+	}
+	d, err := s.GetDesign(ctx, orgID, projectID)
+	if err != nil {
+		// If there's no design yet, return an empty bundle (not an error) so
+		// the page can render a "no design" state.
+		if errors.Is(err, ErrDesignNotFound) {
+			return &DesignBundle{Files: files, Design: nil}, nil
+		}
+		return nil, err
+	}
+	return &DesignBundle{Files: files, Design: d}, nil
+}
+
+// GetDesignBundleAtTag returns the file map + assembled Design at a specific
+// version tag. Used by the version selector when browsing history.
+func (s *designService) GetDesignBundleAtTag(ctx context.Context, orgID, projectID, tag string) (*DesignBundle, error) {
+	if s.gitClient == nil {
+		return nil, fmt.Errorf("git client not configured")
+	}
+	files, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
+	if err != nil {
+		if errors.Is(err, gitservice.ErrArtifactNotFound) {
+			return nil, ErrDesignNotFound
+		}
+		return nil, fmt.Errorf("get design at %s: %w", tag, err)
+	}
+	d, err := s.GetDesignAtTag(ctx, orgID, projectID, tag)
+	if err != nil {
+		return nil, err
+	}
+	return &DesignBundle{Files: files, Design: d}, nil
+}
+
+// UpdateDesignFile writes a single file under .asdlc/design/ and returns
+// the refreshed bundle.
+func (s *designService) UpdateDesignFile(ctx context.Context, orgID, projectID, subPath, content string) (*DesignBundle, error) {
+	if _, err := s.store.WriteDesignFile(ctx, orgID, projectID, subPath, content); err != nil {
+		return nil, err
+	}
+	return s.GetDesignBundle(ctx, orgID, projectID)
+}
+
+// DeleteDesignFile removes a single file under .asdlc/design/ and returns
+// the refreshed bundle. Refuses to delete the root design.md.
+func (s *designService) DeleteDesignFile(ctx context.Context, orgID, projectID, subPath string) (*DesignBundle, error) {
+	if err := s.store.DeleteDesignFile(ctx, orgID, projectID, subPath); err != nil {
+		return nil, err
+	}
+	return s.GetDesignBundle(ctx, orgID, projectID)
+}
+
+// DeleteComponent removes the entire components/<name>/ directory and
+// returns the refreshed bundle.
+func (s *designService) DeleteComponent(ctx context.Context, orgID, projectID, componentName string) (*DesignBundle, error) {
+	if componentName == "" {
+		return nil, fmt.Errorf("component name required")
+	}
+	if err := s.store.DeleteDesignDirectory(ctx, orgID, projectID, ComponentDirPath(componentName)); err != nil {
+		return nil, err
+	}
+	return s.GetDesignBundle(ctx, orgID, projectID)
 }
 
 // SaveAndProceed persists the working-tree design.json as the next
@@ -405,12 +523,19 @@ func (s *designService) ListDesignVersions(ctx context.Context, orgID, projectID
 // concatRequirementBundle joins all requirement files into a single corpus
 // for agent input. Files are emitted in alphabetical order with a heading
 // prefix so the LLM sees consistent boundaries between documents.
+//
+// Only Markdown content is included in the spec. `.excalidraw` JSON is
+// noisy for the LLM (it's the rendered scene, not the DSL); `.dsl` files
+// are surfaced separately via the architect's `read_wireframe` tool.
 func concatRequirementBundle(files map[string]string) string {
 	if len(files) == 0 {
 		return ""
 	}
 	names := make([]string, 0, len(files))
 	for k := range files {
+		if !strings.HasSuffix(strings.ToLower(k), ".md") {
+			continue
+		}
 		names = append(names, k)
 	}
 	sort.Strings(names)
@@ -423,6 +548,23 @@ func concatRequirementBundle(files map[string]string) string {
 		sb.WriteString(files[name])
 	}
 	return sb.String()
+}
+
+// extractWireframeDsls picks `.dsl` files from the requirements bundle and
+// returns them keyed by canvas name (filename without the .dsl extension).
+// These are passed to the architect agent so it can fetch them on demand
+// via the `read_wireframe` tool.
+func extractWireframeDsls(files map[string]string) map[string]string {
+	out := make(map[string]string)
+	for name, content := range files {
+		lower := strings.ToLower(name)
+		if !strings.HasSuffix(lower, ".dsl") {
+			continue
+		}
+		canvas := strings.TrimSuffix(name, ".dsl")
+		out[canvas] = content
+	}
+	return out
 }
 
 // decodeDesignTag parses a `v<N>-<M>` design tag and returns (parent, revision, ok).

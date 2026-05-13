@@ -88,7 +88,7 @@ export function registerArchitect(app: express.Express) {
     };
 
     const doc = DesignDoc.fromPrevious(parsed.data.previousDesign);
-    const tools = buildTools(doc, sse, finalizer);
+    const tools = buildTools(doc, sse, finalizer, parsed.data.wireframes ?? {});
 
     try {
       const result = streamText({

@@ -13,8 +13,9 @@ import (
 // ArtifactController serves the typed artifact endpoints:
 //   - Requirements: multi-file directory at .asdlc/requirements/, tagged
 //     `v<N>` per save.
-//   - Design: single file .asdlc/design.json, tagged `v<N>-<M>` per save
-//     (where N is the source requirements version).
+//   - Design: multi-file directory at .asdlc/design/ (root design.md +
+//     components/<name>/{design.md,openapi.yaml}), tagged `v<N>-<M>` per
+//     save (where N is the source requirements version).
 type ArtifactController interface {
 	// Requirements
 	ListRequirements(w http.ResponseWriter, r *http.Request)
@@ -26,9 +27,12 @@ type ArtifactController interface {
 	ListRequirementsVersions(w http.ResponseWriter, r *http.Request)
 	GetRequirementsVersion(w http.ResponseWriter, r *http.Request)
 
-	// Design
-	GetDesign(w http.ResponseWriter, r *http.Request)
-	PutDesign(w http.ResponseWriter, r *http.Request)
+	// Design (multi-file)
+	ListDesign(w http.ResponseWriter, r *http.Request)
+	GetDesignFile(w http.ResponseWriter, r *http.Request)
+	PutDesignFile(w http.ResponseWriter, r *http.Request)
+	DeleteDesignFile(w http.ResponseWriter, r *http.Request)
+	DeleteDesignDirectory(w http.ResponseWriter, r *http.Request)
 	SaveDesign(w http.ResponseWriter, r *http.Request)
 	DiscardDesign(w http.ResponseWriter, r *http.Request)
 	ListDesignVersions(w http.ResponseWriter, r *http.Request)
@@ -195,29 +199,78 @@ func requirementsRelPath(name string) (string, error) {
 	return services.RequirementFilePath(name)
 }
 
-// ----- Design handlers -----
+// ----- Design handlers (multi-file) -----
 
-func (c *artifactController) GetDesign(w http.ResponseWriter, r *http.Request) {
-	res, err := c.svc.GetFile(r.Context(), projectIDFrom(r), services.DesignFilePath)
+// DesignListResult is the response of GET /artifacts/design: a snapshot of
+// every file under `.asdlc/design/` keyed by path relative to that dir.
+type DesignListResult struct {
+	Files map[string]string `json:"files"`
+}
+
+// VersionDesignResult is the response of
+// GET /artifacts/design/versions/{tag}: the file map captured at that
+// `v<N>-<M>` tag.
+type VersionDesignResult struct {
+	Tag   string            `json:"tag"`
+	Files map[string]string `json:"files"`
+}
+
+func (c *artifactController) ListDesign(w http.ResponseWriter, r *http.Request) {
+	files, err := c.svc.ListDesignFiles(r.Context(), projectIDFrom(r))
 	if err != nil {
-		writeArtifactError(w, r, err, "get design")
+		writeArtifactError(w, r, err, "list design")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, DesignListResult{Files: files})
+}
+
+func (c *artifactController) GetDesignFile(w http.ResponseWriter, r *http.Request) {
+	relPath, err := designRelPath(r.PathValue("path"))
+	if err != nil {
+		writeArtifactError(w, r, err, "get design file")
+		return
+	}
+	res, err := c.svc.GetFile(r.Context(), projectIDFrom(r), relPath)
+	if err != nil {
+		writeArtifactError(w, r, err, "get design file")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
-func (c *artifactController) PutDesign(w http.ResponseWriter, r *http.Request) {
+func (c *artifactController) PutDesignFile(w http.ResponseWriter, r *http.Request) {
+	relPath, err := designRelPath(r.PathValue("path"))
+	if err != nil {
+		writeArtifactError(w, r, err, "put design file")
+		return
+	}
 	body, err := decodePutBody(r)
 	if err != nil {
 		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	res, err := c.svc.PutFile(r.Context(), projectIDFrom(r), services.DesignFilePath, body.Content, body.IfMatch)
+	res, err := c.svc.PutFile(r.Context(), projectIDFrom(r), relPath, body.Content, body.IfMatch)
 	if err != nil {
-		writeArtifactError(w, r, err, "put design")
+		writeArtifactError(w, r, err, "put design file")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, res)
+}
+
+func (c *artifactController) DeleteDesignFile(w http.ResponseWriter, r *http.Request) {
+	if err := c.svc.DeleteDesignFile(r.Context(), projectIDFrom(r), r.PathValue("path")); err != nil {
+		writeArtifactError(w, r, err, "delete design file")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (c *artifactController) DeleteDesignDirectory(w http.ResponseWriter, r *http.Request) {
+	if err := c.svc.DeleteDesignDirectory(r.Context(), projectIDFrom(r), r.PathValue("path")); err != nil {
+		writeArtifactError(w, r, err, "delete design directory")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (c *artifactController) SaveDesign(w http.ResponseWriter, r *http.Request) {
@@ -234,12 +287,12 @@ func (c *artifactController) SaveDesign(w http.ResponseWriter, r *http.Request) 
 }
 
 func (c *artifactController) DiscardDesign(w http.ResponseWriter, r *http.Request) {
-	res, err := c.svc.DiscardDesign(r.Context(), projectIDFrom(r))
+	files, err := c.svc.DiscardDesign(r.Context(), projectIDFrom(r))
 	if err != nil {
 		writeArtifactError(w, r, err, "discard design")
 		return
 	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
+	utils.WriteSuccessResponse(w, http.StatusOK, DesignListResult{Files: files})
 }
 
 func (c *artifactController) ListDesignVersions(w http.ResponseWriter, r *http.Request) {
@@ -253,10 +306,23 @@ func (c *artifactController) ListDesignVersions(w http.ResponseWriter, r *http.R
 
 func (c *artifactController) GetDesignVersion(w http.ResponseWriter, r *http.Request) {
 	tag := r.PathValue("tag")
-	res, err := c.svc.GetDesignAtTag(r.Context(), projectIDFrom(r), tag)
+	files, err := c.svc.GetDesignAtTag(r.Context(), projectIDFrom(r), tag)
 	if err != nil {
 		writeArtifactError(w, r, err, "get design version")
 		return
 	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
+	utils.WriteSuccessResponse(w, http.StatusOK, VersionDesignResult{
+		Tag:   tag,
+		Files: files,
+	})
+}
+
+// designRelPath validates a design sub-path and returns the repo-relative
+// path. Wrapped here so the controller doesn't import the service-internal
+// helper directly.
+func designRelPath(sub string) (string, error) {
+	if sub == "" {
+		return "", services.ErrArtifactPathInvalid
+	}
+	return services.DesignFilePath(sub)
 }

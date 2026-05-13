@@ -38,7 +38,21 @@ export interface SkillInput {
   prompt?: string;
 }
 
+/**
+ * Output of a SkillPostProcessor.transform call. Either the persisted
+ * payload as a single string (legacy / single-file skills) or an object
+ * with the primary file content plus optional sibling files (multi-file
+ * skills like wireframes/domain-model that write both `.dsl` and
+ * `.excalidraw`).
+ */
+export type SkillPostProcessOutput = string | {
+  /** Content written to the primary target file (the one in the request URL). */
+  primary: string;
+  /** Additional files keyed by filename to write alongside the primary. */
+  siblings: Record<string, string>;
+};
+
 export interface SkillPostProcessor {
   /** Transform the accumulated raw LLM output into the persisted payload. */
-  transform(raw: string): string;
+  transform(raw: string): SkillPostProcessOutput;
 }

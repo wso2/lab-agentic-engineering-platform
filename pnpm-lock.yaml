@@ -8,6 +8,9 @@ importers:
 
   console:
     dependencies:
+      '@asdlc/cell-diagram-view':
+        specifier: workspace:*
+        version: link:../ui-components/cell-diagram-view
       '@asdlc/excalidraw-dsl':
         specifier: workspace:*
         version: link:../ui-components/excalidraw-dsl
@@ -52,7 +55,7 @@ importers:
         version: 0.2.0(@types/react@19.1.6)(pathfinding@0.4.18)(paths-js@0.4.11)(resize-observer-polyfill@1.5.1)
       '@wso2/oxygen-ui':
         specifier: 0.1.0
-        version: 0.1.0(uit2zbufcrxw5s5q3dzigw6lhe)
+        version: 0.1.0(fce5ca6b76cfc3d8b6126e2f2da8a11f)
       '@wso2/oxygen-ui-icons-react':
         specifier: 0.1.0
         version: 0.1.0(lucide-react@0.545.0(react@19.2.3))(react@19.2.3)
@@ -121,6 +124,43 @@ importers:
         specifier: 7.2.2
         version: 7.2.2
 
+  ui-components/cell-diagram-view:
+    dependencies:
+      '@asdlc/explorer':
+        specifier: workspace:*
+        version: link:../explorer
+      '@wso2/cell-diagram':
+        specifier: 0.2.0
+        version: 0.2.0(@types/react@19.1.6)(pathfinding@0.4.18)(paths-js@0.4.11)(resize-observer-polyfill@1.5.1)
+      react:
+        specifier: ^19.0.0
+        version: 19.2.3
+      react-dom:
+        specifier: ^19.0.0
+        version: 19.2.3(react@19.2.3)
+    devDependencies:
+      '@emotion/react':
+        specifier: 11.14.0
+        version: 11.14.0(@types/react@19.1.6)(react@19.2.3)
+      '@emotion/styled':
+        specifier: 11.14.1
+        version: 11.14.1(@emotion/react@11.14.0(@types/react@19.1.6)(react@19.2.3))(@types/react@19.1.6)(react@19.2.3)
+      '@mui/material':
+        specifier: 7.3.4
+        version: 7.3.4(@emotion/react@11.14.0(@types/react@19.1.6)(react@19.2.3))(@emotion/styled@11.14.1(@emotion/react@11.14.0(@types/react@19.1.6)(react@19.2.3))(@types/react@19.1.6)(react@19.2.3))(@types/react@19.1.6)(react-dom@19.2.3(react@19.2.3))(react@19.2.3)
+      '@types/react':
+        specifier: 19.1.6
+        version: 19.1.6
+      '@types/react-dom':
+        specifier: 19.0.2
+        version: 19.0.2(@types/react@19.1.6)
+      '@wso2/oxygen-ui':
+        specifier: 0.1.0
+        version: 0.1.0(fce5ca6b76cfc3d8b6126e2f2da8a11f)
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+
   ui-components/excalidraw-dsl: {}
 
   ui-components/excalidraw-editor:
@@ -152,7 +192,7 @@ importers:
         version: 19.0.2(@types/react@19.1.6)
       '@wso2/oxygen-ui':
         specifier: 0.1.0
-        version: 0.1.0(uit2zbufcrxw5s5q3dzigw6lhe)
+        version: 0.1.0(fce5ca6b76cfc3d8b6126e2f2da8a11f)
       typescript:
         specifier: 5.9.3
         version: 5.9.3
@@ -198,7 +238,7 @@ importers:
         version: 19.0.2(@types/react@19.1.6)
       '@wso2/oxygen-ui':
         specifier: 0.1.0
-        version: 0.1.0(uit2zbufcrxw5s5q3dzigw6lhe)
+        version: 0.1.0(fce5ca6b76cfc3d8b6126e2f2da8a11f)
       '@wso2/oxygen-ui-icons-react':
         specifier: 0.1.0
         version: 0.1.0(lucide-react@0.545.0(react@19.2.3))(react@19.2.3)
@@ -277,7 +317,7 @@ importers:
         version: 19.0.2(@types/react@19.1.6)
       '@wso2/oxygen-ui':
         specifier: 0.1.0
-        version: 0.1.0(uit2zbufcrxw5s5q3dzigw6lhe)
+        version: 0.1.0(fce5ca6b76cfc3d8b6126e2f2da8a11f)
       '@wso2/oxygen-ui-icons-react':
         specifier: 0.1.0
         version: 0.1.0(lucide-react@0.545.0(react@19.2.3))(react@19.2.3)
@@ -326,7 +366,7 @@ importers:
         version: 19.0.2(@types/react@19.1.6)
       '@wso2/oxygen-ui':
         specifier: 0.1.0
-        version: 0.1.0(uit2zbufcrxw5s5q3dzigw6lhe)
+        version: 0.1.0(fce5ca6b76cfc3d8b6126e2f2da8a11f)
       '@wso2/oxygen-ui-icons-react':
         specifier: 0.1.0
         version: 0.1.0(lucide-react@0.545.0(react@19.2.3))(react@19.2.3)
@@ -7203,7 +7243,7 @@ snapshots:
       lucide-react: 0.545.0(react@19.2.3)
       react: 19.2.3
 
-  '@wso2/oxygen-ui@0.1.0(uit2zbufcrxw5s5q3dzigw6lhe)':
+  '@wso2/oxygen-ui@0.1.0(fce5ca6b76cfc3d8b6126e2f2da8a11f)':
     dependencies:
       '@emotion/react': 11.14.0(@types/react@19.1.6)(react@19.2.3)
       '@emotion/styled': 11.14.1(@emotion/react@11.14.0(@types/react@19.1.6)(react@19.2.3))(@types/react@19.1.6)(react@19.2.3)

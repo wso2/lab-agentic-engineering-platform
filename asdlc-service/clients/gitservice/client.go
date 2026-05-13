@@ -92,11 +92,12 @@ type Client interface {
 
 	// ----- Artifact endpoints -----
 	//
-	// Requirements live as a multi-file directory (`.asdlc/requirements/*.md`)
-	// versioned together as `v<N>` tags. Design is a single file
-	// (`.asdlc/design.json`) versioned as `v<N>-<M>` where N is the source
-	// requirements version. The save endpoint takes no body — content is
-	// staged from the working tree, populated via per-file PUT/DELETE.
+	// Requirements live as a multi-file directory (`.asdlc/requirements/*`)
+	// versioned together as `v<N>` tags. Design is also multi-file
+	// (`.asdlc/design/design.md` + `.asdlc/design/components/<name>/*`)
+	// versioned as `v<N>-<M>` where N is the source requirements version.
+	// The save endpoint takes no body — content is staged from the working
+	// tree, populated via per-file PUT/DELETE.
 
 	// Requirements
 	ListRequirements(ctx context.Context, orgID, projectID string) (map[string]string, error)
@@ -108,13 +109,17 @@ type Client interface {
 	ListRequirementsVersions(ctx context.Context, orgID, projectID string) ([]RequirementsVersionInfo, error)
 	GetRequirementsAtTag(ctx context.Context, orgID, projectID, tag string) (map[string]string, error)
 
-	// Design
-	GetDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error)
-	PutDesign(ctx context.Context, orgID, projectID string, req PutFileRequest) (*PutResult, error)
+	// Design (multi-file). `path` is relative to `.asdlc/design/` (e.g.
+	// `design.md` or `components/user-api/design.md`).
+	ListDesign(ctx context.Context, orgID, projectID string) (map[string]string, error)
+	GetDesignFile(ctx context.Context, orgID, projectID, path string) (*ArtifactFile, error)
+	PutDesignFile(ctx context.Context, orgID, projectID, path string, req PutFileRequest) (*PutResult, error)
+	DeleteDesignFile(ctx context.Context, orgID, projectID, path string) error
+	DeleteDesignDirectory(ctx context.Context, orgID, projectID, path string) error
 	SaveDesign(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*DesignSaveResult, error)
-	DiscardDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error)
+	DiscardDesign(ctx context.Context, orgID, projectID string) (map[string]string, error)
 	ListDesignVersions(ctx context.Context, orgID, projectID string) ([]DesignVersionInfo, error)
-	GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*ArtifactFile, error)
+	GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (map[string]string, error)
 
 	// Board operations — GitHub Project v2.
 	GetBoard(ctx context.Context, projectID string) (*ProjectBoard, error)
@@ -1043,22 +1048,61 @@ func (c *client) GetRequirementsAtTag(ctx context.Context, orgID, projectID, tag
 	return out.Files, nil
 }
 
-// Design (single file at .asdlc/design.json, tagged v<N>-<M>)
+// Design (multi-file under .asdlc/design/, tagged v<N>-<M>)
 
-func (c *client) GetDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
+type designListResp struct {
+	Files map[string]string `json:"files"`
+}
+
+type designVersionResp struct {
+	Tag   string            `json:"tag"`
+	Files map[string]string `json:"files"`
+}
+
+func (c *client) ListDesign(ctx context.Context, orgID, projectID string) (map[string]string, error) {
+	url := c.artifactURL(orgID, projectID, "design")
+	var out designListResp
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
+}
+
+func (c *client) GetDesignFile(ctx context.Context, orgID, projectID, path string) (*ArtifactFile, error) {
+	url := fmt.Sprintf("%s/files/%s", c.artifactURL(orgID, projectID, "design"), path)
 	var out ArtifactFile
-	if _, err := c.doJSON(ctx, http.MethodGet, c.artifactURL(orgID, projectID, "design"), nil, &out, http.StatusOK); err != nil {
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (c *client) PutDesign(ctx context.Context, orgID, projectID string, req PutFileRequest) (*PutResult, error) {
+func (c *client) PutDesignFile(ctx context.Context, orgID, projectID, path string, req PutFileRequest) (*PutResult, error) {
+	url := fmt.Sprintf("%s/files/%s", c.artifactURL(orgID, projectID, "design"), path)
 	var out PutResult
-	if _, err := c.doJSON(ctx, http.MethodPut, c.artifactURL(orgID, projectID, "design"), req, &out, http.StatusOK); err != nil {
+	if _, err := c.doJSON(ctx, http.MethodPut, url, req, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+func (c *client) DeleteDesignFile(ctx context.Context, orgID, projectID, path string) error {
+	url := fmt.Sprintf("%s/files/%s", c.artifactURL(orgID, projectID, "design"), path)
+	if _, err := c.doJSON(ctx, http.MethodDelete, url, nil, nil, http.StatusNoContent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *client) DeleteDesignDirectory(ctx context.Context, orgID, projectID, path string) error {
+	url := fmt.Sprintf("%s/directories/%s", c.artifactURL(orgID, projectID, "design"), path)
+	if _, err := c.doJSON(ctx, http.MethodDelete, url, nil, nil, http.StatusNoContent); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *client) SaveDesign(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*DesignSaveResult, error) {
@@ -1070,13 +1114,16 @@ func (c *client) SaveDesign(ctx context.Context, orgID, projectID string, req Sa
 	return &out, nil
 }
 
-func (c *client) DiscardDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
+func (c *client) DiscardDesign(ctx context.Context, orgID, projectID string) (map[string]string, error) {
 	url := c.artifactURL(orgID, projectID, "design") + "/discard"
-	var out ArtifactFile
+	var out designListResp
 	if _, err := c.doJSON(ctx, http.MethodPost, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
-	return &out, nil
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
 }
 
 func (c *client) ListDesignVersions(ctx context.Context, orgID, projectID string) ([]DesignVersionInfo, error) {
@@ -1088,13 +1135,16 @@ func (c *client) ListDesignVersions(ctx context.Context, orgID, projectID string
 	return out, nil
 }
 
-func (c *client) GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*ArtifactFile, error) {
+func (c *client) GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (map[string]string, error) {
 	url := fmt.Sprintf("%s/versions/%s", c.artifactURL(orgID, projectID, "design"), tag)
-	var out ArtifactFile
+	var out designVersionResp
 	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
-	return &out, nil
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
 }
 
 // Board

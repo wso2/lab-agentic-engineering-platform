@@ -5,6 +5,8 @@ import { nonFunctionalRequirements } from "./non-functional-requirements.js";
 import { userStories } from "./user-stories.js";
 import { wireframes } from "./wireframes.js";
 import { domainModel } from "./domain-model.js";
+import { componentDesign } from "./component-design.js";
+import { componentOpenApi } from "./component-openapi.js";
 
 const SKILLS: DocumentGenerationSkill[] = [
   requirementsFromPrompt,
@@ -13,6 +15,8 @@ const SKILLS: DocumentGenerationSkill[] = [
   userStories,
   wireframes,
   domainModel,
+  componentDesign,
+  componentOpenApi,
 ];
 
 const SKILLS_BY_ID = new Map<string, DocumentGenerationSkill>(

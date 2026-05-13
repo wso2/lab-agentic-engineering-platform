@@ -120,7 +120,20 @@ Output the DSL now.`,
     return prompt;
   },
   postProcess: {
-    transform: (raw: string) => dslToExcalidraw("wireframes", stripFences(raw)),
+    transform: (raw: string) => {
+      const dsl = stripFences(raw);
+      const excalidraw = dslToExcalidraw("wireframes", dsl);
+      // Persist the DSL alongside the rendered Excalidraw scene so the
+      // architect agent can read the wireframe as DSL (via its
+      // `read_wireframe` tool). The `.excalidraw` file is the rendered
+      // canvas the user views; `.dsl` is the source-of-truth.
+      return {
+        primary: excalidraw,
+        siblings: {
+          "wireframes.dsl": dsl + "\n",
+        },
+      };
+    },
   },
 };
 

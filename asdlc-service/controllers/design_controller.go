@@ -13,10 +13,15 @@ import (
 
 type DesignController interface {
 	GetDesign(w http.ResponseWriter, r *http.Request)
+	GetDesignBundle(w http.ResponseWriter, r *http.Request)
 	GenerateDesign(w http.ResponseWriter, r *http.Request)
+	UpdateDesignFile(w http.ResponseWriter, r *http.Request)
+	DeleteDesignFile(w http.ResponseWriter, r *http.Request)
+	DeleteComponent(w http.ResponseWriter, r *http.Request)
 	SaveAndProceed(w http.ResponseWriter, r *http.Request)
 	DiscardChanges(w http.ResponseWriter, r *http.Request)
 	GetDesignAtTag(w http.ResponseWriter, r *http.Request)
+	GetDesignBundleAtTag(w http.ResponseWriter, r *http.Request)
 	ListDesignVersions(w http.ResponseWriter, r *http.Request)
 }
 
@@ -170,5 +175,118 @@ func (c *designController) ListDesignVersions(w http.ResponseWriter, r *http.Req
 	}
 
 	utils.WriteSuccessResponse(w, http.StatusOK, versions)
+}
+
+// GetDesignBundle returns the file map + assembled Design in one shot for
+// the architecture page Explorer + cell diagram.
+func (c *designController) GetDesignBundle(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("orgHandle")
+	project := r.PathValue("projectName")
+	if !requireOrgHandle(w, org) || !requireProjectName(w, project) {
+		return
+	}
+	bundle, err := c.service.GetDesignBundle(r.Context(), org, project)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "get design bundle failed", "error", err, "org", org, "project", project)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to get design bundle")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, bundle)
+}
+
+// GetDesignBundleAtTag returns the file map + assembled Design at a tag.
+func (c *designController) GetDesignBundleAtTag(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("orgHandle")
+	project := r.PathValue("projectName")
+	if !requireOrgHandle(w, org) || !requireProjectName(w, project) {
+		return
+	}
+	tag := r.PathValue("tag")
+	if tag == "" {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "tag is required")
+		return
+	}
+	bundle, err := c.service.GetDesignBundleAtTag(r.Context(), org, project, tag)
+	if err != nil {
+		if errors.Is(err, services.ErrDesignNotFound) {
+			utils.WriteErrorResponse(w, http.StatusNotFound, "design not found")
+			return
+		}
+		slog.ErrorContext(r.Context(), "get design bundle at tag failed", "error", err, "org", org, "project", project, "tag", tag)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to get design bundle at tag")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, bundle)
+}
+
+// UpdateDesignFile writes a single file under .asdlc/design/.
+func (c *designController) UpdateDesignFile(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("orgHandle")
+	project := r.PathValue("projectName")
+	if !requireOrgHandle(w, org) || !requireProjectName(w, project) {
+		return
+	}
+	subPath := r.PathValue("path")
+	if subPath == "" {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	var body struct {
+		Content string `json:"content"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	bundle, err := c.service.UpdateDesignFile(r.Context(), org, project, subPath, body.Content)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "update design file failed", "error", err, "path", subPath)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to update design file")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, bundle)
+}
+
+// DeleteDesignFile removes a single file under .asdlc/design/. Refuses to
+// delete the root design.md.
+func (c *designController) DeleteDesignFile(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("orgHandle")
+	project := r.PathValue("projectName")
+	if !requireOrgHandle(w, org) || !requireProjectName(w, project) {
+		return
+	}
+	subPath := r.PathValue("path")
+	if subPath == "" {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	bundle, err := c.service.DeleteDesignFile(r.Context(), org, project, subPath)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "delete design file failed", "error", err, "path", subPath)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to delete design file")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, bundle)
+}
+
+// DeleteComponent removes the entire components/<name>/ directory.
+func (c *designController) DeleteComponent(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("orgHandle")
+	project := r.PathValue("projectName")
+	if !requireOrgHandle(w, org) || !requireProjectName(w, project) {
+		return
+	}
+	name := r.PathValue("componentName")
+	if name == "" {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "componentName is required")
+		return
+	}
+	bundle, err := c.service.DeleteComponent(r.Context(), org, project, name)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "delete component failed", "error", err, "component", name)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to delete component")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, bundle)
 }
 

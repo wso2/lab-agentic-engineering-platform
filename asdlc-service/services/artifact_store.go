@@ -2,9 +2,13 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
+	"sort"
+	"strings"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
@@ -74,13 +78,17 @@ func (s *ArtifactStore) DeleteRequirementFile(ctx context.Context, orgID, projec
 	return nil
 }
 
-// ---- Design (JSON) ------------------------------------------------------
+// ---- Design (multi-file directory) --------------------------------------
 
-// DesignFile is the JSON structure stored at .asdlc/design.json.
+// DesignFile is the BFF's in-memory representation of the multi-file design
+// artifact. It assembles from / splits to the working-tree layout under
+// `.asdlc/design/`:
 //
-// SourceSpec carries the parent requirements tag (e.g. "v2") that this
-// design was generated against. It's set at stream time; SaveDesign relies
-// on the latest tag list for the canonical lineage instead.
+//	design.md                              # overview prose + sourceSpec frontmatter
+//	components/<name>/design.md            # frontmatter (type, language, dependsOn,
+//	                                       # buildpack, appPath, entrypoint) + body
+//	                                       # (componentAgentInstructions)
+//	components/<name>/openapi.yaml         # OpenAPI 3.0.3 (service components only)
 type DesignFile struct {
 	Overview     string                   `json:"overview"`
 	Requirements []string                 `json:"requirements"`
@@ -88,59 +96,354 @@ type DesignFile struct {
 	SourceSpec   string                   `json:"sourceSpec,omitempty"`
 }
 
-// ReadDesign decodes the working tree's design.json. Returns
-// (nil, ErrArtifactNotFound) when no file exists yet.
-func (s *ArtifactStore) ReadDesign(ctx context.Context, orgID, projectID string) (*DesignFile, error) {
-	res, err := s.gitClient.GetDesign(ctx, orgID, projectID)
+// DesignRootFile is the canonical root design document. It cannot be deleted
+// via the API.
+const DesignRootFile = "design.md"
+
+// componentDirPrefix is the path prefix under .asdlc/design/ for per-component
+// directories.
+const componentDirPrefix = "components/"
+
+// ListDesignFiles returns the working-tree file map under `.asdlc/design/`.
+// Keys are paths relative to that directory, using forward slashes (e.g.
+// `design.md`, `components/user-api/design.md`).
+func (s *ArtifactStore) ListDesignFiles(ctx context.Context, orgID, projectID string) (map[string]string, error) {
+	files, err := s.gitClient.ListDesign(ctx, orgID, projectID)
 	if err != nil {
 		return nil, err
 	}
-	return parseDesignJSON(res.Content)
+	if files == nil {
+		files = map[string]string{}
+	}
+	return files, nil
 }
 
-// ReadRawDesign returns the literal bytes of design.json (used by the
-// has-unsaved-changes computation).
-func (s *ArtifactStore) ReadRawDesign(ctx context.Context, orgID, projectID string) (string, error) {
-	res, err := s.gitClient.GetDesign(ctx, orgID, projectID)
+// ReadDesignFile reads a single design file by sub-path.
+func (s *ArtifactStore) ReadDesignFile(ctx context.Context, orgID, projectID, subPath string) (string, error) {
+	res, err := s.gitClient.GetDesignFile(ctx, orgID, projectID, subPath)
 	if err != nil {
 		return "", err
 	}
 	return res.Content, nil
 }
 
-// WriteDesign serializes the design and writes it. The bytes are
-// canonicalised before write (alphabetical keys, status-code coercion,
-// x-* preserved) so git-service's byte-equality dedup ignores harmless
-// LLM whitespace/order drift across regenerations.
-func (s *ArtifactStore) WriteDesign(ctx context.Context, orgID, projectID string, design *DesignFile) (sha string, err error) {
-	data, err := json.MarshalIndent(design, "", "  ")
+// WriteDesignFile creates or overwrites a single design file. The path is
+// relative to `.asdlc/design/` (forward slashes; nested components allowed).
+func (s *ArtifactStore) WriteDesignFile(ctx context.Context, orgID, projectID, subPath, content string) (sha string, err error) {
+	res, err := s.gitClient.PutDesignFile(ctx, orgID, projectID, subPath, gitservice.PutFileRequest{Content: content})
 	if err != nil {
-		return "", fmt.Errorf("encode design: %w", err)
-	}
-	canonical, err := normalizeDesignJSON(data)
-	if err != nil {
-		canonical = data
-	}
-	res, err := s.gitClient.PutDesign(ctx, orgID, projectID, gitservice.PutFileRequest{Content: string(canonical)})
-	if err != nil {
-		return "", fmt.Errorf("write design: %w", err)
+		return "", fmt.Errorf("write design file %q: %w", subPath, err)
 	}
 	return res.SHA, nil
 }
 
-// ---- Helpers ------------------------------------------------------------
+// DeleteDesignFile removes a single design file. Refuses to delete the root
+// `design.md` (returns an error before reaching git-service).
+func (s *ArtifactStore) DeleteDesignFile(ctx context.Context, orgID, projectID, subPath string) error {
+	if subPath == DesignRootFile {
+		return fmt.Errorf("cannot delete %s", DesignRootFile)
+	}
+	if err := s.gitClient.DeleteDesignFile(ctx, orgID, projectID, subPath); err != nil {
+		return fmt.Errorf("delete design file %q: %w", subPath, err)
+	}
+	return nil
+}
 
-func parseDesignJSON(data string) (*DesignFile, error) {
-	if data == "" {
+// DeleteDesignDirectory removes a directory under `.asdlc/design/` and all
+// its contents (e.g. `components/user-api` to remove a component's whole
+// subtree).
+func (s *ArtifactStore) DeleteDesignDirectory(ctx context.Context, orgID, projectID, subPath string) error {
+	if err := s.gitClient.DeleteDesignDirectory(ctx, orgID, projectID, subPath); err != nil {
+		return fmt.Errorf("delete design directory %q: %w", subPath, err)
+	}
+	return nil
+}
+
+// ReadDesign lists the working-tree design files and assembles them into the
+// flat `DesignFile` shape that the rest of the BFF expects (task generation,
+// OC provisioning, issue bodies, etc.). Returns
+// (nil, gitservice.ErrArtifactNotFound) when no design root exists yet.
+func (s *ArtifactStore) ReadDesign(ctx context.Context, orgID, projectID string) (*DesignFile, error) {
+	files, err := s.gitClient.ListDesign(ctx, orgID, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 || strings.TrimSpace(files[DesignRootFile]) == "" {
 		return nil, nil
 	}
-	var design DesignFile
-	if err := json.Unmarshal([]byte(data), &design); err != nil {
-		return nil, fmt.Errorf("decode design: %w", err)
-	}
-	return &design, nil
+	return AssembleDesign(files)
 }
+
+// WriteDesign splits the in-memory design into multiple files, then writes
+// every file via the git-service. Files no longer referenced by the new
+// design (e.g. components removed by a regeneration) are NOT auto-deleted —
+// the caller is expected to call DeleteDesignDirectory for removed
+// components separately.
+func (s *ArtifactStore) WriteDesign(ctx context.Context, orgID, projectID string, design *DesignFile) error {
+	files, err := SplitDesign(design)
+	if err != nil {
+		return fmt.Errorf("split design: %w", err)
+	}
+	for subPath, content := range files {
+		if _, err := s.WriteDesignFile(ctx, orgID, projectID, subPath, content); err != nil {
+			return fmt.Errorf("write %s: %w", subPath, err)
+		}
+	}
+	return nil
+}
+
+// ---- Helpers ------------------------------------------------------------
 
 // IsNotFound is sugar for callers that want to distinguish "no artifact yet"
 // from a real error without importing the gitservice package.
 func IsNotFound(err error) bool { return errors.Is(err, gitservice.ErrArtifactNotFound) }
+
+// designFilesEqual compares two design file maps after trimming whitespace
+// from each value. Used by the has-unsaved-changes check.
+func designFilesEqual(a, b map[string]string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for k, va := range a {
+		vb, ok := b[k]
+		if !ok {
+			return false
+		}
+		if strings.TrimSpace(va) != strings.TrimSpace(vb) {
+			return false
+		}
+	}
+	return true
+}
+
+// rootFrontmatter is the YAML frontmatter we accept on the root `design.md`.
+type rootFrontmatter struct {
+	SourceSpec string `yaml:"sourceSpec,omitempty"`
+}
+
+// componentFrontmatter is the YAML frontmatter we accept on each
+// `components/<name>/design.md`. Field names mirror the user-facing keys
+// (snake-free) so frontmatter the architect emits is human-editable.
+type componentFrontmatter struct {
+	Type       string   `yaml:"type"`
+	Language   string   `yaml:"language,omitempty"`
+	DependsOn  []string `yaml:"dependsOn,omitempty"`
+	Buildpack  string   `yaml:"buildpack,omitempty"`
+	AppPath    string   `yaml:"appPath,omitempty"`
+	Entrypoint string   `yaml:"entrypoint,omitempty"`
+}
+
+// splitFrontmatter separates the leading YAML frontmatter block (delimited
+// by `---` lines) from the body. If the file has no frontmatter, returns
+// ("", content, nil).
+func splitFrontmatter(content string) (fm string, body string, err error) {
+	trimmed := strings.TrimLeft(content, " \t\r\n")
+	// Strip an optional UTF-8 BOM (U+FEFF) before frontmatter detection.
+	trimmed = strings.TrimPrefix(trimmed, "\ufeff")
+	if !strings.HasPrefix(trimmed, "---") {
+		return "", content, nil
+	}
+	// Find the closing fence — must be a `---` on its own line after the open.
+	rest := trimmed[3:]
+	// Skip optional newline directly after opening fence.
+	rest = strings.TrimLeft(rest, " \t")
+	if !strings.HasPrefix(rest, "\n") && !strings.HasPrefix(rest, "\r\n") {
+		// Open fence was not followed by a newline — treat as no frontmatter.
+		return "", content, nil
+	}
+	// Locate the end fence.
+	end := strings.Index(rest, "\n---")
+	if end < 0 {
+		return "", content, fmt.Errorf("frontmatter: unterminated --- block")
+	}
+	fm = strings.TrimSpace(rest[:end])
+	after := rest[end+len("\n---"):]
+	// Drop optional newline + spaces after the closing fence.
+	after = strings.TrimPrefix(after, "\r")
+	after = strings.TrimPrefix(after, "\n")
+	return fm, after, nil
+}
+
+// joinFrontmatter writes the YAML frontmatter block + body. If the
+// frontmatter is empty, returns the body unchanged.
+func joinFrontmatter(fm string, body string) string {
+	fm = strings.TrimSpace(fm)
+	body = strings.TrimLeft(body, "\r\n")
+	if fm == "" {
+		return body
+	}
+	return "---\n" + fm + "\n---\n\n" + body
+}
+
+// AssembleDesign reconstructs a flat DesignFile from the multi-file working
+// tree map. Path separator is `/`. Returns an error if the root `design.md`
+// is missing (callers handle that as "no design yet").
+func AssembleDesign(files map[string]string) (*DesignFile, error) {
+	root, ok := files[DesignRootFile]
+	if !ok {
+		return nil, fmt.Errorf("design.md missing")
+	}
+
+	fm, body, err := splitFrontmatter(root)
+	if err != nil {
+		return nil, fmt.Errorf("parse design.md frontmatter: %w", err)
+	}
+	var rfm rootFrontmatter
+	if fm != "" {
+		if err := yaml.Unmarshal([]byte(fm), &rfm); err != nil {
+			return nil, fmt.Errorf("decode design.md frontmatter: %w", err)
+		}
+	}
+	out := &DesignFile{
+		Overview:   strings.TrimSpace(body),
+		SourceSpec: rfm.SourceSpec,
+	}
+
+	// Iterate component dirs in deterministic order.
+	componentNames := componentNamesIn(files)
+	out.Components = make([]models.DesignComponent, 0, len(componentNames))
+	for _, name := range componentNames {
+		designPath := componentDirPrefix + name + "/design.md"
+		raw, ok := files[designPath]
+		if !ok {
+			continue
+		}
+		comp, err := assembleComponent(name, raw, files)
+		if err != nil {
+			return nil, fmt.Errorf("assemble component %q: %w", name, err)
+		}
+		out.Components = append(out.Components, comp)
+	}
+	return out, nil
+}
+
+func assembleComponent(name, designMd string, files map[string]string) (models.DesignComponent, error) {
+	fm, body, err := splitFrontmatter(designMd)
+	if err != nil {
+		return models.DesignComponent{}, fmt.Errorf("frontmatter: %w", err)
+	}
+	var cfm componentFrontmatter
+	if fm != "" {
+		if err := yaml.Unmarshal([]byte(fm), &cfm); err != nil {
+			return models.DesignComponent{}, fmt.Errorf("decode frontmatter: %w", err)
+		}
+	}
+	openapi := files[componentDirPrefix+name+"/openapi.yaml"]
+	if openapi == "" {
+		// Fallback: support .yml as well.
+		openapi = files[componentDirPrefix+name+"/openapi.yml"]
+	}
+	dependsOn := append([]string(nil), cfm.DependsOn...)
+	if dependsOn == nil {
+		dependsOn = []string{}
+	}
+	return models.DesignComponent{
+		Name:                       name,
+		ComponentType:              cfm.Type,
+		Language:                   cfm.Language,
+		DependsOn:                  dependsOn,
+		Entrypoint:                 cfm.Entrypoint,
+		Buildpack:                  cfm.Buildpack,
+		AppPath:                    cfm.AppPath,
+		OpenAPISpec:                openapi,
+		ComponentAgentInstructions: strings.TrimSpace(body),
+	}, nil
+}
+
+// componentNamesIn walks the file map and returns the unique component
+// directory names found under `components/`, sorted alphabetically.
+func componentNamesIn(files map[string]string) []string {
+	seen := make(map[string]struct{})
+	for p := range files {
+		if !strings.HasPrefix(p, componentDirPrefix) {
+			continue
+		}
+		rest := p[len(componentDirPrefix):]
+		slash := strings.IndexByte(rest, '/')
+		if slash <= 0 {
+			continue
+		}
+		seen[rest[:slash]] = struct{}{}
+	}
+	names := make([]string, 0, len(seen))
+	for n := range seen {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
+}
+
+// SplitDesign takes a flat in-memory design and produces the file map for
+// the working tree. The caller is responsible for deleting any
+// pre-existing files NOT present in the returned map (e.g. components
+// removed across a regeneration).
+func SplitDesign(d *DesignFile) (map[string]string, error) {
+	if d == nil {
+		return nil, fmt.Errorf("nil design")
+	}
+	out := make(map[string]string, 1+2*len(d.Components))
+
+	// Root design.md — body only. SourceSpec is encoded in the design tag
+	// name (`v<N>-<M>`) and recovered at read time from `gitClient.ListDesignVersions`,
+	// so we don't write it to the file. This keeps the markdown editor's
+	// view clean (no visible YAML frontmatter as a stray heading).
+	out[DesignRootFile] = strings.TrimSpace(d.Overview) + "\n"
+
+	for _, comp := range d.Components {
+		if comp.Name == "" {
+			return nil, fmt.Errorf("component with empty name")
+		}
+		base := componentDirPrefix + comp.Name
+		cfm := componentFrontmatter{
+			Type:       comp.ComponentType,
+			Language:   comp.Language,
+			DependsOn:  comp.DependsOn,
+			Buildpack:  comp.Buildpack,
+			AppPath:    comp.AppPath,
+			Entrypoint: comp.Entrypoint,
+		}
+		cfmBytes, err := marshalFrontmatter(cfm)
+		if err != nil {
+			return nil, fmt.Errorf("encode component %q frontmatter: %w", comp.Name, err)
+		}
+		header := fmt.Sprintf("# %s\n\n", comp.Name)
+		out[base+"/design.md"] = joinFrontmatter(string(cfmBytes), header+strings.TrimSpace(comp.ComponentAgentInstructions)+"\n")
+		if openapi := strings.TrimSpace(comp.OpenAPISpec); openapi != "" {
+			out[base+"/openapi.yaml"] = openapi + "\n"
+		}
+	}
+	return out, nil
+}
+
+// ComponentDesignPath returns the design.md path for a given component name
+// (relative to .asdlc/design/). Exported so callers (design_service stream
+// handlers, controllers) don't recompute the format.
+func ComponentDesignPath(componentName string) string {
+	return path.Join(componentDirPrefix, componentName, "design.md")
+}
+
+// ComponentOpenAPIPath returns the openapi.yaml path for a given component
+// name (relative to .asdlc/design/).
+func ComponentOpenAPIPath(componentName string) string {
+	return path.Join(componentDirPrefix, componentName, "openapi.yaml")
+}
+
+// ComponentDirPath returns the directory path for a given component name
+// (relative to .asdlc/design/), used by DeleteDesignDirectory.
+func ComponentDirPath(componentName string) string {
+	return path.Join(componentDirPrefix, componentName)
+}
+
+// marshalFrontmatter encodes v as YAML, but returns an empty string when
+// the encoded form is "{}\n" (yaml.Marshal of an all-zero struct).
+func marshalFrontmatter(v interface{}) ([]byte, error) {
+	out, err := yaml.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := strings.TrimSpace(string(out))
+	if trimmed == "{}" {
+		return []byte{}, nil
+	}
+	return []byte(trimmed), nil
+}

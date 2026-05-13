@@ -9,6 +9,7 @@ import type {
   RequirementsBundle,
   CollabSession,
   Design,
+  DesignBundle,
   DesignComponent,
   ComponentDefinition,
   ComponentOpenAPI,
@@ -576,6 +577,85 @@ export const restApi = {
       return await fetchJSON<Design>(`${projectPrefix(orgHandle, projectId)}/design/discard`, {
         method: 'POST',
       });
+    } catch {
+      return undefined;
+    }
+  },
+
+  // -- Design (multi-file bundle view) ---------------------------------------
+
+  async getDesignBundle(
+    orgHandle: string,
+    projectId: string,
+  ): Promise<DesignBundle | undefined> {
+    try {
+      return await fetchJSON<DesignBundle>(
+        `${projectPrefix(orgHandle, projectId)}/design/bundle`,
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async getDesignBundleAtVersion(
+    orgHandle: string,
+    projectId: string,
+    tag: string,
+  ): Promise<DesignBundle | undefined> {
+    try {
+      return await fetchJSON<DesignBundle>(
+        `${projectPrefix(orgHandle, projectId)}/design/versions/${encodeURIComponent(tag)}/bundle`,
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async updateDesignFile(
+    orgHandle: string,
+    projectId: string,
+    path: string,
+    content: string,
+  ): Promise<DesignBundle | undefined> {
+    try {
+      return await fetchJSON<DesignBundle>(
+        `${projectPrefix(orgHandle, projectId)}/design/files/${path}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ content }),
+        },
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async deleteDesignFile(
+    orgHandle: string,
+    projectId: string,
+    path: string,
+  ): Promise<DesignBundle | undefined> {
+    try {
+      return await fetchJSON<DesignBundle>(
+        `${projectPrefix(orgHandle, projectId)}/design/files/${path}`,
+        { method: 'DELETE' },
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async deleteDesignComponent(
+    orgHandle: string,
+    projectId: string,
+    componentName: string,
+  ): Promise<DesignBundle | undefined> {
+    try {
+      return await fetchJSON<DesignBundle>(
+        `${projectPrefix(orgHandle, projectId)}/design/components/${encodeURIComponent(componentName)}`,
+        { method: 'DELETE' },
+      );
     } catch {
       return undefined;
     }

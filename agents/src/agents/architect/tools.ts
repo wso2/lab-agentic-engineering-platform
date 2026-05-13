@@ -34,6 +34,7 @@ export function buildTools(
   doc: DesignDoc,
   sse: SseSink,
   finalizer: FinalizeResolver,
+  wireframes: Record<string, string> = {},
 ): Record<string, Tool> {
   const guard = (run: () => ToolResult): ToolResult => {
     if (sse.isClosed()) return CLIENT_DISCONNECTED;
@@ -233,6 +234,29 @@ export function buildTools(
             return { error: "not-found" };
           }
           return doc.getComponent(name);
+        }),
+    }),
+
+    read_wireframe: tool({
+      description:
+        "Read a wireframe / domain-model canvas as DSL text. Use this to fetch the screen flows or entity model when designing components — only call when the spec mentions a relevant canvas. Returns {dsl: string} on success or {error:'not-found'} if no canvas with that name was supplied.",
+      inputSchema: z.object({
+        name: z
+          .string()
+          .describe(
+            "Canvas name without extension, e.g. 'wireframes' or 'domain-model'",
+          ),
+      }),
+      execute: async ({ name }) =>
+        guard(() => {
+          const dsl = wireframes[name];
+          if (!dsl) {
+            return {
+              error: "not-found",
+              message: `No wireframe DSL named ${name}. Available: ${Object.keys(wireframes).join(", ") || "(none)"}`,
+            };
+          }
+          return { name, dsl };
         }),
     }),
 

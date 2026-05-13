@@ -72,9 +72,12 @@ func registerRepoOnlyRoutes(
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/versions", wrap(ac.ListRequirementsVersions))
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/versions/{tag}", wrap(ac.GetRequirementsVersion))
 
-		// ---- Artifacts: design (single file, tagged v<N>-<M>) ----
-		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design", wrap(ac.GetDesign))
-		mux.Handle("PUT /api/v1/repos/{orgId}/{projectId}/artifacts/design", wrap(ac.PutDesign))
+		// ---- Artifacts: design (multi-file directory, tagged v<N>-<M>) ----
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design", wrap(ac.ListDesign))
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design/files/{path...}", wrap(ac.GetDesignFile))
+		mux.Handle("PUT /api/v1/repos/{orgId}/{projectId}/artifacts/design/files/{path...}", wrap(ac.PutDesignFile))
+		mux.Handle("DELETE /api/v1/repos/{orgId}/{projectId}/artifacts/design/files/{path...}", wrap(ac.DeleteDesignFile))
+		mux.Handle("DELETE /api/v1/repos/{orgId}/{projectId}/artifacts/design/directories/{path...}", wrap(ac.DeleteDesignDirectory))
 		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/design/save", wrap(ac.SaveDesign))
 		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/design/discard", wrap(ac.DiscardDesign))
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design/versions", wrap(ac.ListDesignVersions))
