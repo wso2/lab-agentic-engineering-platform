@@ -335,6 +335,13 @@ func main() {
 		)
 	}
 
+	// Per-org Anthropic settings surface. Proxies to git-service's internal
+	// credential routes; same JWT gating as GitHub Integration.
+	var orgAnthropicCtrl controllers.OrgAnthropicController
+	if gitClient != nil {
+		orgAnthropicCtrl = controllers.NewOrgAnthropicController(gitClient)
+	}
+
 	// Inbound JWT verifier — Thunder publishes the User JWT and Service JWT
 	// signing keys at JWKSURL. Lazy fetch on first request avoids compose
 	// start-order races.
@@ -368,6 +375,7 @@ func main() {
 		TaskRepo:               taskRepo,
 		ConfigRepo:             configRepo,
 		OrgGitHubController:    orgGitHubCtrl,
+		OrgAnthropicController: orgAnthropicCtrl,
 		JWKSController:         controllers.NewJWKSController(taskTokens),
 		ThunderJWKS:            thunderJWKS,
 		OrganizationService:    organizationService,

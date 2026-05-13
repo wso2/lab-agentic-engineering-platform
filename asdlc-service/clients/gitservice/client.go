@@ -82,6 +82,14 @@ type Client interface {
 	// Phase 2 PR C — build credentials (mint-build).
 	MintBuildToken(ctx context.Context, ocOrgID, repoSlug string) (*MintResult, error)
 
+	// Anthropic credentials — see docs/design/anthropic-key-dual-token.md.
+	// Connect/Status/Disconnect mirror the GitHub-credentials surface;
+	// ApplyAnthropicWPSecret is the per-dispatch SSA refresh.
+	CreateOrReplaceAnthropic(ctx context.Context, ocOrgID string, req AnthropicConnectRequest) (*AnthropicProjection, error)
+	GetAnthropicProjection(ctx context.Context, ocOrgID string) (*AnthropicProjection, error)
+	DisconnectAnthropic(ctx context.Context, ocOrgID string) error
+	ApplyAnthropicWPSecret(ctx context.Context, ocOrgID string) (*ApplyAnthropicWPSecretResult, error)
+
 	// ----- Artifact endpoints -----
 	//
 	// Requirements live as a multi-file directory (`.asdlc/requirements/*.md`)

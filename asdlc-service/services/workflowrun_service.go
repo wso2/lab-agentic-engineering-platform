@@ -71,6 +71,11 @@ type CodingAgentTrigger struct {
 	// verification-failed callback. Empty disables that callback (the
 	// runner posts the diagnostic on the GitHub issue regardless).
 	PlatformURL string
+	// AnthropicSecretRef is the name of the K8s Secret in workflows-<orgID>
+	// carrying the per-org Anthropic API key. Materialised by git-service
+	// in the dispatch pre-flight (see ApplyAnthropicWPSecret). The
+	// ClusterWorkflow wires it into the pod's env via secretKeyRef.
+	AnthropicSecretRef string
 }
 
 // TriggeredRun is the (component, runName) pair returned per build created.
@@ -393,18 +398,19 @@ func (s *workflowRunService) TriggerCodingAgent(ctx context.Context, p CodingAge
 	}
 
 	run, err := s.ocClient.TriggerCodingAgent(ctx, openchoreo.CodingAgentParams{
-		OrgName:       p.Task.OrgID,
-		ProjectName:   p.Task.ProjectID,
-		ComponentName: p.Task.ComponentName,
-		TaskID:        p.Task.ID,
-		Prompt:        p.Prompt,
-		RepoURL:       p.RepoURL,
-		IdentityName:  p.IdentityName,
-		IdentityEmail: p.IdentityEmail,
-		IdentityLogin: p.IdentityLogin,
-		Bearer:        p.Bearer,
-		GitServiceURL: p.GitServiceURL,
-		PlatformURL:   p.PlatformURL,
+		OrgName:            p.Task.OrgID,
+		ProjectName:        p.Task.ProjectID,
+		ComponentName:      p.Task.ComponentName,
+		TaskID:             p.Task.ID,
+		Prompt:             p.Prompt,
+		RepoURL:            p.RepoURL,
+		IdentityName:       p.IdentityName,
+		IdentityEmail:      p.IdentityEmail,
+		IdentityLogin:      p.IdentityLogin,
+		Bearer:             p.Bearer,
+		GitServiceURL:      p.GitServiceURL,
+		PlatformURL:        p.PlatformURL,
+		AnthropicSecretRef: p.AnthropicSecretRef,
 	})
 	if err != nil {
 		return "", fmt.Errorf("trigger coding-agent: %w", err)

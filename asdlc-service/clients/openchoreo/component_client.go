@@ -83,6 +83,13 @@ type CodingAgentParams struct {
 	// Empty means the runner won't call the BFF (the diagnostic still
 	// lands on the GitHub issue).
 	PlatformURL string
+	// AnthropicSecretRef is the name of the per-org K8s Secret in
+	// workflows-<OrgName> carrying ANTHROPIC_API_KEY. Materialised by
+	// git-service in the dispatch pre-flight (see
+	// gitservice.Client.ApplyAnthropicWPSecret). The ClusterWorkflow wires
+	// it into the pod via `parameters.anthropic.secretRef` →
+	// `secretKeyRef.name`. See docs/design/anthropic-key-dual-token.md §5.
+	AnthropicSecretRef string
 }
 
 type componentClient struct {
@@ -772,6 +779,9 @@ func codingAgentParameters(p CodingAgentParams) map[string]interface{} {
 		},
 		"gitService": map[string]interface{}{
 			"url": p.GitServiceURL,
+		},
+		"anthropic": map[string]interface{}{
+			"secretRef": p.AnthropicSecretRef,
 		},
 	}
 }

@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -245,16 +246,35 @@ func (s *dispatchService) dispatchOne(
 		"component", task.ComponentName,
 		"deps", depEndpoints,
 	)
+
+	// Per-dispatch pre-flight: ensure the org has an active Anthropic key,
+	// then SSA-refresh the WP Secret. Returns ErrAnthropicKeyRequired when
+	// the org row is missing or inactive; we surface that as a structured
+	// failure rather than markFailed so the console can offer "configure
+	// key" instead of "retry". See docs/design/anthropic-key-dual-token.md §6.2.
+	anthropicRes, err := s.gitClient.ApplyAnthropicWPSecret(ctx, task.OrgID)
+	if err != nil {
+		if errors.Is(err, gitservice.ErrAnthropicKeyRequired) {
+			s.markFailed(ctx, task, "anthropic_key_required: configure an Anthropic API key in org settings before dispatching the remote coding agent")
+			res = failResult(res, task.ErrorMessage)
+			res.Error = "anthropic_key_required"
+			return res
+		}
+		s.markFailed(ctx, task, fmt.Sprintf("apply anthropic wp-secret: %v", err))
+		return failResult(res, task.ErrorMessage)
+	}
+
 	runName, err := s.wfRunService.TriggerCodingAgent(ctx, CodingAgentTrigger{
-		Task:          task,
-		RepoURL:       repoInfo.RepoURL,
-		IdentityName:  identity.Name,
-		IdentityEmail: identity.Email,
-		IdentityLogin: identity.Login,
-		Prompt:        prompt,
-		Bearer:        bearer,
-		GitServiceURL: s.gitServiceURL,
-		PlatformURL:   s.platformURL,
+		Task:               task,
+		RepoURL:            repoInfo.RepoURL,
+		IdentityName:       identity.Name,
+		IdentityEmail:      identity.Email,
+		IdentityLogin:      identity.Login,
+		Prompt:             prompt,
+		Bearer:             bearer,
+		GitServiceURL:      s.gitServiceURL,
+		PlatformURL:        s.platformURL,
+		AnthropicSecretRef: anthropicRes.SecretRefName,
 	})
 	if err != nil {
 		s.markFailed(ctx, task, fmt.Sprintf("trigger coding-agent: %v", err))

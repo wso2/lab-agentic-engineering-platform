@@ -177,7 +177,7 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 
 	// T3: open Phase 1.
 	planReq := buildPlanRequest(projectID, specContent, design.Components, designDiff, specDiff, existingForPrompt, mode)
-	planUpstream, err := s.agentsClient.StreamTechLeadPlan(ctx, planReq)
+	planUpstream, err := s.agentsClient.StreamTechLeadPlan(ctx, orgID, planReq)
 	if err != nil {
 		return fmt.Errorf("plan upstream: %w", err)
 	}
@@ -214,7 +214,7 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 	slog.InfoContext(ctx, "tech-lead T5: phase 2 trigger",
 		"persisted", len(persisted), "survived", len(survived))
 	if len(survived) > 0 {
-		s.runPhase2(ctx, w, projectID, specContent, survived, design, allTasks, repoURL, repoSlug)
+		s.runPhase2(ctx, w, orgID, projectID, specContent, survived, design, allTasks, repoURL, repoSlug)
 	}
 
 	// T6: reconciliation.
@@ -242,7 +242,7 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 func (s *taskService) runPhase2(
 	ctx context.Context,
 	w *sseWriter,
-	projectID, specContent string,
+	orgID, projectID, specContent string,
 	survived []persistedItem,
 	design *DesignFile,
 	allTasks []models.ComponentTask,
@@ -251,7 +251,7 @@ func (s *taskService) runPhase2(
 	detailReq := buildDetailRequest(projectID, specContent, survived, design, allTasks)
 	slog.InfoContext(ctx, "tech-lead phase 2: opening detail stream", "items", len(detailReq.Items))
 
-	detailUpstream, err := s.agentsClient.StreamTechLeadDetail(ctx, detailReq)
+	detailUpstream, err := s.agentsClient.StreamTechLeadDetail(ctx, orgID, detailReq)
 	if err != nil {
 		slog.ErrorContext(ctx, "tech-lead phase 2: detail upstream open failed", "error", err)
 		w.send("error", map[string]any{
@@ -718,7 +718,7 @@ func (s *taskService) RegenerateTaskBody(ctx context.Context, taskID string, out
 		Task:   task,
 	}}
 	detailReq := buildDetailRequest(task.ProjectID, specContent, survived, design, allTasks)
-	upstream, err := s.agentsClient.StreamTechLeadDetail(ctx, detailReq)
+	upstream, err := s.agentsClient.StreamTechLeadDetail(ctx, task.OrgID, detailReq)
 	if err != nil {
 		return fmt.Errorf("detail upstream: %w", err)
 	}

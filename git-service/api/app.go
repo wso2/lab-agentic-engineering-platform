@@ -31,9 +31,10 @@ type AppParams struct {
 	BoardCtrl        controllers.BoardController
 	RepoService      services.RepoService
 	RepoRepo         repositories.RepoRepository
-	CredService      *services.CredentialService
-	BuildCredService *services.BuildCredentialsService
-	Validator        *credentials.Validator
+	CredService          *services.CredentialService
+	BuildCredService     *services.BuildCredentialsService
+	AnthropicCredService *services.AnthropicCredentialService
+	Validator            *credentials.Validator
 
 	// ServiceJWT verifies User/Service JWTs presented to /api/v1/repos/* and
 	// /internal/credentials/*. JWKS resolves to Thunder.
@@ -80,6 +81,9 @@ func NewHandler(params AppParams) http.Handler {
 	}
 	if params.CredService != nil {
 		registerCredentialsInternalRoutes(apiMux, params.CredService, params.BuildCredService, params.Validator)
+	}
+	if params.AnthropicCredService != nil {
+		registerAnthropicCredentialsRoutes(apiMux, params.AnthropicCredService)
 	}
 	if params.ProjectCtrl != nil {
 		registerOrgRoutes(mux, params.ProjectCtrl)

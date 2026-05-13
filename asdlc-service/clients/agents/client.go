@@ -17,6 +17,12 @@ import (
 )
 
 // Client calls the asdlc-agents-service.
+//
+// Every streaming method carries an `orgID` parameter that is sent to
+// agents-service as the `X-Oc-Org-Id` header. agents-service uses this
+// to resolve the effective Anthropic API key per call (org key when
+// configured, platform fallback otherwise — see
+// docs/design/anthropic-key-dual-token.md §6.4).
 type Client interface {
 	// StreamDocumentGeneration POSTs to /v1/agents/document-generation/{skillId}
 	// to run a registered document-generation skill (e.g. requirements bootstrap,
@@ -24,21 +30,21 @@ type Client interface {
 	// are the sibling files passed as context (filename → content); prompt is the
 	// optional user prompt for bootstrap-style skills. Returns the raw SSE response
 	// body. Caller must close.
-	StreamDocumentGeneration(ctx context.Context, skillID string, req DocumentGenerationRequest) (io.ReadCloser, error)
+	StreamDocumentGeneration(ctx context.Context, orgID, skillID string, req DocumentGenerationRequest) (io.ReadCloser, error)
 
 	// StreamArchitect POSTs the requirements bundle (and optional previous design)
 	// to /v1/agents/architect and returns the raw SSE response body. The stream
 	// emits structured custom events (data-overview, data-requirements,
 	// data-component, data-finish) as the architecture is generated.
 	// Caller must close.
-	StreamArchitect(ctx context.Context, req ArchitectRequest) (io.ReadCloser, error)
+	StreamArchitect(ctx context.Context, orgID string, req ArchitectRequest) (io.ReadCloser, error)
 
 	// StreamTechLeadPlan POSTs the planner input to /v1/agents/tech-lead/plan
 	// and returns the raw SSE response body.
-	StreamTechLeadPlan(ctx context.Context, req TechLeadPlanRequest) (io.ReadCloser, error)
+	StreamTechLeadPlan(ctx context.Context, orgID string, req TechLeadPlanRequest) (io.ReadCloser, error)
 
 	// StreamTechLeadDetail POSTs N issued tasks to /v1/agents/tech-lead/detail.
-	StreamTechLeadDetail(ctx context.Context, req TechLeadDetailRequest) (io.ReadCloser, error)
+	StreamTechLeadDetail(ctx context.Context, orgID string, req TechLeadDetailRequest) (io.ReadCloser, error)
 }
 
 // DocumentGenerationRequest is the body sent to the generic skill endpoint.
@@ -136,11 +142,11 @@ func NewClient(baseURL string, provider *auth.AuthProvider) Client {
 	}
 }
 
-func (c *client) StreamDocumentGeneration(ctx context.Context, skillID string, req DocumentGenerationRequest) (io.ReadCloser, error) {
-	return c.streamSSE(ctx, "/v1/agents/document-generation/"+skillID, req)
+func (c *client) StreamDocumentGeneration(ctx context.Context, orgID, skillID string, req DocumentGenerationRequest) (io.ReadCloser, error) {
+	return c.streamSSE(ctx, orgID, "/v1/agents/document-generation/"+skillID, req)
 }
 
-func (c *client) StreamArchitect(ctx context.Context, req ArchitectRequest) (io.ReadCloser, error) {
+func (c *client) StreamArchitect(ctx context.Context, orgID string, req ArchitectRequest) (io.ReadCloser, error) {
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -153,6 +159,7 @@ func (c *client) StreamArchitect(ctx context.Context, req ArchitectRequest) (io.
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("X-Oc-Org-Id", orgID)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
@@ -168,18 +175,19 @@ func (c *client) StreamArchitect(ctx context.Context, req ArchitectRequest) (io.
 	return resp.Body, nil
 }
 
-func (c *client) StreamTechLeadPlan(ctx context.Context, req TechLeadPlanRequest) (io.ReadCloser, error) {
-	return c.streamSSE(ctx, "/v1/agents/tech-lead/plan", req)
+func (c *client) StreamTechLeadPlan(ctx context.Context, orgID string, req TechLeadPlanRequest) (io.ReadCloser, error) {
+	return c.streamSSE(ctx, orgID, "/v1/agents/tech-lead/plan", req)
 }
 
-func (c *client) StreamTechLeadDetail(ctx context.Context, req TechLeadDetailRequest) (io.ReadCloser, error) {
-	return c.streamSSE(ctx, "/v1/agents/tech-lead/detail", req)
+func (c *client) StreamTechLeadDetail(ctx context.Context, orgID string, req TechLeadDetailRequest) (io.ReadCloser, error) {
+	return c.streamSSE(ctx, orgID, "/v1/agents/tech-lead/detail", req)
 }
 
 // streamSSE is the shared POST + SSE wrapper used by every streaming agent
 // route. Caller must close the returned body. No client-side timeout —
-// streams can run for minutes; cancellation flows via ctx.
-func (c *client) streamSSE(ctx context.Context, path string, body any) (io.ReadCloser, error) {
+// streams can run for minutes; cancellation flows via ctx. The orgID is
+// sent as the `X-Oc-Org-Id` header for the Anthropic-key resolver.
+func (c *client) streamSSE(ctx context.Context, orgID, path string, body any) (io.ReadCloser, error) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("marshal request: %w", err)
@@ -190,6 +198,7 @@ func (c *client) streamSSE(ctx context.Context, path string, body any) (io.ReadC
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Accept", "text/event-stream")
+	httpReq.Header.Set("X-Oc-Org-Id", orgID)
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {

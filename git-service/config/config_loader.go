@@ -59,6 +59,8 @@ func Load() (Config, error) {
 		JWTResourceMetadataURL:      r.readOptionalString("JWT_RESOURCE_METADATA_URL", ""),
 		TaskJWTAllowedIssuer:        r.readOptionalString("TASK_JWT_ISSUER", "asdlc-bff"),
 		TaskJWTAllowedAudience:      r.readOptionalString("TASK_JWT_AUDIENCE", "git-service"),
+		AnthropicPlatformKey:        r.readOptionalString("ANTHROPIC_PLATFORM_KEY", ""),
+		AgentsServiceURL:            r.readOptionalString("AGENTS_SERVICE_URL", ""),
 	}
 
 	if len(r.errors) > 0 {

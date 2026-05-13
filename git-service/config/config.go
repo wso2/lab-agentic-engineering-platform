@@ -98,4 +98,19 @@ type Config struct {
 	// Task JWTs (issuer = "asdlc-bff", audience = "git-service").
 	TaskJWTAllowedIssuer   string
 	TaskJWTAllowedAudience string
+
+	// AnthropicPlatformKey is the platform-wide fallback Anthropic API key
+	// used by AnthropicCredentialService.EffectiveKey when an org has not
+	// configured its own. Empty string disables the fallback — agents-service
+	// then surfaces 503 no_anthropic_key_configured. Local-k3d sources this
+	// from deployments-v2/.env via envsubst into the env-overlay; cloud
+	// deployment will use a SecretReference + ESO (see
+	// docs/design/anthropic-key-dual-token.md §10 non-goals).
+	AnthropicPlatformKey string
+
+	// AgentsServiceURL is the in-cluster base URL of app-factory-agents-service
+	// (e.g. "http://app-factory-agents-service:3400"). Optional — empty
+	// disables the cache-invalidate broadcast on Connect/Disconnect. The
+	// 5-min LRU TTL on the resolver side bounds staleness regardless.
+	AgentsServiceURL string
 }

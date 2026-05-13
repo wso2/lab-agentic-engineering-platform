@@ -211,7 +211,7 @@ func (s *requirementsService) StreamGenerate(
 		"project", projectID, "skill", skillID, "target", name,
 		"sources", len(sources), "hasPrompt", prompt != "")
 
-	upstream, err := s.agentsClient.StreamDocumentGeneration(ctx, skillID, agents.DocumentGenerationRequest{
+	upstream, err := s.agentsClient.StreamDocumentGeneration(ctx, orgID, skillID, agents.DocumentGenerationRequest{
 		Sources: sources,
 		Prompt:  prompt,
 	})
