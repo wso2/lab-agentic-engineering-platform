@@ -28,6 +28,7 @@ type AppParams struct {
 	CollabController       controllers.CollabController
 	WebhookController      controllers.WebhookController
 	OrgGitHubController    controllers.OrgGitHubController
+	OrgAnthropicController controllers.OrgAnthropicController
 	OrganizationController controllers.OrganizationController
 	JWKSController         controllers.JWKSController
 	TaskRepo               repositories.TaskRepository
@@ -90,6 +91,9 @@ func NewHandler(params AppParams) http.Handler {
 	}
 	if params.OrgGitHubController != nil {
 		registerOrgGitHubRoutes(apiMux, params.OrgGitHubController)
+	}
+	if params.OrgAnthropicController != nil {
+		registerOrgAnthropicRoutes(apiMux, params.OrgAnthropicController)
 	}
 
 	// Test-only reset endpoint — truncates local DB tables.

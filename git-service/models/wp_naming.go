@@ -43,6 +43,18 @@ func BuildSecretName(ocOrgID string) string {
 	return boundedDNSName("git-", ocOrgID)
 }
 
+// AnthropicSecretName is the fixed K8s Secret name git-service writes
+// into WorkflowPlaneNamespace(ocOrgID). The Secret is unique within its
+// namespace (one per WP namespace, one WP namespace per org), so no
+// org-id encoding in the name is needed — different from BuildSecretName
+// which retains its legacy `git-<orgID>` shape. The coding-agent pod
+// mounts this Secret's ANTHROPIC_API_KEY key via secretKeyRef. Each
+// dispatch SSA-overwrites the same Secret with the freshest value from
+// `org_secrets`.
+//
+// See docs/design/anthropic-key-dual-token.md §4.3.
+const AnthropicSecretName = "anthropic-credentials"
+
 // boundedDNSName returns prefix+slug — lower-cased and trimmed — bounded
 // by the K8s DNS-1123 label cap. When the natural shape exceeds 63
 // chars, the slug is truncated to leave room for "-<8-hex>" where the

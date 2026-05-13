@@ -20,8 +20,10 @@ const ComponentTestPage = lazy(() => import('./pages/ComponentTestPage'));
 import OrgSettingsLayout from './pages/OrgSettingsLayout';
 import OrgGitHubSettings from './pages/OrgGitHubSettings';
 import OrgGitHubAppPicker from './pages/OrgGitHubAppPicker';
+import OrgAnthropicSettings from './pages/OrgAnthropicSettings';
 import NoOrganizationPage from './pages/NoOrganizationPage';
 import { setOrgGithubTokenAccessor } from './services/api/orgGithub';
+import { setOrgAnthropicTokenAccessor } from './services/api/orgAnthropic';
 import { useBillingOrg } from './hooks/useBillingOrg';
 import { organizationOverviewPath } from './lib/paths';
 import { resolveOuHandle } from './utils/orgClaims';
@@ -54,6 +56,7 @@ export function App() {
   useEffect(() => {
     setTokenAccessor(getAccessToken);
     setOrgGithubTokenAccessor(getAccessToken);
+    setOrgAnthropicTokenAccessor(getAccessToken);
   }, [getAccessToken]);
 
   // Triggers server-side org/subscription provisioning so downstream entitlement checks pass.
@@ -92,6 +95,7 @@ export function App() {
           <Route index element={<Navigate to="github" replace />} />
           <Route path="github" element={<OrgGitHubSettings />} />
           <Route path="github/pick" element={<OrgGitHubAppPicker />} />
+          <Route path="anthropic" element={<OrgAnthropicSettings />} />
         </Route>
 
         <Route path="/organizations/:orgId/projects/:projectId" element={<ContextForwardingOutlet />}>

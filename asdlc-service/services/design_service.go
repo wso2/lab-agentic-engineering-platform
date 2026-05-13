@@ -237,7 +237,7 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 	slog.InfoContext(ctx, "streaming design via agents service",
 		"project", projectID, "hasPrevious", previousDesign != nil)
 
-	upstream, err := s.agentsClient.StreamArchitect(ctx, agents.ArchitectRequest{
+	upstream, err := s.agentsClient.StreamArchitect(ctx, orgID, agents.ArchitectRequest{
 		ProjectName:    projectID,
 		Spec:           specContent,
 		PreviousDesign: previousDesign,

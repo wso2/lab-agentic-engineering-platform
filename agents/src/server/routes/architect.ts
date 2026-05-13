@@ -1,6 +1,6 @@
 import type express from "express";
 import { streamText, stepCountIs } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { createAnthropic } from "@ai-sdk/anthropic";
 import { config } from "../../shared/config.js";
 import { ArchitectInput } from "../../agents/architect/schema.js";
 import {
@@ -13,6 +13,11 @@ import {
   type SseSink,
   type FinalizeResolver,
 } from "../../agents/architect/tools.js";
+import {
+  resolveAnthropicKey,
+  AnthropicKeyError,
+} from "../../shared/anthropic-key-resolver.js";
+import { getOrgId } from "../../middleware/org-id.js";
 
 function writeFrame(res: express.Response, frame: unknown): void {
   res.write(`data: ${JSON.stringify(frame)}\n\n`);
@@ -26,8 +31,21 @@ export function registerArchitect(app: express.Express) {
       return;
     }
 
+    const orgId = getOrgId(res);
+    let anthropicApiKey: string;
+    try {
+      anthropicApiKey = (await resolveAnthropicKey(orgId)).key;
+    } catch (err) {
+      if (err instanceof AnthropicKeyError) {
+        res.status(err.status).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+    const anthropic = createAnthropic({ apiKey: anthropicApiKey });
+
     console.log(
-      `[architect] streaming (spec ${parsed.data.spec.length} chars, incremental=${parsed.data.previousDesign ? "yes" : "no"})`,
+      `[architect] streaming orgId=${orgId} (spec ${parsed.data.spec.length} chars, incremental=${parsed.data.previousDesign ? "yes" : "no"})`,
     );
 
     res.writeHead(200, {

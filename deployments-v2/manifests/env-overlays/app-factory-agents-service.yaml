@@ -9,5 +9,11 @@ env:
     value: "http://thunder.openchoreo.localhost:8080"
   - key: JWT_AUDIENCE
     value: "asdlc-bff-to-agents-service"
-  - key: ANTHROPIC_API_KEY
-    value: "${ANTHROPIC_API_KEY}"
+  # In-cluster base URL of git-service. agents-service uses this to resolve
+  # the effective Anthropic API key per call (org key when configured,
+  # platform fallback otherwise — see docs/design/anthropic-key-dual-token.md §6.4).
+  - key: GIT_SERVICE_URL
+    value: "http://app-factory-git-service:3300"
+  # ANTHROPIC_API_KEY env entry deliberately removed — the key is no
+  # longer mounted into this Workload. It's fetched per-request via the
+  # git-service resolver above.

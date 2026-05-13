@@ -94,6 +94,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// org_anthropic_credentials table — per-org Anthropic key projection
+	// (encrypted bytes live in org_secrets). See
+	// docs/design/anthropic-key-dual-token.md §4.2. Idempotent.
+	anthropicCreds := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return migrations.RunOrgAnthropicCredentialsMigration(ctx, db)
+	}
+	if err := anthropicCreds(); err != nil {
+		slog.Error("org_anthropic_credentials migration failed", "error", err)
+		os.Exit(1)
+	}
+
 	// AutoMigrate after — only for GORM-shaped tables. AutoMigrate is
 	// additive (won't drop columns) so re-running with the raw migration
 	// already applied is a no-op for org_credentials.
@@ -277,7 +290,26 @@ func main() {
 
 	// Wire the post-disconnect WP-secret cleanup hook so disconnecting an
 	// org wipes its build credential from the WP namespace too.
-	credService.WithWPCleaner(buildCredService)
+	credService.WithBuildSecretCleaner(buildCredService)
+
+	// Anthropic credential service — per-org Anthropic API key surface.
+	// Reads/writes encrypted bytes via `store` (Postgres org_secrets), maintains
+	// the org_anthropic_credentials projection table, SSAs a per-org K8s Secret
+	// into workflows-<orgID> on dispatch, and broadcasts a best-effort cache
+	// invalidate to agents-service on Connect/Disconnect.
+	//
+	// Service-JWT-authed Bearer is omitted in dev; the agents-service
+	// /v1/internal/cache/invalidate endpoint is reachable cluster-internally on
+	// the in-cluster service URL.
+	anthropicInvalidator := services.HTTPAgentsCacheInvalidator(cfg.AgentsServiceURL, "")
+	anthropicCredService := services.NewAnthropicCredentialService(
+		db, store, wpClient, cfg.AnthropicPlatformKey, anthropicInvalidator,
+	)
+	if cfg.AnthropicPlatformKey == "" {
+		slog.Warn("ANTHROPIC_PLATFORM_KEY is empty — platform fallback disabled; orgs without their own key will see 503 from agents-service")
+	} else {
+		slog.Info("anthropic credential service: platform fallback configured", "agentsServiceURL", cfg.AgentsServiceURL)
+	}
 
 	// Periodic credential validator. Walks every active org_credentials row
 	// once per cfg.CredentialValidatorInterval (default 24h), probes GitHub,
@@ -345,9 +377,10 @@ func main() {
 		BoardCtrl:        boardCtrl,
 		RepoService:      repoService,
 		RepoRepo:         repoRepo,
-		CredService:      credService,
-		BuildCredService: buildCredService,
-		Validator:        validator,
+		CredService:          credService,
+		BuildCredService:     buildCredService,
+		AnthropicCredService: anthropicCredService,
+		Validator:            validator,
 		ServiceJWT:       serviceJWT,
 		TaskJWT:          taskJWT,
 		ProjectCtrl:      projectCtrl,
