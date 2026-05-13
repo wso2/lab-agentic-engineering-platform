@@ -24,16 +24,17 @@ const NON_TERMINAL: TaskStatus[] = [
 ];
 
 const STATUS_DISPLAY: Record<TaskStatus, { label: string; tone: 'primary' | 'success' | 'warning' | 'error' | 'muted' }> = {
-  pending:          { label: 'Pending',           tone: 'muted'   },
-  pending_deps:     { label: 'Waiting on deps',   tone: 'muted'   },
-  in_progress:      { label: 'In Progress',       tone: 'primary' },
-  ready_for_review: { label: 'Awaiting review',   tone: 'primary' },
-  merged:           { label: 'Merged',            tone: 'primary' },
-  building:         { label: 'Building',          tone: 'primary' },
-  deployed:         { label: 'Deployed',          tone: 'success' },
-  rejected:         { label: 'Rejected',          tone: 'warning' },
-  failed:           { label: 'Failed',            tone: 'error'   },
-  abandoned:        { label: 'Abandoned',         tone: 'muted'   },
+  pending:             { label: 'Pending',           tone: 'muted'   },
+  pending_deps:        { label: 'Waiting on deps',   tone: 'muted'   },
+  in_progress:         { label: 'In Progress',       tone: 'primary' },
+  verification_failed: { label: 'Verification failed', tone: 'warning' },
+  ready_for_review:    { label: 'Awaiting review',   tone: 'primary' },
+  merged:              { label: 'Merged',            tone: 'primary' },
+  building:            { label: 'Building',          tone: 'primary' },
+  deployed:            { label: 'Deployed',          tone: 'success' },
+  rejected:            { label: 'Rejected',          tone: 'warning' },
+  failed:              { label: 'Failed',            tone: 'error'   },
+  abandoned:           { label: 'Abandoned',         tone: 'muted'   },
 };
 
 // useElapsedTick re-renders every `intervalMs` while `active` is true, so

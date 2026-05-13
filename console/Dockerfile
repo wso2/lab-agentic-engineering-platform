@@ -25,9 +25,16 @@ COPY ui-components/ ./ui-components/
 RUN pnpm --filter asdlc-console build
 
 # Stage 2: Serve with nginx
-FROM nginx:1.27-alpine
+FROM nginx:1.28-alpine
 
 USER root
+
+# Pull latest patched versions of CVE-flagged packages. Scoped (not blanket
+# `apk upgrade`) so alpine-baselayout's pre-upgrade script doesn't try to clean
+# /var/run when this image is built inside a pod that bind-mounts it read-only.
+RUN apk upgrade --no-cache \
+      libcrypto3 libssl3 libexpat libpng libxml2 \
+      musl musl-utils nghttp2-libs zlib
 
 RUN addgroup -g 10001 -S asdlcuser && \
     adduser -u 10001 -S asdlcuser -G asdlcuser
@@ -41,9 +48,7 @@ RUN chmod +x /docker-entrypoint.sh
 RUN chown -R 10001:10001 /var/cache/nginx && \
     chown -R 10001:10001 /var/log/nginx && \
     chown -R 10001:10001 /etc/nginx && \
-    chown -R 10001:10001 /usr/share/nginx/html && \
-    touch /var/run/nginx.pid && \
-    chown -R 10001:10001 /var/run/nginx.pid
+    chown -R 10001:10001 /usr/share/nginx/html
 
 USER 10001
 

@@ -42,6 +42,13 @@ env:
   # setup.sh needs to discover this dynamically.
   - key: AGENT_GIT_SERVICE_URL
     value: "http://app-factory-git-service.dp-wso2cloud-app-factory-development-bad5f211.svc.cluster.local:3300"
+  # URL the coding-agent runner pod uses to call back to the BFF for the
+  # F3c verification-failed endpoint. Same release namespace as the BFF's
+  # own Service (app-factory-api). The pod reads this as
+  # ASDLC_PLATFORM_URL — set empty to disable the callback (the runner
+  # still records the diagnostic on the GitHub issue).
+  - key: AGENT_PLATFORM_URL
+    value: "http://app-factory-api.dp-wso2cloud-app-factory-development-bad5f211.svc.cluster.local:8080"
   - key: BFF_TASK_SIGNING_KEY
     value: "${BFF_TASK_SIGNING_KEY}"
   - key: BFF_TASK_TOKEN_ISSUER

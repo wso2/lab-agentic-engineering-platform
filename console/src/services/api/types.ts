@@ -148,6 +148,7 @@ export type TaskStatus =
   | 'pending'
   | 'pending_deps'
   | 'in_progress'
+  | 'verification_failed'
   | 'ready_for_review'
   | 'merged'
   | 'building'
@@ -306,6 +307,16 @@ export interface Task {
   // dispatch path ("Execute all → Remote Agents"). Used by TaskDetailPanel
   // to gate the "Execute Now" button.
   execType?: 'SYSTEM' | 'WORKER';
+  // Component name this task targets — used by the Pending Deps column to
+  // map this task back to the dep graph.
+  componentName?: string;
+  // F4 — list of component names this task is waiting to be deployed.
+  // The Pending Deps column renders "Waiting for: …" from this. Empty
+  // for unblocked tasks.
+  dependsOnComponents?: string[];
+  // F3c — diagnostic surface for `verification_failed` tasks. Shown on
+  // the card so the operator can decide whether to retry.
+  errorMessage?: string;
 }
 
 export interface ProjectBoard {
@@ -315,6 +326,10 @@ export interface ProjectBoard {
   done: Task[];
   onHold: Task[];
   failed: Task[];
+  // F4 — tasks blocked on un-deployed dependencies. Distinct from
+  // `onHold` (user-managed) so the operator can see which tasks are
+  // waiting on the dep-graph and what they're waiting for.
+  pendingDeps: Task[];
 }
 
 // -- Component Config (Environment Variables) ---------------------------------

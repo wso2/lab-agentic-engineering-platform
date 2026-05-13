@@ -27,8 +27,14 @@ func issueTitle(task *models.ComponentTask) string {
 //     tech-lead detail phase.
 //  3. Component Reference card (name, type, language, app path,
 //     OpenAPI pointer).
-//  4. Component Dependencies block (env-binding wiring, only when the
-//     component declares `dependsOn`).
+//
+// F3b — the legacy "Component Dependencies" block (consumer-side
+// `dependencies.endpoints` env-binding wiring) has been removed. Under
+// the deploy-gating + URL-as-constant model, the dispatcher injects each
+// upstream URL directly into the agent prompt; the agent bakes it in as
+// a build-time constant. Service components still declare their *own*
+// `spec.endpoints` with `visibility: external` so the deployed URL is
+// reachable — that lives in the `asdlc` skill, not this issue body.
 //
 // The agent owns branch + PR creation. The PR body MUST contain
 // `Closes #<this-issue>` so the platform's pull_request webhook can link
@@ -72,26 +78,6 @@ func buildIssueBody(task *models.ComponentTask, comp *models.DesignComponent, _r
 			sb.WriteString("- **Contract:** see `.asdlc/design.json` → `components[name=\"")
 			sb.WriteString(task.ComponentName)
 			sb.WriteString("\"].openAPISpec`\n")
-		}
-		if len(comp.DependsOn) > 0 {
-			sb.WriteString("\n## Component Dependencies\n")
-			sb.WriteString("This component depends on the following components. Declare each as a dependency in `workload.yaml` (the `asdlc` skill has the full format) and read the URL from the injected env var — never hardcode service URLs.\n\n")
-			for _, dep := range comp.DependsOn {
-				envVar := strings.ToUpper(strings.ReplaceAll(dep, "-", "_")) + "_URL"
-				sb.WriteString(fmt.Sprintf("- **%s** → use env var `%s`\n", dep, envVar))
-			}
-			sb.WriteString("\n```yaml\n")
-			sb.WriteString("dependencies:\n")
-			sb.WriteString("  endpoints:\n")
-			for _, dep := range comp.DependsOn {
-				envVar := strings.ToUpper(strings.ReplaceAll(dep, "-", "_")) + "_URL"
-				sb.WriteString(fmt.Sprintf("    - component: %s\n", dep))
-				sb.WriteString("      name: http\n")
-				sb.WriteString("      visibility: project\n")
-				sb.WriteString("      envBindings:\n")
-				sb.WriteString(fmt.Sprintf("        address: %s\n", envVar))
-			}
-			sb.WriteString("```\n")
 		}
 	}
 	sb.WriteString("\n")

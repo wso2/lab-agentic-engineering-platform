@@ -27,6 +27,14 @@ type TaskController interface {
 	RegenerateTaskBody(w http.ResponseWriter, r *http.Request)
 	ExecTask(w http.ResponseWriter, r *http.Request)
 
+	// F3c — agent-driven verification failure + operator retry.
+	// VerificationFailed authenticates the caller with the per-task JWT
+	// minted at dispatch (verified locally by TaskTokenManager.Verify
+	// against the BFF's own signing key). Retry is operator-only and
+	// uses the standard auth middleware.
+	VerificationFailed(w http.ResponseWriter, r *http.Request)
+	Retry(w http.ResponseWriter, r *http.Request)
+
 	// Progress endpoints — task-execution-progress.md §5.2.
 	GetTaskAgentProgress(w http.ResponseWriter, r *http.Request)
 	GetTaskBuildProgress(w http.ResponseWriter, r *http.Request)
@@ -37,6 +45,7 @@ type taskController struct {
 	dispatchSvc services.DispatchService
 	progressSvc services.ProgressService
 	ocClient    openchoreo.ComponentClient
+	taskTokens  *services.TaskTokenManager
 }
 
 func NewTaskController(
@@ -44,12 +53,14 @@ func NewTaskController(
 	dispatchSvc services.DispatchService,
 	progressSvc services.ProgressService,
 	ocClient openchoreo.ComponentClient,
+	taskTokens *services.TaskTokenManager,
 ) TaskController {
 	return &taskController{
 		service:     service,
 		dispatchSvc: dispatchSvc,
 		progressSvc: progressSvc,
 		ocClient:    ocClient,
+		taskTokens:  taskTokens,
 	}
 }
 
@@ -330,6 +341,82 @@ func writeProgressError(w http.ResponseWriter, r *http.Request, err error, op st
 	}
 	slog.ErrorContext(r.Context(), op+" failed", "error", err)
 	utils.WriteErrorResponse(w, http.StatusInternalServerError, op+" failed")
+}
+
+// verificationFailedRequest is the per-task-bearer-authed JSON body for
+// POST /api/v1/tasks/{taskId}/verification-failed. The diagnostic field
+// is optional but strongly encouraged so the operator can see what the
+// agent observed.
+type verificationFailedRequest struct {
+	Diagnostic string `json:"diagnostic"`
+}
+
+// VerificationFailed (F3c) is called by the dispatched agent inside the
+// runner pod when it detects that a dependency endpoint is not behaving
+// as the spec describes. Authenticated via the per-task JWT the runner
+// already holds. The handler verifies the JWT, asserts the subject
+// matches the URL's taskId, then drives in_progress → verification_failed.
+func (c *taskController) VerificationFailed(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.dispatchSvc == nil || c.taskTokens == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "verification-failed not configured")
+		return
+	}
+
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "bearer token required")
+		return
+	}
+	claims, err := c.taskTokens.Verify(authz[len(prefix):])
+	if err != nil {
+		slog.WarnContext(r.Context(), "verification-failed: invalid bearer", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid task bearer")
+		return
+	}
+	if claims.TaskID != taskID {
+		slog.WarnContext(r.Context(), "verification-failed: bearer subject mismatch",
+			"task", taskID, "claimTaskId", claims.TaskID)
+		utils.WriteErrorResponse(w, http.StatusForbidden, "task bearer does not match path")
+		return
+	}
+
+	var req verificationFailedRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // diagnostic is optional
+	}
+	if err := c.dispatchSvc.MarkVerificationFailed(r.Context(), taskID, req.Diagnostic); err != nil {
+		slog.ErrorContext(r.Context(), "verification-failed: apply transition failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to apply verification_failed")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusAccepted, map[string]string{"status": "verification_failed"})
+}
+
+// Retry (F3c) is the operator-driven retry path: transitions
+// verification_failed → in_progress and re-dispatches with a fresh
+// WorkflowRun + freshly minted per-task bearer. Standard user auth
+// applies (mounted on the org/project-scoped task path).
+func (c *taskController) Retry(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.dispatchSvc == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "dispatch service not configured")
+		return
+	}
+	res, err := c.dispatchSvc.RetryTask(r.Context(), taskID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "retry: failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to retry task")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
 func (c *taskController) ExecTask(w http.ResponseWriter, r *http.Request) {

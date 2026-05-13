@@ -883,7 +883,7 @@ export const restApi = {
   },
 
   async getProjectBoard(orgHandle: string, projectId: string): Promise<ProjectBoard> {
-    const empty: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], url: '' };
+    const empty: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], pendingDeps: [], url: '' };
     try {
       const data = await fetchJSON<ProjectBoard>(`${projectPrefix(orgHandle, projectId)}/board`);
       return data ?? empty;
@@ -902,6 +902,15 @@ export const restApi = {
 
   async execTask(orgHandle: string, projectId: string, taskId: string): Promise<void> {
     await fetchJSON<void>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/exec`, {
+      method: 'POST',
+    });
+  },
+
+  // F3c — operator-driven retry for a task in `verification_failed`.
+  // Re-dispatches a fresh WorkflowRun against the same component / issue /
+  // branch with a newly minted per-task bearer.
+  async retryTask(orgHandle: string, projectId: string, taskId: string): Promise<void> {
+    await fetchJSON<void>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/retry`, {
       method: 'POST',
     });
   },

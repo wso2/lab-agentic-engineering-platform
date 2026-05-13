@@ -26,6 +26,7 @@ const STATUS_TONE: Record<TaskStatus, 'default' | 'primary' | 'success' | 'error
   pending: 'default',
   pending_deps: 'default',
   in_progress: 'primary',
+  verification_failed: 'warning',
   ready_for_review: 'primary',
   merged: 'success',
   building: 'primary',

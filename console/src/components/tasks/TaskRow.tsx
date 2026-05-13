@@ -149,21 +149,50 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
           )}
         </Box>
 
-        {/* Title */}
-        <Typography
-          variant="body2"
-          sx={{
-            fontWeight: 450,
-            flex: 1,
-            color: isFailed ? 'error.main' : 'text.primary',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-            minWidth: 0,
-          }}
-        >
-          {task.title}
-        </Typography>
+        {/* Title (+ F4 "Waiting on" subline for pending_deps tasks, +
+            F3c diagnostic for verification_failed tasks) */}
+        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <Typography
+            variant="body2"
+            sx={{
+              fontWeight: 450,
+              color: isFailed ? 'error.main' : 'text.primary',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              minWidth: 0,
+            }}
+          >
+            {task.title}
+          </Typography>
+          {task.status === 'pending_deps' && task.dependsOnComponents && task.dependsOnComponents.length > 0 && (
+            <Typography
+              variant="caption"
+              sx={{
+                color: 'warning.main',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Waiting for: {task.dependsOnComponents.join(', ')}
+            </Typography>
+          )}
+          {task.status === 'verification_failed' && task.errorMessage && (
+            <Typography
+              variant="caption"
+              sx={{
+                color: 'error.main',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontStyle: 'italic',
+              }}
+            >
+              Verification failed — {task.errorMessage}
+            </Typography>
+          )}
+        </Box>
 
         {/* Inline execution status + Live progress button — only shows
             once the task has been dispatched. */}

@@ -8,7 +8,7 @@ import {
   Typography,
 } from '@wso2/oxygen-ui';
 import ReactMarkdown from 'react-markdown';
-import { Play } from '@wso2/oxygen-ui-icons-react';
+import { Play, RotateCcw } from '@wso2/oxygen-ui-icons-react';
 import { api } from '../../services/api';
 import type { Task } from '../../services/api';
 import { AssigneeChip } from './AssigneeChip';
@@ -22,6 +22,7 @@ interface TaskDetailPanelProps {
 
 export function TaskDetailPanel({ task, orgId, projectId, onClose }: TaskDetailPanelProps) {
   const [isExecuting, setIsExecuting] = useState(false);
+  const [isRetrying, setIsRetrying] = useState(false);
 
   const handleExecute = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -33,6 +34,20 @@ export function TaskDetailPanel({ task, orgId, projectId, onClose }: TaskDetailP
       // silently fail — user can retry
     } finally {
       setIsExecuting(false);
+      onClose();
+    }
+  };
+
+  const handleRetry = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!task.componentTaskId) return;
+    setIsRetrying(true);
+    try {
+      await api.retryTask(orgId, projectId, task.componentTaskId);
+    } catch {
+      // silently fail — board polling will refresh state
+    } finally {
+      setIsRetrying(false);
       onClose();
     }
   };
@@ -125,6 +140,22 @@ export function TaskDetailPanel({ task, orgId, projectId, onClose }: TaskDetailP
         </Box>
 
         <Box sx={{ flex: 1 }} />
+
+        {/* F3c — Retry surface for verification_failed. Re-dispatches the
+            task with a fresh WorkflowRun + freshly minted bearer; the
+            agent pushes new commits to the same draft PR. */}
+        {task.status === 'verification_failed' && task.componentTaskId && (
+          <Button
+            variant="contained"
+            size="small"
+            color="warning"
+            startIcon={isRetrying ? <CircularProgress size={12} color="inherit" /> : <RotateCcw size={12} />}
+            disabled={isRetrying}
+            onClick={handleRetry}
+          >
+            {isRetrying ? 'Retrying…' : 'Retry'}
+          </Button>
+        )}
 
         {/* Execute Now only fires the per-task /tasks/{id}/exec endpoint,
             which does meaningful work only for SYSTEM tasks (DB / infra

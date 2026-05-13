@@ -3,6 +3,7 @@ package config
 import (
 	"bufio"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -30,7 +31,7 @@ func Load() (Config, error) {
 			BaseURL:    r.readRequiredString("PLATFORM_API_SERVICE_BASE_URL"),
 			HostHeader: r.readOptionalString("PLATFORM_API_SERVICE_HOST", ""),
 		},
-		DatabaseURL:            r.readOptionalString("DATABASE_URL", ""),
+		DatabaseURL:            r.databaseURL(),
 		TestMode:               r.readOptionalBool("TEST_MODE", false),
 		DeploymentTier:         r.readOptionalString("DEPLOYMENT_TIER", "dev"),
 		GitHubWebhookSecret:    r.readOptionalString("GITHUB_WEBHOOK_SECRET", ""),
@@ -57,6 +58,7 @@ func Load() (Config, error) {
 			BaseURL: r.readOptionalString("AGENTS_SERVICE_BASE_URL", ""),
 		},
 		AgentGitServiceURL: r.readOptionalString("AGENT_GIT_SERVICE_URL", ""),
+		AgentPlatformURL:   r.readOptionalString("AGENT_PLATFORM_URL", ""),
 		ServiceAuth: ServiceAuthConfig{
 			TokenURL:     r.readOptionalString("SERVICE_AUTH_TOKEN_URL", ""),
 			ClientID:     r.readOptionalString("SERVICE_AUTH_CLIENT_ID", ""),
@@ -92,6 +94,34 @@ func Load() (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// databaseURL builds the Postgres DSN. When DATABASE_URL is set it is used
+// verbatim — convenient for local dev with a hand-written URL. Otherwise the
+// URL is assembled from DB_HOST / DB_PORT / DB_USER / DB_PASSWORD / DB_NAME,
+// which is the shape the platform release-binding provides. Mirrors the
+// approach used by agent-manager-service.
+func (r *configReader) databaseURL() string {
+	if v := os.Getenv("DATABASE_URL"); v != "" {
+		return v
+	}
+	host := r.readRequiredString("DB_HOST")
+	port := r.readOptionalInt("DB_PORT", 5432)
+	user := r.readRequiredString("DB_USER")
+	password := r.readRequiredString("DB_PASSWORD")
+	name := r.readRequiredString("DB_NAME")
+	params := url.Values{}
+	if mode := os.Getenv("DB_SSLMODE"); mode != "" {
+		params.Set("sslmode", mode)
+	}
+	u := &url.URL{
+		Scheme:   "postgres",
+		User:     url.UserPassword(user, password),
+		Host:     fmt.Sprintf("%s:%d", host, port),
+		Path:     "/" + name,
+		RawQuery: params.Encode(),
+	}
+	return u.String()
 }
 
 func (r *configReader) readRequiredString(key string) string {

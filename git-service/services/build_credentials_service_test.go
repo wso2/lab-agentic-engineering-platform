@@ -93,7 +93,7 @@ func TestMintBuildToken_Happy(t *testing.T) {
 	res := &fakeResolver{cred: &fakeCred{token: "ghs_abc123", exp: expiry}}
 	store := &fakeStore{}
 
-	svc := NewBuildCredentialsService(repos, res, store)
+	svc := NewBuildCredentialsService(repos, res, store, nil)
 	mint, err := svc.MintBuildToken(context.Background(), "default", "asdlc-repos-myrepo")
 	if err != nil {
 		t.Fatalf("MintBuildToken: %v", err)
@@ -111,7 +111,7 @@ func TestMintBuildToken_Happy(t *testing.T) {
 
 func TestMintBuildToken_RepoNotInOrg(t *testing.T) {
 	repos := &fakeRepoRepo{rows: map[string]*models.GitRepository{}}
-	svc := NewBuildCredentialsService(repos, &fakeResolver{}, &fakeStore{})
+	svc := NewBuildCredentialsService(repos, &fakeResolver{}, &fakeStore{}, nil)
 	_, err := svc.MintBuildToken(context.Background(), "default", "missing-slug")
 	if !errors.Is(err, ErrRepoNotInOrg) {
 		t.Errorf("got %v; want ErrRepoNotInOrg", err)
@@ -124,7 +124,7 @@ func TestMintBuildToken_OrgDisconnected(t *testing.T) {
 		"default/slug": {OrgID: "default", RepoSlug: "slug", OcSecretRefName: &secretRef},
 	}}
 	res := &fakeResolver{err: &credentials.OrgNotActiveError{OcOrgID: "default", Status: "disconnected"}}
-	svc := NewBuildCredentialsService(repos, res, &fakeStore{})
+	svc := NewBuildCredentialsService(repos, res, &fakeStore{}, nil)
 	_, err := svc.MintBuildToken(context.Background(), "default", "slug")
 	if !errors.Is(err, ErrOrgDisconnected) {
 		t.Errorf("got %v; want ErrOrgDisconnected", err)
@@ -138,7 +138,7 @@ func TestMintBuildToken_OpenBaoUnavailable(t *testing.T) {
 	}}
 	res := &fakeResolver{cred: &fakeCred{token: "t", exp: time.Now().Add(time.Hour)}}
 	store := &fakeStore{err: errors.New("openbao down")}
-	svc := NewBuildCredentialsService(repos, res, store)
+	svc := NewBuildCredentialsService(repos, res, store, nil)
 	_, err := svc.MintBuildToken(context.Background(), "default", "slug")
 	if !errors.Is(err, ErrOpenBaoUnavailable) {
 		t.Errorf("got %v; want ErrOpenBaoUnavailable", err)

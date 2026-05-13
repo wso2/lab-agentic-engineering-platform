@@ -411,22 +411,37 @@ func (s *taskService) persistAndIssue(
 	design *DesignFile,
 	repoURL, repoSlug string,
 ) ([]persistedItem, error) {
-	// Index design components for slice extraction.
+	// Index design components for slice extraction and DependsOn lookup.
 	byName := make(map[string]models.DesignComponent, len(design.Components))
+	componentNameSet := make(map[string]struct{}, len(design.Components))
 	for _, c := range design.Components {
 		byName[strings.ToLower(c.Name)] = c
+		componentNameSet[c.Name] = struct{}{}
 	}
 
 	// Persist rows up front, sequentially — ordering by plan index.
+	// F2: DependsOnComponents is pulled directly from the design (platform-
+	// authored, not LLM-authored) and validated against the component set
+	// at persist time. The LLM's `PlanItem.dependsOn` is now context-only.
 	rows := make([]persistedItem, len(plan))
 	for i, p := range plan {
+		comp := byName[strings.ToLower(p.ComponentName)]
+		deps := append([]string(nil), comp.DependsOn...)
+		for _, dep := range deps {
+			if _, ok := componentNameSet[dep]; !ok {
+				return nil, fmt.Errorf(
+					"design.Components[%s].dependsOn references unknown component %q (must match one of design.Components[*].name)",
+					p.ComponentName, dep,
+				)
+			}
+		}
 		task := &models.ComponentTask{
 			ProjectID:           projectID,
 			OrgID:               orgID,
 			ComponentName:       p.ComponentName,
 			Title:               p.Title,
 			Rationale:           p.Rationale,
-			TaskDependsOn:       models.StringSlice(p.DependsOn),
+			DependsOnComponents: models.StringSlice(deps),
 			BatchID:             ptrString(batchID),
 			SourceSpecVersion:   specVersion,
 			SourceDesignVersion: designVersion,
@@ -438,7 +453,6 @@ func (s *taskService) persistAndIssue(
 		if err := s.taskRepo.Create(ctx, task); err != nil {
 			return nil, fmt.Errorf("create task row %d: %w", i, err)
 		}
-		comp := byName[strings.ToLower(p.ComponentName)]
 		// Strip openAPISpec — the YAML can be huge and the prompt explicitly
 		// tells the model to reference `.asdlc/design.json` rather than inline
 		// it. Removing it from the slice saves tokens and removes temptation.

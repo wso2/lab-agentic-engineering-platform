@@ -10,6 +10,7 @@ THUNDER_SCOPES="${VITE_THUNDER_SCOPES:-openid profile email}"
 SIGN_IN_REDIRECT_URL="${VITE_SIGN_IN_REDIRECT_URL:-}"
 SIGN_OUT_REDIRECT_URL="${VITE_SIGN_OUT_REDIRECT_URL:-}"
 DEV_BYPASS_AUTH="${VITE_DEV_BYPASS_AUTH:-}"
+BILLING_API_BASE_URL_VAL="${BILLING_API_BASE_URL:-}"
 
 # env-config.js is generated at start so the SPA can read runtime config.
 # The heredoc is unquoted so $VAR and ${VAR:-default} expand. We fall back
@@ -27,6 +28,7 @@ window._env_ = {
   VITE_THUNDER_CLIENT_ID: "${THUNDER_CLIENT_ID}",
   VITE_THUNDER_SCOPES: "${THUNDER_SCOPES}",
   VITE_DEV_BYPASS_AUTH: "${DEV_BYPASS_AUTH}",
+  BILLING_API_BASE_URL: "${BILLING_API_BASE_URL_VAL}",
 EOF_INNER
 
 if [ -n "$SIGN_IN_REDIRECT_URL" ]; then
@@ -43,6 +45,19 @@ fi
 echo '};' >> /usr/share/nginx/html/env-config.js
 
 echo "Runtime configuration generated"
+
+# Substitute the DNS resolver placeholder with nameserver IPs from
+# /etc/resolv.conf. Kubelet auto-populates this file with the cluster DNS
+# service ClusterIP, so this works regardless of whether the cluster uses
+# kube-dns or CoreDNS or what the service is named. Using a hardcoded
+# hostname (e.g. kube-dns.kube-system.svc.cluster.local) is a chicken-and-
+# egg problem — nginx needs a working resolver to look up its resolver.
+DNS_RESOLVERS="$(awk '/^nameserver/ {print $2}' /etc/resolv.conf | tr '\n' ' ' | sed 's/ $//')"
+if [ -z "$DNS_RESOLVERS" ]; then
+    echo "WARNING: no nameservers in /etc/resolv.conf; variable-based proxy_pass will 502"
+    DNS_RESOLVERS="127.0.0.11"
+fi
+sed -i "s|__DNS_RESOLVERS__|${DNS_RESOLVERS}|g" /etc/nginx/nginx.conf
 
 sed -i "s|__ASDLC_API_PROXY_URL__|${ASDLC_API_PROXY_URL}|g" /etc/nginx/nginx.conf
 

@@ -42,11 +42,20 @@ const (
 	// org's GitHub credential is disconnected (or, in PR D, when reach
 	// reconciliation drops the task's repo from the App install). Terminal.
 	TaskStatusAbandoned TaskStatus = "abandoned"
-	// TaskStatusPendingDeps gates dispatch on un-merged dependencies (tech-
-	// lead revamp, design §12). The dispatcher transitions a task into this
-	// state if any task it dependsOn is not yet merged; a merge webhook
-	// re-evaluates and dispatches it.
+	// TaskStatusPendingDeps gates dispatch on un-deployed dependencies (F2
+	// deploy-gating, docs/design/cross-component-wiring-gaps.md §3). The
+	// dispatcher transitions a task into this state if any task it
+	// dependsOn (by component name) is not yet `deployed`; an upstream
+	// deploy fires the projector's onTaskDeployed cascade which
+	// re-evaluates and auto-dispatches.
 	TaskStatusPendingDeps TaskStatus = "pending_deps"
+	// TaskStatusVerificationFailed (F3c, docs/design/cross-component-
+	// wiring-gaps.md §3 F3c) is the task state when the dispatched agent
+	// reports that integration verification against a dependency endpoint
+	// failed. The PR stays a draft, an "Operator action required" surface
+	// shows on the board, and the operator clicks Retry to re-dispatch
+	// (transition back to in_progress).
+	TaskStatusVerificationFailed TaskStatus = "verification_failed"
 )
 
 // IsTerminal reports whether the status is a terminal state. Terminal states
@@ -91,11 +100,15 @@ type ComponentTask struct {
 	// reconciler retries.
 	Body string `gorm:"type:text" json:"body,omitempty"`
 
-	// TaskDependsOn lists titles of other tasks (in the same batch) this
-	// task depends on. Dispatch waits for all listed tasks to merge before
-	// running this one. Already-merged baseline work is omitted by the
-	// planner — only intra-batch / non-merged refs land here.
-	TaskDependsOn StringSlice `gorm:"type:jsonb;serializer:json" json:"taskDependsOn,omitempty"`
+	// DependsOnComponents lists component names this task's component
+	// depends on, sourced directly from .asdlc/design.json
+	// (design.Components[*].DependsOn). The value is platform-authored,
+	// not LLM-authored, so gating cannot silently fail open on a
+	// hallucinated identifier. Dispatch (deploy-gated): a task is
+	// dispatchable only when, for every entry c in DependsOnComponents,
+	// the batch contains a task whose ComponentName == c and Status
+	// == deployed. See services/dispatch_service.go::depsAllDeployed.
+	DependsOnComponents StringSlice `gorm:"column:depends_on_components;type:jsonb;serializer:json" json:"dependsOnComponents,omitempty"`
 
 	// Lineage — set at generation time, immutable thereafter.
 	BatchID             *string `gorm:"type:uuid;index" json:"batchId,omitempty"`

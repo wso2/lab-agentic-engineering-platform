@@ -32,11 +32,19 @@ export function runClaudeQuery(
   // Spawn env: bearer + git-service URL passed by file path / URL only.
   // No tokens cross via env, so transcripts cannot leak credentials.
   // ANTHROPIC_API_KEY flows through from process.env (container env).
+  // F3c — surface ASDLC_TASK_ID and ASDLC_PLATFORM_URL to the agent's
+  // child env so the asdlc skill's verification-failed shell snippet can
+  // hit POST $ASDLC_PLATFORM_URL/api/v1/tasks/$ASDLC_TASK_ID/verification-failed.
+  // The bearer rides through a file (ASDLC_BEARER_FILE) so the agent's
+  // SDK transcripts can't leak it; the curl snippet reads the file at
+  // call time.
   const childEnv: Record<string, string> = {
     ...(process.env as Record<string, string>),
     PATH: `${layout.asdlcDir}:${process.env.PATH ?? ""}`,
     GH_CONFIG_DIR: layout.ghConfigDir,
     ASDLC_BEARER_FILE: layout.bearerFile,
+    ASDLC_TASK_ID: req.taskId,
+    ASDLC_PLATFORM_URL: process.env.ASDLC_PLATFORM_URL ?? "",
     ASDLC_GIT_SERVICE_URL: req.gitServiceUrl,
     ASDLC_CORRELATION_ID: req.correlationId ?? "",
   };

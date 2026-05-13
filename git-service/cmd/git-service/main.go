@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wso2/asdlc/git-service/api"
+	k8sclient "github.com/wso2/asdlc/git-service/clients/k8s"
 	"github.com/wso2/asdlc/git-service/config"
 	"github.com/wso2/asdlc/git-service/controllers"
 	"github.com/wso2/asdlc/git-service/database"
@@ -68,6 +70,30 @@ func main() {
 		os.Exit(1)
 	}
 
+	// org_secrets table — credential store replacing OpenBao. Idempotent.
+	orgSecrets := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return migrations.RunOrgSecretsMigration(ctx, db)
+	}
+	if err := orgSecrets(); err != nil {
+		slog.Error("org_secrets migration failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Post-2f26614 — collapse git_repositories.oc_secret_ref_name from the
+	// legacy per-repo `git-<org>-<slug>` shape to the per-org `git-<org>`
+	// shape. Idempotent. See docs/design/cross-component-wiring-gaps.md.
+	perOrgSecret := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return migrations.RunPerOrgSecretName(ctx, db)
+	}
+	if err := perOrgSecret(); err != nil {
+		slog.Error("per_org_secret_name migration failed", "error", err)
+		os.Exit(1)
+	}
+
 	// AutoMigrate after — only for GORM-shaped tables. AutoMigrate is
 	// additive (won't drop columns) so re-running with the raw migration
 	// already applied is a no-op for org_credentials.
@@ -82,22 +108,31 @@ func main() {
 		os.Exit(1)
 	}
 
-	// OpenBao readiness gate — refuse to come up until the secret store is
-	// reachable. Combined with rolling-deploy maxSurge=1/maxUnavailable=0 in
-	// production, this prevents new pods coming online with empty App-token
-	// caches during an OpenBao outage (evolution-doc §9.13).
-	openBaoStore, err := credentials.NewOpenBaoStore(
-		cfg.OpenBaoAddr, cfg.OpenBaoToken, "secret", "asdlc-git-service",
-	)
+	credKey, err := base64.StdEncoding.DecodeString(cfg.CredentialEncryptionKey)
+	if err != nil || len(credKey) != 32 {
+		slog.Error("CREDENTIAL_ENCRYPTION_KEY must be a base64-encoded 32-byte key (generate: openssl rand -base64 32)", "error", err)
+		os.Exit(1)
+	}
+	store, err := credentials.NewDBStore(db, credKey)
 	if err != nil {
-		slog.Error("openbao client init failed", "error", err)
+		slog.Error("credential store init failed", "error", err)
 		os.Exit(1)
 	}
-	if err := waitForOpenBao(openBaoStore, 30*time.Second); err != nil {
-		slog.Error("openbao not reachable at startup", "addr", cfg.OpenBaoAddr, "error", err)
-		os.Exit(1)
+	slog.Info("credential store: postgres (aes-256-gcm)")
+
+	// Workflow-plane k8s client — used by BuildCredentialsService.MintBuildToken
+	// to SSA the per-org git-credentials Secret straight into workflows-<orgID>.
+	// nil when running outside a cluster (local dev without KUBECONFIG); the
+	// service degrades to "credential persisted but not delivered" with a
+	// loud warning per mint call. See clients/k8s/client.go.
+	wpClient, err := k8sclient.NewInClusterClient()
+	if err != nil {
+		slog.Warn("k8s client init failed — mint-build will skip Secret writes; builds will fail at clone",
+			"error", err)
+		wpClient = nil
+	} else {
+		slog.Info("k8s client: in-cluster (workflow-plane Secret writes enabled)")
 	}
-	slog.Info("openbao reachable", "addr", cfg.OpenBaoAddr)
 
 	// Repositories
 	repoRepo := repositories.NewRepoRepository(db)
@@ -107,7 +142,7 @@ func main() {
 	// never reached by the resolver. PR B's connect flow seeds the App key
 	// and the minter starts answering MintForInstallation calls.
 	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 10*time.Second)
-	appKey, err := credentials.LoadAppKeyFromOpenBao(loadCtx, openBaoStore)
+	appKey, err := credentials.LoadAppKeyFromOpenBao(loadCtx, store)
 	cancelLoad()
 	if err != nil {
 		slog.Warn("app key load failed; App-mode credentials will return ErrAppNotConfigured", "error", err)
@@ -124,14 +159,14 @@ func main() {
 	// Make OpenBao reachable to the minter for post-startup _platform reads
 	// (App webhook secret list). Confined to pkg/credentials/ via the
 	// import-fence test.
-	minter.WithOpenBao(openBaoStore)
+	minter.WithOpenBao(store)
 
 	// PR B — seed App platform credentials (private key, app ID, client ID,
 	// webhook secret) into OpenBao when running in dev. No-op outside dev
 	// or when env values are absent. Runs BEFORE the App-key load retry
 	// below so first-boot dev environments come up clean.
 	platformSeedCtx, cancelPlatformSeed := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := seed.AppPlatformFromEnv(platformSeedCtx, openBaoStore, cfg); err != nil {
+	if err := seed.AppPlatformFromEnv(platformSeedCtx, store, cfg); err != nil {
 		cancelPlatformSeed()
 		slog.Error("app platform seed failed", "error", err)
 		os.Exit(1)
@@ -143,14 +178,14 @@ func main() {
 	// fully wired (no second restart needed).
 	if appKey == nil {
 		retryCtx, cancelRetry := context.WithTimeout(context.Background(), 10*time.Second)
-		if reloaded, rerr := credentials.LoadAppKeyFromOpenBao(retryCtx, openBaoStore); rerr == nil && reloaded != nil {
+		if reloaded, rerr := credentials.LoadAppKeyFromOpenBao(retryCtx, store); rerr == nil && reloaded != nil {
 			cancelRetry()
 			minter, err = credentials.NewAppTokenMinter(reloaded)
 			if err != nil {
 				slog.Error("app token minter re-init failed", "error", err)
 				os.Exit(1)
 			}
-			minter.WithOpenBao(openBaoStore)
+			minter.WithOpenBao(store)
 			slog.Info("github app loaded post-seed", "appId", reloaded.AppID)
 		} else {
 			cancelRetry()
@@ -189,7 +224,7 @@ func main() {
 
 	// Phase 2 resolver — DB-backed, switches on kind. The Phase 0 invariant
 	// (every call site threads ocOrgID) means no other code changes.
-	resolver := credentials.NewOrgResolver(db, openBaoStore, minter)
+	resolver := credentials.NewOrgResolver(db, store, minter)
 
 	// Services
 	githubClient := services.NewGitHubClient()
@@ -226,7 +261,7 @@ func main() {
 	// Phase 2 PR B — internal credential routes. The service holds the
 	// connect/disconnect orchestration, validation chain, install
 	// lookups. Mounted under shared-secret middleware.
-	credService := services.NewCredentialService(db, openBaoStore, minter, cfg.WebhookHMACSecret, cfg.GitHubAppClientID, appClientSecret, githubClient)
+	credService := services.NewCredentialService(db, store, minter, cfg.WebhookHMACSecret, cfg.GitHubAppClientID, appClientSecret, githubClient)
 
 	// No default-org PAT seed: the binary is org-agnostic. The local-dev
 	// admin org is pre-connected by deployments-v2/scripts/lib/seed-admin-github.sh,
@@ -235,9 +270,14 @@ func main() {
 
 	// Build credentials service. The mint-build endpoint validates
 	// (ocOrgId, repoSlug) ownership, mints a fresh GitHub token via the
-	// resolver, writes it to OpenBao at secret/asdlc/{ocOrgId}/git/{repoSlug},
-	// and returns only the SecretReference name. The BFF never sees the token.
-	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, openBaoStore)
+	// resolver, persists it to the credential store, AND SSAs the per-org
+	// `kubernetes.io/basic-auth` Secret into workflows-<ocOrgID>. The BFF
+	// never sees the token.
+	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, store, wpClient)
+
+	// Wire the post-disconnect WP-secret cleanup hook so disconnecting an
+	// org wipes its build credential from the WP namespace too.
+	credService.WithWPCleaner(buildCredService)
 
 	// Periodic credential validator. Walks every active org_credentials row
 	// once per cfg.CredentialValidatorInterval (default 24h), probes GitHub,
@@ -353,34 +393,6 @@ func main() {
 	slog.Info("server stopped")
 }
 
-// waitForOpenBao polls OpenBao's /v1/sys/health up to deadline before
-// the rest of startup proceeds. Refusing to start when OpenBao is
-// unreachable is an architectural property (evolution-doc §9.13) — the
-// readiness probe holds the pod from receiving traffic until the cache
-// can be populated, so a rolling deploy during an OpenBao outage doesn't
-// drop tasks immediately on the new pod's first read.
-func waitForOpenBao(store credentials.OpenBaoStore, deadline time.Duration) error {
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
-	defer cancel()
-	backoff := 500 * time.Millisecond
-	const maxBackoff = 3 * time.Second
-	var lastErr error
-	for {
-		if err := credentials.CheckReachable(ctx, store); err == nil {
-			return nil
-		} else {
-			lastErr = err
-		}
-		select {
-		case <-ctx.Done():
-			return fmt.Errorf("openbao readiness gate timed out: %w", lastErr)
-		case <-time.After(backoff):
-		}
-		if backoff < maxBackoff {
-			backoff *= 2
-		}
-	}
-}
 
 // filterEmpty maps "" to nil so an unconfigured allowed-issuer/audience
 // becomes the empty list rather than [""].

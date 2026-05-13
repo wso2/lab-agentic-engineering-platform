@@ -2,10 +2,7 @@ packages:
   - console
   - ui-components/*
 
-# pnpm 10 refuses to run install scripts for transitive packages unless they
-# are explicitly allowlisted. These are the build-script-bearing packages
-# pulled in by Vite, SWC, and core-js (transitive via @excalidraw/excalidraw).
-onlyBuiltDependencies:
-  - "@swc/core"
-  - core-js
-  - esbuild
+allowBuilds:
+  "@swc/core": true
+  core-js: true
+  esbuild: true

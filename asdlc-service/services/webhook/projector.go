@@ -24,12 +24,34 @@ import (
 // same task serialise. Phase 0 single-replica BFF inherits this scheme
 // unchanged when §9.3 (multi-replica hardening) lands — Postgres advisory
 // locks are cluster-wide.
+//
+// DispatchHook (injected via SetDispatchHook) is invoked post-commit
+// whenever a task transitions into `deployed` so dependents in
+// `pending_deps` get auto-dispatched. See docs/design/cross-component-
+// wiring-gaps.md §3 F1.
 type Projector struct {
-	db *gorm.DB
+	db           *gorm.DB
+	dispatchHook DispatchHook
+}
+
+// DispatchHook is the post-commit callback fired by the projector when a
+// task transitions into a state that should unblock dependents. The hook
+// implementation owns the cascade (eligibility scan + DispatchService
+// call); the projector only owns the trigger. Implemented by
+// services.DispatchCascadeHook.
+type DispatchHook interface {
+	OnTaskDeployed(ctx context.Context, orgID, projectID, componentName string)
 }
 
 func NewProjector(db *gorm.DB) *Projector {
 	return &Projector{db: db}
+}
+
+// SetDispatchHook wires the post-commit dispatch cascade. Called once
+// from main during service composition; nil is treated as "no cascade",
+// preserving the legacy behaviour for callers that haven't wired it.
+func (p *Projector) SetDispatchHook(h DispatchHook) {
+	p.dispatchHook = h
 }
 
 // ApplyToTaskByPR locks the task whose PullRequestNumber matches prNumber
@@ -217,13 +239,24 @@ func (p *Projector) MarkBuilding(
 // lock. Used for any non-PR transition driven by build state — the build
 // watcher (building → deployed/failed) and the dispatch path
 // (merged → failed on TaskEventBuildPathMismatch).
+//
+// Post-commit, if the transition landed the task in `deployed` and a
+// dispatch hook is wired, fire it asynchronously so dependents in
+// `pending_deps` get re-evaluated + dispatched. The hook owns its own
+// per-project advisory lock; firing here just kicks off the cascade.
 func (p *Projector) ApplyBuildResult(
 	ctx context.Context,
 	taskID string,
 	event services.TaskEvent,
 	errMsg string,
 ) error {
-	return p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var (
+		landedDeployed bool
+		orgID          string
+		projectID      string
+		componentName  string
+	)
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := acquireTaskLock(tx, taskID); err != nil {
 			return err
 		}
@@ -247,8 +280,25 @@ func (p *Projector) ApplyBuildResult(
 		now := time.Now().UTC()
 		task.LastEventAt = &now
 		setCauseIfTerminal(&task, event)
+		if next == models.TaskStatusDeployed {
+			landedDeployed = true
+			orgID = task.OrgID
+			projectID = task.ProjectID
+			componentName = task.ComponentName
+		}
 		return tx.Save(&task).Error
 	})
+	if err != nil {
+		return err
+	}
+	if landedDeployed && p.dispatchHook != nil {
+		// Fire-and-forget; the hook owns its own context lifecycle. We
+		// pass a detached context so the watcher's tick deadline doesn't
+		// cancel a cascade that may itself need to create WorkflowRuns.
+		hookCtx := context.WithoutCancel(ctx)
+		go p.dispatchHook.OnTaskDeployed(hookCtx, orgID, projectID, componentName)
+	}
+	return nil
 }
 
 // LinkTaskByIssue persists per-PR fields (PullRequestNumber,

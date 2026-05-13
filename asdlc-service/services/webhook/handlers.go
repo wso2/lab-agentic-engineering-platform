@@ -280,59 +280,9 @@ func (h *Handler) PullRequestClosed(ctx context.Context, event, action string, b
 		}
 	}
 
-	// Tech-lead revamp §12: a merge may unblock sibling tasks in
-	// pending_deps. Flip them back to pending so the next dispatch (or the
-	// existing dispatch loop's re-evaluation) picks them up. This does not
-	// auto-dispatch — that's handled by the existing pending re-check in
-	// remote_worker_service.go::DispatchTasks. Best-effort.
-	if rerr := h.reevaluatePendingDepsForProject(ctx, task.ProjectID); rerr != nil {
-		slog.WarnContext(ctx, "re-evaluate pending_deps", "project", task.ProjectID, "error", rerr)
-	}
-	return nil
-}
-
-// reevaluatePendingDepsForProject flips pending_deps tasks to pending when
-// every task they dependsOn (by title) has reached merged|building|deployed.
-// Idempotent and safe to call from any merge webhook.
-func (h *Handler) reevaluatePendingDepsForProject(ctx context.Context, projectID string) error {
-	var tasks []models.ComponentTask
-	if err := h.db.WithContext(ctx).
-		Where("project_id = ?", projectID).
-		Find(&tasks).Error; err != nil {
-		return err
-	}
-	statusByTitle := make(map[string]string, len(tasks))
-	for _, t := range tasks {
-		statusByTitle[t.Title] = t.Status
-	}
-	for i := range tasks {
-		t := &tasks[i]
-		if t.Status != string(models.TaskStatusPendingDeps) {
-			continue
-		}
-		blocked := false
-		for _, dep := range t.TaskDependsOn {
-			st, ok := statusByTitle[dep]
-			if !ok {
-				continue
-			}
-			switch st {
-			case string(models.TaskStatusMerged),
-				string(models.TaskStatusBuilding),
-				string(models.TaskStatusDeployed):
-				continue
-			}
-			blocked = true
-			break
-		}
-		if blocked {
-			continue
-		}
-		t.Status = string(models.TaskStatusPending)
-		if err := h.db.WithContext(ctx).Save(t).Error; err != nil {
-			slog.WarnContext(ctx, "clear pending_deps", "task", t.ID, "error", err)
-		}
-	}
+	// Under F2 deploy-gating, pending_deps re-evaluation is driven by the
+	// dep's deploy event (services/webhook/projector.go::onTaskDeployed),
+	// not by PR merge. The merge handler no longer needs to touch siblings.
 	return nil
 }
 

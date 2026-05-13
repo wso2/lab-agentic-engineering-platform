@@ -23,26 +23,23 @@ type ProjectService interface {
 }
 
 type projectService struct {
-	client       openchoreo.ProjectClient
-	gitClient    gitservice.Client
-	secretRefCli openchoreo.SecretRefClient
-	store        *ArtifactStore
-	taskRepo     repositories.TaskRepository
+	client    openchoreo.ProjectClient
+	gitClient gitservice.Client
+	store     *ArtifactStore
+	taskRepo  repositories.TaskRepository
 }
 
 func NewProjectService(
 	client openchoreo.ProjectClient,
 	gitClient gitservice.Client,
-	secretRefCli openchoreo.SecretRefClient,
 	store *ArtifactStore,
 	taskRepo repositories.TaskRepository,
 ) ProjectService {
 	return &projectService{
-		client:       client,
-		gitClient:    gitClient,
-		secretRefCli: secretRefCli,
-		store:        store,
-		taskRepo:     taskRepo,
+		client:    client,
+		gitClient: gitClient,
+		store:     store,
+		taskRepo:  taskRepo,
 	}
 }
 
@@ -79,42 +76,20 @@ func (s *projectService) CreateProject(ctx context.Context, orgName string, req 
 			slog.ErrorContext(ctx, "failed to provision repo", "project", project.Name, "error", createErr)
 			// Don't fail project creation — clone happens async and can be retried.
 		} else {
-			// Phase 2 PR C — create the OC SecretReference CR for this repo.
-			// The CR points at OpenBao at secret/asdlc/{ocOrgId}/git/{repoSlug};
-			// MintBuildToken writes the per-build token into that path
-			// immediately before each WorkflowRun. The CR is idempotent on
-			// (namespace, name) so re-creates are safe.
-			if s.secretRefCli == nil {
-				slog.WarnContext(ctx, "skipping OC SecretReference creation: no secretRefCli configured",
+			// Post-2f26614: the OC SecretReference creation step is gone.
+			// git-service.MintBuildToken now writes the per-org build
+			// credential as a `kubernetes.io/basic-auth` Secret straight
+			// into `workflows-<orgID>` on every dispatch, and the build's
+			// checkout step mounts it directly. The asdlc-service no
+			// longer participates in secret provisioning. See
+			// docs/design/cross-component-wiring-gaps.md.
+			if repoInfo == nil {
+				slog.ErrorContext(ctx, "git-service returned nil repoInfo on InitProjectComponents",
 					"project", project.Name)
-			} else if repoInfo == nil {
-				slog.ErrorContext(ctx, "skipping OC SecretReference creation: git-service returned nil repoInfo (build will be stuck pending)",
-					"project", project.Name)
-			} else if repoInfo.OcSecretRefName == nil || *repoInfo.OcSecretRefName == "" || repoInfo.RepoSlug == "" {
-				// Loud failure: this is exactly the silent skip that stranded
-				// per-project builds in WorkflowPending after the
-				// InitProject response shape changed under us. If the
-				// downstream contract drifts again, fail at project create
-				// rather than discovering it 10 minutes into a build.
-				slog.ErrorContext(ctx, "BUG: git-service init response missing OcSecretRefName/RepoSlug — build will be stuck in WorkflowPending until SecretReference is created out-of-band",
-					"project", project.Name,
-					"orgId", orgName,
-					"hasOcSecretRefName", repoInfo.OcSecretRefName != nil && *repoInfo.OcSecretRefName != "",
-					"hasRepoSlug", repoInfo.RepoSlug != "",
+			} else if repoInfo.OcSecretRefName == nil || *repoInfo.OcSecretRefName == "" {
+				slog.ErrorContext(ctx, "BUG: git-service init response missing OcSecretRefName — first build will fail because the dispatcher passes empty secretRef to the workflow",
+					"project", project.Name, "orgId", orgName,
 					"repoUrl", repoInfo.RepoURL)
-			} else {
-				// Path is relative to the OpenBao KV v2 mount (`secret`); the
-				// ClusterSecretStore's path/version=v2 config adds `data/` at
-				// read time. The OC API normalises the apiVersion v1alpha1 →
-				// v1 internally; we POST to /api/v1/.../secretreferences.
-				vaultPath := fmt.Sprintf("asdlc/%s/git/%s", orgName, repoInfo.RepoSlug)
-				if err := s.secretRefCli.EnsureSecretReference(ctx, orgName, *repoInfo.OcSecretRefName, vaultPath); err != nil {
-					slog.ErrorContext(ctx, "failed to create OC SecretReference",
-						"project", project.Name, "name", *repoInfo.OcSecretRefName, "error", err)
-				} else {
-					slog.InfoContext(ctx, "secretref ensure",
-						"name", *repoInfo.OcSecretRefName, "ns", orgName, "vaultPath", vaultPath)
-				}
 			}
 			// Register the per-repo webhook so the BFF starts receiving events
 			// (pull_request, push, issue_comment) on this repo. Best-effort:

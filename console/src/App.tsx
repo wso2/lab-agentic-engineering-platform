@@ -1,4 +1,4 @@
-import { lazy, Suspense, useMemo } from 'react';
+import { lazy, Suspense, useEffect, useMemo } from 'react';
 import { Navigate, Outlet, Route, Routes, useOutletContext } from 'react-router-dom';
 import { useAuth, useUserClaims } from './auth';
 import AuthGuard from './auth/AuthGuard';
@@ -22,6 +22,7 @@ import OrgGitHubSettings from './pages/OrgGitHubSettings';
 import OrgGitHubAppPicker from './pages/OrgGitHubAppPicker';
 import NoOrganizationPage from './pages/NoOrganizationPage';
 import { setOrgGithubTokenAccessor } from './services/api/orgGithub';
+import { useBillingOrg } from './hooks/useBillingOrg';
 import { organizationOverviewPath } from './lib/paths';
 import { resolveOuHandle } from './utils/orgClaims';
 
@@ -36,13 +37,27 @@ export function App() {
   const { isSignedIn, getAccessToken } = useAuth();
   const { claims, isLoading: isClaimsLoading } = useUserClaims();
 
-  if (isSignedIn) {
+  // Wire the token accessor unconditionally — `getAccessToken` is the
+  // refresh-aware closure from Asgardeo / MockAuthProvider and is safe to
+  // call at any point. The previous shape ran a side-effect during render
+  // gated on `isSignedIn`, which Asgardeo briefly flickers to `false` while
+  // it silently refreshes the access token. Any in-flight fetch (e.g. the
+  // 3-second progress/agent + progress/build polls) firing during that
+  // flicker shipped without an `Authorization` header and the BFF
+  // returned 401. Symptoms: TaskActivityFeed sometimes stays stuck on
+  // "Streaming activity will appear here…" mid-run.
+  //
+  // The accessor itself returns a usable token on every call (refreshing
+  // when needed) once the user has signed in at least once; if the user
+  // actually signs out, AuthGuard unmounts this tree, so we don't need to
+  // explicitly null the accessor on `isSignedIn` flips.
+  useEffect(() => {
     setTokenAccessor(getAccessToken);
     setOrgGithubTokenAccessor(getAccessToken);
-  } else {
-    setTokenAccessor(null);
-    setOrgGithubTokenAccessor(null);
-  }
+  }, [getAccessToken]);
+
+  // Triggers server-side org/subscription provisioning so downstream entitlement checks pass.
+  useBillingOrg('app-factory', isSignedIn);
 
   // Canonical OC org handle from the JWT claims, with the same precedence
   // the BFF uses (asdlc-service/middleware/jwt.ResolveOuHandle). Returns

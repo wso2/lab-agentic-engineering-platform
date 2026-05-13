@@ -63,6 +63,14 @@ type Config struct {
 	// Falls back to GitService.BaseURL when empty.
 	AgentGitServiceURL string
 
+	// AgentPlatformURL is the URL the coding-agent runner pod uses to call
+	// back to the BFF (F3c — POST /api/v1/tasks/{id}/verification-failed).
+	// Reachable from the WorkflowPlane namespace; same cross-namespace FQDN
+	// shape as AgentGitServiceURL. When empty, the runner skips the
+	// verification-failed callback and only records the diagnostic on the
+	// GitHub issue.
+	AgentPlatformURL string
+
 	// JWKS settings for inbound JWT verification — Thunder publishes the
 	// User JWT and Service JWT signing key at JWKSURL; verifiers refresh
 	// on kid miss. Issuer and audience configure RFC 7519 claim checks.

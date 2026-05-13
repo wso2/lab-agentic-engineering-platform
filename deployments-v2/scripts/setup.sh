@@ -52,6 +52,7 @@ apply_platform
 log_step "Phase 3: asdlc" "8 min"
 seed_openbao
 apply_postgres
+apply_git_service_wp_rbac
 bootstrap_workloads
 register_streaming_timeouts
 register_console_redirect_uri

@@ -102,6 +102,13 @@ func NewHandler(params AppParams) http.Handler {
 		registerWebhookRoutes(mux, params.WebhookController)
 	}
 
+	// F3c — per-task verification-failed callback. Outside the Thunder JWT
+	// (the runner pod has no user identity); authenticated inside the
+	// handler with the per-task RS256 bearer the runner already holds.
+	if params.TaskController != nil {
+		mux.HandleFunc("POST /api/v1/tasks/{taskId}/verification-failed", params.TaskController.VerificationFailed)
+	}
+
 	// App-mode connect callback — outside JWT. The signed connect-state JWT
 	// in the `state` query param is the authn here, not the console JWT.
 	if params.OrgGitHubController != nil {

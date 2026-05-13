@@ -77,6 +77,12 @@ type CodingAgentParams struct {
 	IdentityLogin string
 	Bearer        string
 	GitServiceURL string
+	// PlatformURL is the BFF base URL the runner pod uses for the F3c
+	// verification-failed callback. Passed through to the ClusterWorkflow
+	// parameter `bff.platformUrl` → env var ASDLC_PLATFORM_URL in the pod.
+	// Empty means the runner won't call the BFF (the diagnostic still
+	// lands on the GitHub issue).
+	PlatformURL string
 }
 
 type componentClient struct {
@@ -761,7 +767,8 @@ func codingAgentParameters(p CodingAgentParams) map[string]interface{} {
 			},
 		},
 		"bff": map[string]interface{}{
-			"bearer": p.Bearer,
+			"bearer":      p.Bearer,
+			"platformUrl": p.PlatformURL,
 		},
 		"gitService": map[string]interface{}{
 			"url": p.GitServiceURL,

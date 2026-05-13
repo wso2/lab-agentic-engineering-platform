@@ -36,6 +36,16 @@ const (
 	// coding-agent committed) — failing loudly is better than orphaning the
 	// task in `building` with no WorkflowRun behind it. Drives merged → failed.
 	TaskEventBuildPathMismatch TaskEvent = "build.path_mismatch"
+	// TaskEventVerificationFailed (F3c) — the dispatched agent could not
+	// verify the live api dependency before opening its PR. Drives
+	// in_progress → verification_failed. The agent has kept the PR a
+	// draft and posted a diagnostic comment on the issue.
+	TaskEventVerificationFailed TaskEvent = "agent.verification_failed"
+	// TaskEventRetry (F3c) — operator clicked "Retry" on a
+	// verification_failed task. Drives verification_failed → in_progress
+	// and the BFF re-dispatches with a fresh prompt + freshly minted
+	// per-task bearer (DispatchedAt + LastCodingAgentRunName cleared).
+	TaskEventRetry TaskEvent = "operator.retry"
 )
 
 // EventCause maps a TaskEvent to the value written into ComponentTask.Cause
@@ -63,6 +73,11 @@ func EventCause(event TaskEvent) string {
 		return "repo.unselected"
 	case TaskEventBuildPathMismatch:
 		return "build.component_path_mismatch"
+	case TaskEventVerificationFailed:
+		// verification_failed is not terminal (retry transitions back to
+		// in_progress) so this cause is recorded for audit but cleared
+		// when the next dispatch lands.
+		return "agent.verification_failed"
 	default:
 		return ""
 	}
@@ -119,6 +134,15 @@ var allowedTransitions = []stateTransition{
 	// dispatched. Drives merged → failed so the orphan is visible rather
 	// than silently stuck in `building`.
 	{models.TaskStatusMerged, models.TaskStatusFailed, TaskEventBuildPathMismatch},
+	// F3c — agent's pre-PR integration verification failed. The agent has
+	// kept the PR a draft + posted a diagnostic comment on the issue. The
+	// task lands in verification_failed; operator decides whether to retry.
+	{models.TaskStatusInProgress, models.TaskStatusVerificationFailed, TaskEventVerificationFailed},
+	// F3c — operator retry. Re-dispatch logic in DispatchService clears
+	// DispatchedAt + LastCodingAgentRunName so a fresh WorkflowRun is
+	// created. The PR (if any) remains a draft — the agent will push
+	// new commits to the same branch.
+	{models.TaskStatusVerificationFailed, models.TaskStatusInProgress, TaskEventRetry},
 }
 
 // ErrInvalidTransition is returned by Apply when the current status doesn't

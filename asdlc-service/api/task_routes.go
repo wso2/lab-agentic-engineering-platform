@@ -19,6 +19,9 @@ func registerTaskRoutes(mux *http.ServeMux, c controllers.TaskController) {
 	mux.HandleFunc("POST /api/v1/organizations/{orgHandle}/projects/{projectName}/tasks/generate", c.GenerateTasks)
 	mux.HandleFunc("POST /api/v1/organizations/{orgHandle}/projects/{projectName}/tasks/{taskId}/exec", c.ExecTask)
 	mux.HandleFunc("POST /api/v1/organizations/{orgHandle}/projects/{projectName}/tasks/{taskId}/regenerate-body", c.RegenerateTaskBody)
+	// F3c — operator retry for verification_failed tasks. Uses standard
+	// user auth (org/project-scoped).
+	mux.HandleFunc("POST /api/v1/organizations/{orgHandle}/projects/{projectName}/tasks/{taskId}/retry", c.Retry)
 
 	// Progress endpoints — task-execution-progress.md §5.2. Per-org rate
 	// limited (token bucket, 100 req/s burst 200) so a single tenant can't

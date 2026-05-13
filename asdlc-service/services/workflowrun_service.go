@@ -67,6 +67,10 @@ type CodingAgentTrigger struct {
 	Prompt        string
 	Bearer        string
 	GitServiceURL string
+	// PlatformURL is the BFF base URL the runner pod uses for the F3c
+	// verification-failed callback. Empty disables that callback (the
+	// runner posts the diagnostic on the GitHub issue regardless).
+	PlatformURL string
 }
 
 // TriggeredRun is the (component, runName) pair returned per build created.
@@ -400,6 +404,7 @@ func (s *workflowRunService) TriggerCodingAgent(ctx context.Context, p CodingAge
 		IdentityLogin: p.IdentityLogin,
 		Bearer:        p.Bearer,
 		GitServiceURL: p.GitServiceURL,
+		PlatformURL:   p.PlatformURL,
 	})
 	if err != nil {
 		return "", fmt.Errorf("trigger coding-agent: %w", err)

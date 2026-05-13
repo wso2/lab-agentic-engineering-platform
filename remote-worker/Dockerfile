@@ -4,12 +4,18 @@ FROM node:22-alpine
 # - git: clone repo, commit, push
 # - github-cli (gh): issue/PR management by the agent
 # - curl + bash + python3: credential helper scripts and Bash tool
+# - go: program-level build verification (the agent runs `go mod tidy`
+#   + `go build -o /dev/null .` against the component it just wrote
+#   BEFORE opening its PR, so lockfile-hash mismatches, missing imports,
+#   syntax errors, etc. are caught up-front). npm + tsc come for free
+#   from the node:22-alpine base.
 RUN apk add --no-cache \
         git \
         github-cli \
         curl \
         python3 \
         bash \
+        go \
     && addgroup -S asdlc \
     && adduser -S -G asdlc asdlc \
     && mkdir -p /home/asdlc/asdlc-workspace \
