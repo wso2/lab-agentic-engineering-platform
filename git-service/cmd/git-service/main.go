@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wso2/asdlc/git-service/api"
+	k8sclient "github.com/wso2/asdlc/git-service/clients/k8s"
 	"github.com/wso2/asdlc/git-service/config"
 	"github.com/wso2/asdlc/git-service/controllers"
 	"github.com/wso2/asdlc/git-service/database"
@@ -80,6 +81,19 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Post-2f26614 — collapse git_repositories.oc_secret_ref_name from the
+	// legacy per-repo `git-<org>-<slug>` shape to the per-org `git-<org>`
+	// shape. Idempotent. See docs/design/cross-component-wiring-gaps.md.
+	perOrgSecret := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return migrations.RunPerOrgSecretName(ctx, db)
+	}
+	if err := perOrgSecret(); err != nil {
+		slog.Error("per_org_secret_name migration failed", "error", err)
+		os.Exit(1)
+	}
+
 	// AutoMigrate after — only for GORM-shaped tables. AutoMigrate is
 	// additive (won't drop columns) so re-running with the raw migration
 	// already applied is a no-op for org_credentials.
@@ -105,6 +119,20 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("credential store: postgres (aes-256-gcm)")
+
+	// Workflow-plane k8s client — used by BuildCredentialsService.MintBuildToken
+	// to SSA the per-org git-credentials Secret straight into workflows-<orgID>.
+	// nil when running outside a cluster (local dev without KUBECONFIG); the
+	// service degrades to "credential persisted but not delivered" with a
+	// loud warning per mint call. See clients/k8s/client.go.
+	wpClient, err := k8sclient.NewInClusterClient()
+	if err != nil {
+		slog.Warn("k8s client init failed — mint-build will skip Secret writes; builds will fail at clone",
+			"error", err)
+		wpClient = nil
+	} else {
+		slog.Info("k8s client: in-cluster (workflow-plane Secret writes enabled)")
+	}
 
 	// Repositories
 	repoRepo := repositories.NewRepoRepository(db)
@@ -242,9 +270,14 @@ func main() {
 
 	// Build credentials service. The mint-build endpoint validates
 	// (ocOrgId, repoSlug) ownership, mints a fresh GitHub token via the
-	// resolver, writes it to OpenBao at secret/asdlc/{ocOrgId}/git/{repoSlug},
-	// and returns only the SecretReference name. The BFF never sees the token.
-	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, store)
+	// resolver, persists it to the credential store, AND SSAs the per-org
+	// `kubernetes.io/basic-auth` Secret into workflows-<ocOrgID>. The BFF
+	// never sees the token.
+	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, store, wpClient)
+
+	// Wire the post-disconnect WP-secret cleanup hook so disconnecting an
+	// org wipes its build credential from the WP namespace too.
+	credService.WithWPCleaner(buildCredService)
 
 	// Periodic credential validator. Walks every active org_credentials row
 	// once per cfg.CredentialValidatorInterval (default 24h), probes GitHub,

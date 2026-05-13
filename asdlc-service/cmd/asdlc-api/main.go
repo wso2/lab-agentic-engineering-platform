@@ -131,7 +131,6 @@ func main() {
 	}
 	projectClient := openchoreo.NewProjectClient(ocConfig)
 	namespaceClient := openchoreo.NewNamespaceClient(ocConfig)
-	secretRefClient := openchoreo.NewSecretRefClient(ocConfig)
 	componentClient := openchoreo.NewComponentClient(ocConfig)
 
 	// Observability client (optional — build logs disabled when URL not set)
@@ -199,7 +198,7 @@ func main() {
 	// Services. componentService is constructed before configService so
 	// configService can call back into it to mirror env-var edits onto
 	// the OC Component's workflow params.
-	projectService := services.NewProjectService(projectClient, gitClient, secretRefClient, artifactStore, taskRepo)
+	projectService := services.NewProjectService(projectClient, gitClient, artifactStore, taskRepo)
 	organizationService := services.NewOrganizationService(db, namespaceClient)
 	componentService := services.NewComponentService(componentClient, observClient, artifactStore)
 	configService := services.NewConfigService(configRepo, componentService)

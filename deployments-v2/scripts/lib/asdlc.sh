@@ -50,6 +50,24 @@ apply_postgres() {
   log_ok "postgres applied"
 }
 
+# Apply the ClusterRole + ClusterRoleBinding that lets git-service SSA
+# build-credential Secrets straight into workflows-<orgID> namespaces.
+# See deployments-v2/manifests/git-service-wp-rbac.yaml for the design
+# rationale (post-2f26614 redesign,
+# docs/design/cross-component-wiring-gaps.md follow-up).
+apply_git_service_wp_rbac() {
+  local manifest="$ROOT_DIR/deployments-v2/manifests/git-service-wp-rbac.yaml"
+  if [ ! -f "$manifest" ]; then
+    die "missing git-service WP RBAC manifest: $manifest"
+  fi
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    log_skip "[dry-run] would apply git-service WP RBAC from $manifest"
+    return
+  fi
+  kubectl apply -f "$manifest"
+  log_ok "git-service WP RBAC applied"
+}
+
 bootstrap_workloads() {
   if [ "${DRY_RUN:-0}" = 1 ]; then
     log_skip "[dry-run] would build + render + apply 5 workloads"

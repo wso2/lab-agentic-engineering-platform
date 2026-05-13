@@ -1,7 +1,6 @@
 package models
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -24,27 +23,49 @@ func TestSlugForURL(t *testing.T) {
 	}
 }
 
-func TestSecretRefNameFor(t *testing.T) {
-	// Short — straight join.
-	if got := SecretRefNameFor("default", "asdlc-repos-myrepo"); got != "git-default-asdlc-repos-myrepo" {
-		t.Errorf("short: got %q", got)
+func TestSecretRefNameFor_PerOrg(t *testing.T) {
+	// Post-2f26614: the build credential is per-org (single token for
+	// every repo the install/PAT can see); the repoSlug parameter is
+	// retained for call-site compat but intentionally unused.
+	cases := []struct {
+		ocOrgID string
+		// repoSlug intentionally varies — the result must NOT.
+		repoSlugs []string
+		want      string
+	}{
+		{"default", []string{"asdlc-repos-myrepo", "asdlc-repos-other", "very-long-slug-xx"}, "git-default"},
+		{"Acme-Co", []string{"r1"}, "git-acme-co"}, // case-normalised
 	}
+	for _, c := range cases {
+		for _, slug := range c.repoSlugs {
+			got := SecretRefNameFor(c.ocOrgID, slug)
+			if got != c.want {
+				t.Errorf("SecretRefNameFor(%q, %q) = %q; want %q (per-org)",
+					c.ocOrgID, slug, got, c.want)
+			}
+		}
+	}
+}
 
-	// Over 63 chars — must trim with hash suffix and end in hex.
-	longSlug := strings.Repeat("a", 80)
-	got := SecretRefNameFor("default", longSlug)
-	if len(got) > 63 {
-		t.Errorf("long: name length %d > 63; got %q", len(got), got)
+func TestBuildSecretName_MatchesSecretRefNameFor(t *testing.T) {
+	// SecretRefNameFor is a thin wrapper over BuildSecretName. Lock in
+	// the invariant so a future drift breaks loudly.
+	if got, want := SecretRefNameFor("default", "anything"), BuildSecretName("default"); got != want {
+		t.Errorf("SecretRefNameFor must delegate to BuildSecretName: got %q vs %q", got, want)
 	}
-	if !strings.HasPrefix(got, "git-default-") {
-		t.Errorf("long: missing prefix; got %q", got)
+}
+
+func TestWorkflowPlaneNamespace(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"default", "workflows-default"},
+		{"Acme-Co", "workflows-acme-co"}, // case-normalised
+		{"  trimmed  ", "workflows-trimmed"},
 	}
-	// Last 8 chars are hex.
-	suffix := got[len(got)-8:]
-	for _, r := range suffix {
-		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
-			t.Errorf("long: non-hex suffix %q; got %q", suffix, got)
-			break
+	for _, c := range cases {
+		if got := WorkflowPlaneNamespace(c.in); got != c.want {
+			t.Errorf("WorkflowPlaneNamespace(%q) = %q; want %q", c.in, got, c.want)
 		}
 	}
 }

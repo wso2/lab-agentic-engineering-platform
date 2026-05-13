@@ -64,12 +64,19 @@ gh issue list --label asdlc --label implementation --state open \
    `git push -u origin HEAD`. The committer identity is already set in
    `.git/config` — don't override it. The first push creates the remote
    branch.
-6. **Verify integration with each dependency endpoint** (see "Verify
+6. **Build verification** (see "Build verification" below). Run the
+   local toolchain check for your stack (Go: `go mod tidy && go build
+   -o /dev/null ./...`; Node/React: `npm install && npx tsc --noEmit`).
+   This catches lockfile hash mismatches, missing imports, syntax
+   errors, and type errors BEFORE the platform tries to build the PR.
+   If the check fails, read the error, fix the source, re-commit, and
+   rerun. Only proceed once the toolchain check exits 0.
+7. **Verify integration with each dependency endpoint** (see "Verify
    before PR" below). If verification fails, follow the recovery steps —
    do NOT mark the PR ready-for-review.
-7. **Post progress comments** at meaningful milestones (after
+8. **Post progress comments** at meaningful milestones (after
    exploration, before committing, on completion). Keep them short.
-8. **Open the PR with `Closes #<issue-number>` in the body.** This is
+9. **Open the PR with `Closes #<issue-number>` in the body.** This is
    how the platform links your PR back to the task — without it, the
    task is orphaned and never moves out of `in_progress`.
    ```bash
@@ -123,6 +130,77 @@ you should not add it.)
 > env variable set at deploy time would have no effect on the served
 > bundle. Baking the URL at build time is the only correct option for
 > Web App components in v1.
+
+## Build verification
+
+Before opening the PR, you MUST verify your component compiles +
+lockfile-resolves with the local language toolchain. The runner
+sandbox ships `go`, `node` + `npm`, and the standard alpine
+toolchain. Run the appropriate verification commands BELOW for your
+component's stack. This catches the failure modes that would
+otherwise burn a PR + merge + dispatch round-trip:
+
+- Hallucinated `go.sum` / `package-lock.json` hashes
+- Missing imports, syntax errors, unresolved type errors
+- Bad `import` paths, missing referenced files
+- `go mod tidy` / `npm install` revealing wrong dep declarations
+
+### Go services
+
+```bash
+cd <component-app-path>
+go mod tidy 2>&1 | tail -20   # regenerate go.sum from real checksums
+go build -o /dev/null ./...   # compile everything; fails on any error
+```
+
+After `go mod tidy` succeeds, COMMIT the updated `go.sum` along with
+your source. Without it, the build pipeline will fail on the next
+`go mod download` step because lockfile entries are missing.
+
+### React / Node SPAs
+
+```bash
+cd <component-app-path>
+npm install 2>&1 | tail -30   # regenerates package-lock.json
+npx tsc --noEmit              # type-check without emitting JS
+# Optional but recommended: actually build
+npm run build 2>&1 | tail -20
+```
+
+Commit the resulting `package-lock.json`. **Do not** commit the
+`node_modules/` directory (add it to `.gitignore` if it isn't
+already).
+
+### Other stacks (Python, Rust, etc.)
+
+The runner only has Go + Node toolchains installed today. For
+unsupported stacks, commit `go.sum`/`package-lock.json`/etc. ONLY if
+you can regenerate them via some path you trust — never invent
+checksums. When in doubt, commit only the manifest (`pyproject.toml`,
+`Cargo.toml`, etc.) and let the build pipeline regenerate the
+lockfile.
+
+### If verification keeps failing
+
+You have discretion to give up after a reasonable number of attempts
+(suggested: **3 tries** for a given root cause). If verification
+still fails:
+
+1. Open the PR as a **draft** with `--draft` and a title prefix
+   `[build-failed]`:
+   ```bash
+   gh pr create --draft \
+     --title "[build-failed] <short title>" \
+     --body $'Closes #<issue-number>\n\n**⚠️ Build verification failed.** The agent ran the local toolchain check (`go build` / `npm install` / `tsc --noEmit`) but exhausted its retry budget. Pasting the last error output below for operator review.\n\n## Error\n```\n<tail of the failing command output, ~40 lines>\n```\n\n## What the agent tried\n- <bullet 1: what was attempted>\n- <bullet 2>'
+   ```
+2. Post the same diagnostic on the issue:
+   ```bash
+   gh issue comment <issue-number> --body "Build verification failed after N attempts. PR opened as draft for operator review. See PR #<n> for log."
+   ```
+3. Do NOT call the platform's `/verification-failed` endpoint — that
+   path is for the dependency-integration verifier, not the
+   self-build verifier. The draft PR + issue comment is the operator
+   signal here.
 
 ## Verify before PR
 
@@ -272,6 +350,13 @@ you.
   execution causes port conflicts. Quick compile checks (`go build`,
   `tsc --noEmit`) are fine; never use `go run`, `npm start`,
   `node server.js`, or any command that starts a long-running process.
+- **Never hand-write or guess dependency lockfile checksums.** The
+  runner sandbox ships `go` and `npm` — always generate `go.sum` /
+  `package-lock.json` via `go mod tidy` / `npm install` and commit
+  the result. Hand-writing checksums causes the build pipeline to
+  fail with `checksum mismatch ... SECURITY ERROR`. See
+  "Build verification" below — running the local toolchain check is
+  the *only* approved way to populate a lockfile.
 - **Every service component with dependents MUST declare at least one
   HTTP endpoint with `visibility: external` in its `workload.yaml`** —
   this is what makes the deployed URL reachable for the dependent's
