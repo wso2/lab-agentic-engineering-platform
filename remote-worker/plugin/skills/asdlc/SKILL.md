@@ -24,15 +24,23 @@ provisioning and refreshes them on every call.
 ## Find the issue
 
 The platform passes you the GitHub issue URL in the user prompt — read it
-with `gh issue view <url>` and start there. The issue body has the
-task-specific spec: rationale, Overview, Scope, Acceptance criteria,
-References, Task dependencies, and the Component Reference card. **The
-platform does NOT pre-create your branch or your PR — you create both.**
+WITH ITS COMMENTS:
 
-If your dispatcher prompt has a `## Dependency endpoints (resolved at
-dispatch)` section, those URLs are live, deployed upstream components —
-treat them as authoritative and follow the "Dependency endpoints" section
-below before you start implementing.
+```bash
+gh issue view <url> --comments
+```
+
+The body has the task-specific spec (rationale, Overview, Scope,
+Acceptance criteria, References, Task dependencies, Component Reference
+card). The **comment trail** is also load-bearing: the platform posts a
+`## Dependency endpoint resolved` comment on this issue for every
+upstream component your task depends on, the moment that upstream
+reaches `deployed`. Those comments are the single source of truth for
+upstream URLs — they are NOT in your prompt. See the "Dependency
+endpoints" section below for how to harvest them.
+
+**The platform does NOT pre-create your branch or your PR — you create
+both.**
 
 If you ever need to discover the issue from scratch (e.g. running
 locally without a prompt), the issue is labelled `asdlc` +
@@ -45,8 +53,10 @@ gh issue list --label asdlc --label implementation --state open \
 
 ## Workflow
 
-1. **Read the issue.** It is the spec for this task. Capture the issue
-   number — you'll need it in your PR body.
+1. **Read the issue with its comments** (`gh issue view <url> --comments`).
+   The body is the spec; the comments carry the
+   `## Dependency endpoint resolved` blocks for any upstream URLs you
+   need. Capture the issue number — you'll need it in your PR body.
 2. **Post a brief opening comment** so the platform shows your task is
    in flight:
    ```bash
@@ -57,9 +67,10 @@ gh issue list --label asdlc --label implementation --state open \
    ```bash
    git checkout -b feature/<short-slug>      # e.g. feature/hello-api-endpoint
    ```
-4. **If the prompt lists `## Dependency endpoints`**, bake each URL into
-   your component as a **build-time constant** (see "Dependency endpoints"
-   below). Do this before you write any code that calls the upstream.
+4. **If the issue comments include any `## Dependency endpoint resolved`
+   blocks**, bake each URL into your component as a **build-time
+   constant** (see "Dependency endpoints" below). Do this before you
+   write any code that calls the upstream.
 5. **Edit, commit, push.** Standard `git add`, `git commit -m "..."`,
    `git push -u origin HEAD`. The committer identity is already set in
    `.git/config` — don't override it. The first push creates the remote
@@ -92,20 +103,39 @@ gh issue list --label asdlc --label implementation --state open \
 
 ## Dependency endpoints
 
-If the dispatcher prompt has a `## Dependency endpoints (resolved at
-dispatch)` block, each line is a live URL for an already-deployed
-upstream component:
+Upstream URLs arrive through the issue's comment trail, not through your
+prompt. Every time an upstream component this task depends on reaches
+`deployed`, the platform posts a comment on this task's issue in the
+following shape:
 
 ```
-## Dependency endpoints (resolved at dispatch)
-- todo-api: http://http-todo-api-development-abc123.openchoreoapis.localhost:19080/
+## Dependency endpoint resolved
+
+- **todo-api**: http://http-todo-api-development-abc123.openchoreoapis.localhost:19080/
+
+Posted by the platform when `todo-api` reached `deployed`. Bake this URL
+into your component as a build-time constant (Vite/React:
+`VITE_<UPSTREAM>_URL`; other stacks: the idiomatic equivalent). If a
+later comment resolves the same component, use the most recent.
 ```
 
-Treat that URL as **authoritative** and bake it into your component as a
-**build-time constant**. Do not use any runtime injection mechanism for
-v1 (`dependencies.endpoints` in `workload.yaml`, env-var-at-pod-startup,
-configmaps, etc.) — those are deferred until the platform supports
-service-to-service runtime injection.
+**How to harvest**
+
+1. `gh issue view <url> --comments` — comments print after the body,
+   oldest-first.
+2. Scan all comments whose heading is `## Dependency endpoint resolved`.
+3. For each upstream component name, keep the URL from the **most recent
+   matching comment** — if the upstream redeployed, an earlier comment
+   may carry a stale URL. The freshest comment always wins.
+
+If the issue has no `## Dependency endpoint resolved` comments at all,
+this task has no dependencies — skip this section.
+
+Treat each resolved URL as **authoritative** and bake it into your
+component as a **build-time constant**. Do not use any runtime injection
+mechanism for v1 (`dependencies.endpoints` in `workload.yaml`,
+env-var-at-pod-startup, configmaps, etc.) — those are deferred until the
+platform supports service-to-service runtime injection.
 
 Build-time-constant patterns per stack:
 
@@ -360,9 +390,9 @@ you.
 - **Every service component with dependents MUST declare at least one
   HTTP endpoint with `visibility: external` in its `workload.yaml`** —
   this is what makes the deployed URL reachable for the dependent's
-  browser AND for the next dispatcher's `## Dependency endpoints`
-  resolution. Project-visibility-only services break the gating path
-  for the v1 platform.
+  browser AND for the platform's `## Dependency endpoint resolved`
+  comment that downstream tasks read. Project-visibility-only services
+  break the gating path for the v1 platform.
 
 ## Do not
 
@@ -395,8 +425,9 @@ the **flat WorkloadDescriptor** format — **not** a Kubernetes CR. Do
 
 For v1, **declare only `endpoints` (provider-side)**. Do **not** declare
 a `dependencies` block — consumer-side runtime URL injection is not used
-in v1; the dispatcher hands you each upstream URL in the prompt and you
-bake it in as a build-time constant.
+in v1; the platform posts each upstream URL on the issue as a
+`## Dependency endpoint resolved` comment and you bake it in as a
+build-time constant.
 
 ### Format
 
@@ -425,9 +456,9 @@ endpoints:
 
 For v1, service components that other components depend on MUST list
 `external` (in addition to or instead of `project`) so the deployed URL
-is mintable and reachable from the dependent's browser. The platform's
-dispatcher will fail loudly with a §1.3 invariant error if a deployed
-dep has no external URL.
+is mintable and reachable from the dependent's browser. The platform
+will fail loudly with a §1.3 invariant error at the dependent's dispatch
+time if a deployed dep has no external URL.
 
 ### Service-to-service runtime injection (legacy / deferred)
 
@@ -470,7 +501,8 @@ endpoints:
 VITE_TODO_API_URL=http://http-todo-api-development-abc123.openchoreoapis.localhost:19080
 ```
 
-The value comes from the `## Dependency endpoints` block in your prompt.
+The value comes from the latest `## Dependency endpoint resolved` comment
+on this task's GitHub issue (see "Dependency endpoints" above).
 
 #### nginx.conf (static-only, no /api/ proxy)
 
@@ -528,6 +560,6 @@ if (!BASE_URL) {
 |---|---|---|
 | Browser fetches `undefined/todos` | `.env` missing, wrong key, or built before `.env` was written | Confirm `.env` exists at the app-path root with `VITE_<UPSTREAM>_URL=...` BEFORE `npm run build` |
 | CORS error in browser when calling upstream | Upstream lacks CORS headers (`Access-Control-Allow-Origin`) | Add CORS middleware to the upstream component (must be in the upstream's PR) |
-| Dispatcher fails with "no external URL" | Upstream's `workload.yaml` lacks `visibility: external` on `endpoints[].visibility` | Add `external` to the upstream component's visibility list and re-deploy |
+| Issue has no `## Dependency endpoint resolved` comment for an upstream you need | Upstream's `workload.yaml` lacks `visibility: external` on `endpoints[].visibility` (the platform won't post a comment for an upstream with no external URL) | Add `external` to the upstream component's visibility list and re-deploy; the platform re-posts the comment when the upstream lands `deployed` again |
 | Endpoint URL injected by OC but bundle still uses old value | Vite bakes env vars at build time; pod env has no effect | Update `.env`, push, rebuild — runtime injection is not supported for SPA bundles |
 | `workload.yaml` was modified to add `dependencies.endpoints` | Following stale docs | Remove the block. v1 uses build-time constants only |
