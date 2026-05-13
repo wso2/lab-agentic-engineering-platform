@@ -28,12 +28,22 @@ COMPONENTS=(
   "app-factory-agents-service|agents|agents/Dockerfile|agents"
 )
 
-# Image used by ClusterWorkflow `app-factory-coding-agent`. The runner pod
-# is created per WorkflowRun by Argo — no Workload, no env-overlay; everything
-# the runner needs flows in via {{workflow.parameters.*}} env vars.
-RUNNER_IMAGES=(
-  "app-factory-coding-agent-runner|remote-worker|remote-worker/Dockerfile|remote-worker"
-)
+# Runner images consumed by ClusterWorkflows. Each pod is created per
+# WorkflowRun by Argo — no Workload, no env-overlay; everything the runner
+# needs flows in via {{workflow.parameters.*}} env vars.
+#
+# `app-factory-coding-agent-runner` is intentionally NOT here. The
+# ClusterWorkflow now pins `docker.io/xlight05/app-factory-coding-agent-runner:latest`
+# with `imagePullPolicy: Always`, so the prior `asdlc.local/...:local` +
+# `k3d image import` flow is no longer how the pod gets its bits. To iterate
+# on remote-worker/ (rapid-dev flow — no YAML edits needed):
+#   docker buildx build --platform linux/amd64 --provenance=false \
+#     -t docker.io/xlight05/app-factory-coding-agent-runner:latest \
+#     --push remote-worker/
+# The next WorkflowRun pulls the freshly-pushed image. When stabilising for a
+# long-lived environment, pin to an immutable SHA tag in the CW yaml and flip
+# imagePullPolicy back to IfNotPresent.
+RUNNER_IMAGES=()
 
 # Iterate convenience:
 #   for row in "${COMPONENTS[@]}"; do
