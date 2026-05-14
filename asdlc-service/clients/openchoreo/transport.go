@@ -101,17 +101,24 @@ func newGenClient(cfg Config) (*gen.ClientWithResponses, error) {
 	return c, nil
 }
 
-// authToken prefers the cached service token (client_credentials) over any
-// user token in ctx — OC authorises by the service subject. Falls back to
-// the inbound user token when the service token is unobtainable so calls
-// don't silently lose auth during a Thunder outage.
+// authToken prefers the inbound user JWT over the M2M service token.
+// Reason: platform-api-service derives the target OC namespace from the
+// JWT's `ouId` claim (see backend/core/internal/cpapi/handler.go), so a
+// service-credentials token routes every call to the namespace of the
+// M2M client's owning OU (Admin) instead of the caller's tenant.
+// Falls back to the M2M token only when no user token is present —
+// preserves auth for async paths that explicitly inject a service token
+// via middleware.WithAuthToken (e.g. MCP-triggered deploys).
 func authToken(ctx context.Context, ap AuthProvider) string {
+	if tok := middleware.GetAuthToken(ctx); tok != "" {
+		return tok
+	}
 	if ap != nil {
 		if tok, err := ap.Token(); err == nil {
 			return tok
 		} else {
-			slog.ErrorContext(ctx, "openchoreo: service token fetch failed, falling back to user token", "error", err)
+			slog.ErrorContext(ctx, "openchoreo: no user token in ctx and service token fetch failed", "error", err)
 		}
 	}
-	return middleware.GetAuthToken(ctx)
+	return ""
 }
