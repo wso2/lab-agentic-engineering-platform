@@ -149,7 +149,7 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
           )}
         </Box>
 
-        {/* Title (+ F4 "Waiting on" subline for pending_deps tasks, +
+        {/* Title (+ "Waiting on" subline for on_hold tasks, +
             F3c diagnostic for verification_failed tasks) */}
         <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
           <Typography
@@ -165,7 +165,7 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
           >
             {task.title}
           </Typography>
-          {task.status === 'pending_deps' && task.dependsOnComponents && task.dependsOnComponents.length > 0 && (
+          {task.status === 'on_hold' && task.dependsOnComponents && task.dependsOnComponents.length > 0 && (
             <Typography
               variant="caption"
               sx={{

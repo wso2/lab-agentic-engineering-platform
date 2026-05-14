@@ -24,7 +24,7 @@ import type { TaskStatus } from '../services/api';
 
 const STATUS_TONE: Record<TaskStatus, 'default' | 'primary' | 'success' | 'error' | 'warning'> = {
   pending: 'default',
-  pending_deps: 'default',
+  on_hold: 'default',
   in_progress: 'primary',
   verification_failed: 'warning',
   ready_for_review: 'primary',
@@ -49,7 +49,7 @@ function formatElapsed(ms: number): string {
 const STUCK_THRESHOLD_MS = 30 * 60 * 1000; // 30 minutes
 
 function emptyMessageFor(status: TaskStatus | undefined, dispatchedAt: string | undefined, runName: string | undefined): string {
-  if (status === 'pending' || status === 'pending_deps') return 'Waiting for the agent to start…';
+  if (status === 'pending' || status === 'on_hold') return 'Waiting for the agent to start…';
   if (status === 'in_progress') {
     // Detect a likely-stuck task: in_progress for >30 min with no agent run recorded.
     if (dispatchedAt && !runName) {

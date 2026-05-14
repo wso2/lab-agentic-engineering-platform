@@ -146,7 +146,7 @@ export interface BuildLogs {
 // transition table.
 export type TaskStatus =
   | 'pending'
-  | 'pending_deps'
+  | 'on_hold'
   | 'in_progress'
   | 'verification_failed'
   | 'ready_for_review'
@@ -326,10 +326,6 @@ export interface ProjectBoard {
   done: Task[];
   onHold: Task[];
   failed: Task[];
-  // F4 — tasks blocked on un-deployed dependencies. Distinct from
-  // `onHold` (user-managed) so the operator can see which tasks are
-  // waiting on the dep-graph and what they're waiting for.
-  pendingDeps: Task[];
 }
 
 // -- Component Config (Environment Variables) ---------------------------------

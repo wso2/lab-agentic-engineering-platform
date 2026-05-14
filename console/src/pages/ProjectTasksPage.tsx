@@ -9,15 +9,11 @@ import { TasksPageHeader } from '../components/tasks/TasksPageHeader';
 import type { SectionConfig } from '../components/tasks/types';
 
 const SECTIONS: SectionConfig[] = [
-  { key: 'inProgress',  label: 'In Progress',     isPrimary: true,  dotColor: 'primary',    borderColor: null            },
-  { key: 'todo',        label: 'To Do',           isPrimary: false, dotColor: null,         borderColor: null            },
-  // F4 — pending_deps is its own column so the operator can see at a glance
-  // which tasks are blocked by an upstream component's deploy, distinct from
-  // user-managed "On Hold".
-  { key: 'pendingDeps', label: 'Waiting on Deps', isPrimary: false, dotColor: 'warning.main', borderColor: 'warning.main' },
-  { key: 'done',        label: 'Done',            isPrimary: false, dotColor: null,         borderColor: null            },
-  { key: 'onHold',      label: 'On Hold',         isPrimary: false, dotColor: null,         borderColor: null            },
-  { key: 'failed',      label: 'Failed',          isPrimary: false, dotColor: 'error.main', borderColor: 'error.main'    },
+  { key: 'inProgress', label: 'In Progress', isPrimary: true,  dotColor: 'primary',      borderColor: null            },
+  { key: 'todo',       label: 'To Do',       isPrimary: false, dotColor: null,           borderColor: null            },
+  { key: 'done',       label: 'Done',        isPrimary: false, dotColor: null,           borderColor: null            },
+  { key: 'onHold',     label: 'On Hold',     isPrimary: false, dotColor: 'warning.main', borderColor: 'warning.main'  },
+  { key: 'failed',     label: 'Failed',      isPrimary: false, dotColor: 'error.main',   borderColor: 'error.main'    },
 ];
 
 export default function ProjectTasksPage() {

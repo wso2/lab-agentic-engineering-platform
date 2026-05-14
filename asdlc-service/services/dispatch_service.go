@@ -57,7 +57,7 @@ type DispatchService interface {
 	// AnnounceDependencyDeployed posts a `## Dependency endpoint resolved`
 	// comment on the GitHub issue of every task in this project that lists
 	// componentName in its DependsOnComponents and hasn't yet wrapped up
-	// (status ∈ {pending, pending_deps, in_progress}). Fired by the
+	// (status ∈ {pending, on_hold, in_progress}). Fired by the
 	// cascade hook the moment a task lands `deployed`. Used by both
 	// cluster-flow and local-flow agents — the comment is the single
 	// source of truth for upstream URLs (the prompt no longer carries
@@ -141,13 +141,13 @@ func (s *dispatchService) DispatchTasks(ctx context.Context, orgID, projectID st
 	var results []DispatchResult
 	for i := range tasks {
 		task := &tasks[i]
-		if task.Status == string(models.TaskStatusPendingDeps) {
+		if task.Status == string(models.TaskStatusOnHold) {
 			if !depsAllDeployed(task, statusByComponent) {
 				continue
 			}
 			task.Status = string(models.TaskStatusPending)
 			if err := s.taskRepo.Update(ctx, task); err != nil {
-				slog.WarnContext(ctx, "clear pending_deps", "task", task.ID, "error", err)
+				slog.WarnContext(ctx, "clear on_hold", "task", task.ID, "error", err)
 				continue
 			}
 		}
@@ -156,9 +156,15 @@ func (s *dispatchService) DispatchTasks(ctx context.Context, orgID, projectID st
 		}
 
 		if !depsAllDeployed(task, statusByComponent) {
-			task.Status = string(models.TaskStatusPendingDeps)
+			task.Status = string(models.TaskStatusOnHold)
 			if err := s.taskRepo.Update(ctx, task); err != nil {
-				slog.WarnContext(ctx, "set pending_deps", "task", task.ID, "error", err)
+				slog.WarnContext(ctx, "set on_hold", "task", task.ID, "error", err)
+			}
+			if task.IssueURL != "" {
+				if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "On Hold"); err != nil {
+					slog.WarnContext(ctx, "failed to move board item to On Hold",
+						"task", task.ID, "error", err)
+				}
 			}
 			continue
 		}
@@ -287,6 +293,14 @@ func (s *dispatchService) dispatchOne(
 	task.Status = string(models.TaskStatusInProgress)
 	if err := s.taskRepo.Update(ctx, task); err != nil {
 		slog.ErrorContext(ctx, "failed to update task after dispatch",
+			"task", task.ID, "error", err)
+	}
+
+	// Move the GitHub Project board item to "In Progress" so the console
+	// kanban reflects dispatch state immediately (GitHub does not do this
+	// automatically on WorkflowRun creation).
+	if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "In Progress"); err != nil {
+		slog.WarnContext(ctx, "failed to move board item to In Progress",
 			"task", task.ID, "error", err)
 	}
 
@@ -488,7 +502,7 @@ func shouldAnnounceTo(dependent *models.ComponentTask, deployedComponent string)
 	}
 	switch models.TaskStatus(dependent.Status) {
 	case models.TaskStatusPending,
-		models.TaskStatusPendingDeps,
+		models.TaskStatusOnHold,
 		models.TaskStatusInProgress:
 		// ok — agent hasn't yet opened a non-draft PR
 	default:

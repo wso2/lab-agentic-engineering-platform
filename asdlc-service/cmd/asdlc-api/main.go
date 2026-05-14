@@ -299,7 +299,7 @@ func main() {
 	// F1 — wire the post-deploy dispatch cascade. The projector fires
 	// OnTaskDeployed whenever ApplyBuildResult lands a task in `deployed`;
 	// the cascade takes a per-project lock and calls DispatchTasks to
-	// re-evaluate `pending_deps` siblings and auto-dispatch the ones
+	// re-evaluate `on_hold` siblings and auto-dispatch the ones
 	// whose deps are now satisfied. See docs/design/cross-component-
 	// wiring-gaps.md §3 F1.
 	projector.SetDispatchHook(services.NewDispatchCascadeHook(db, dispatchSvc))

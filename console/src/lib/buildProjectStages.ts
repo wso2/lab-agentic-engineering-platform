@@ -3,7 +3,7 @@ import type { ComponentTask, ProjectStatus } from '../services/api';
 
 const ACTIVE_TASK_STATUSES = new Set([
   'pending',
-  'pending_deps',
+  'on_hold',
   'in_progress',
   'ready_for_review',
   'merged',

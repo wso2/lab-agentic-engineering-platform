@@ -16,7 +16,7 @@ interface TaskStatusInlineProps {
 
 const NON_TERMINAL: TaskStatus[] = [
   'pending',
-  'pending_deps',
+  'on_hold',
   'in_progress',
   'ready_for_review',
   'merged',
@@ -25,7 +25,7 @@ const NON_TERMINAL: TaskStatus[] = [
 
 const STATUS_DISPLAY: Record<TaskStatus, { label: string; tone: 'primary' | 'success' | 'warning' | 'error' | 'muted' }> = {
   pending:             { label: 'Pending',           tone: 'muted'   },
-  pending_deps:        { label: 'Waiting on deps',   tone: 'muted'   },
+  on_hold:             { label: 'On Hold',           tone: 'muted'   },
   in_progress:         { label: 'In Progress',       tone: 'primary' },
   verification_failed: { label: 'Verification failed', tone: 'warning' },
   ready_for_review:    { label: 'Awaiting review',   tone: 'primary' },
@@ -50,7 +50,7 @@ function useElapsedTick(active: boolean, intervalMs = 30_000) {
 
 export function TaskStatusInline({ status, dispatchedAt, componentTaskId, orgId, projectId }: TaskStatusInlineProps) {
   const theme = useTheme();
-  const isLive = !!status && NON_TERMINAL.includes(status) && status !== 'pending' && status !== 'pending_deps';
+  const isLive = !!status && NON_TERMINAL.includes(status) && status !== 'pending' && status !== 'on_hold';
   useElapsedTick(isLive);
 
   // Hide entirely for fresh, never-dispatched tasks — the row stays clean

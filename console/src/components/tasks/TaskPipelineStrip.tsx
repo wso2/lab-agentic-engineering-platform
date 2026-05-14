@@ -17,7 +17,7 @@ const FAILURE_STATUSES: TaskStatus[] = ['rejected', 'failed', 'abandoned'];
 
 function stageIndex(status: TaskStatus | undefined): number {
   if (!status) return 0;
-  if (status === 'pending' || status === 'pending_deps') return 0;
+  if (status === 'pending' || status === 'on_hold') return 0;
   if (status === 'in_progress') return 1;
   if (status === 'ready_for_review') return 2;
   if (status === 'merged') return 3;

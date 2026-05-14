@@ -21,7 +21,7 @@ type BoardTask struct {
 	ComponentTaskID string                 `json:"componentTaskId,omitempty"`
 	Labels          []gitservice.LabelInfo `json:"labels,omitempty"`
 	LifecycleStatus string                 `json:"lifecycleStatus,omitempty"`
-	// Status is the ComponentTask execution status (pending, pending_deps,
+	// Status is the ComponentTask execution status (pending, on_hold,
 	// in_progress, verification_failed, ready_for_review, merged, building,
 	// deployed, rejected, failed, abandoned). Empty when the row has no
 	// backing ComponentTask.
@@ -38,8 +38,8 @@ type BoardTask struct {
 	ExecType string `json:"execType,omitempty"`
 	// DependsOnComponents mirrors ComponentTask.DependsOnComponents — the
 	// list of component names this task is waiting to be deployed before
-	// it can dispatch. Populated for every task; the F4 PendingDeps
-	// column reads it to show "Waiting for: …".
+	// it can dispatch. Populated for every task; the On Hold column
+	// reads it to show "Waiting for: …".
 	DependsOnComponents []string `json:"dependsOnComponents,omitempty"`
 	// ComponentName mirrors ComponentTask.ComponentName so the frontend
 	// can resolve dep -> task lookups (e.g. "what is component `todo-api`'s
@@ -59,10 +59,6 @@ type ProjectBoard struct {
 	Done        []BoardTask `json:"done"`
 	OnHold      []BoardTask `json:"onHold"`
 	Failed      []BoardTask `json:"failed"`
-	// PendingDeps (F4) collects tasks in TaskStatusPendingDeps, distinct
-	// from OnHold (which is user-managed) so the operator can see at a
-	// glance which tasks are blocked by an upstream component's deploy.
-	PendingDeps []BoardTask `json:"pendingDeps"`
 }
 
 // BoardService fetches the kanban board for a project.
@@ -81,13 +77,12 @@ func NewBoardService(gitClient gitservice.Client, taskRepo repositories.TaskRepo
 
 func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*ProjectBoard, error) {
 	board := &ProjectBoard{
-		URL:         "",
-		Todo:        []BoardTask{},
-		InProgress:  []BoardTask{},
-		Done:        []BoardTask{},
-		OnHold:      []BoardTask{},
-		Failed:      []BoardTask{},
-		PendingDeps: []BoardTask{},
+		URL:        "",
+		Todo:       []BoardTask{},
+		InProgress: []BoardTask{},
+		Done:       []BoardTask{},
+		OnHold:     []BoardTask{},
+		Failed:     []BoardTask{},
 	}
 
 	if s.gitClient == nil {
@@ -157,13 +152,11 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			task.ComponentName = meta.componentName
 			task.ErrorMessage = meta.errorMessage
 		}
-		// F4 — the BFF's ComponentTask.Status is authoritative for kanban
-		// routing of `pending_deps` (the GH Project board has no equivalent
-		// column). Same logic surfaces `verification_failed` next to the
-		// In Progress lane in the Failed column with an actionable error.
+		// The BFF's ComponentTask.Status is authoritative for kanban routing
+		// of `on_hold` (dep-gated) and `verification_failed` tasks.
 		switch task.Status {
-		case string(models.TaskStatusPendingDeps):
-			board.PendingDeps = append(board.PendingDeps, task)
+		case string(models.TaskStatusOnHold):
+			board.OnHold = append(board.OnHold, task)
 			continue
 		case string(models.TaskStatusVerificationFailed):
 			board.Failed = append(board.Failed, task)
@@ -215,8 +208,8 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 				ErrorMessage:        ct.ErrorMessage,
 			}
 			switch ct.Status {
-			case "pending_deps":
-				board.PendingDeps = append(board.PendingDeps, task)
+			case "on_hold":
+				board.OnHold = append(board.OnHold, task)
 			case "in_progress":
 				board.InProgress = append(board.InProgress, task)
 			case "ready_for_review", "merged", "building", "deployed":

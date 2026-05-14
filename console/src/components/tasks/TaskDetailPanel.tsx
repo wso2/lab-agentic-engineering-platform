@@ -164,8 +164,8 @@ export function TaskDetailPanel({ task, orgId, projectId, onClose }: TaskDetailP
             see a no-op affordance. Pre-dispatch states only; once
             dispatched, the row's Live progress button is the primary
             affordance. */}
-        {task.componentTaskId && task.execType === 'SYSTEM' && (!task.status || task.status === 'pending' || task.status === 'pending_deps') && (
-          task.status === 'pending_deps' ? (
+        {task.componentTaskId && task.execType === 'SYSTEM' && (!task.status || task.status === 'pending' || task.status === 'on_hold') && (
+          task.status === 'on_hold' ? (
             <Tooltip title="Waiting on prerequisite tasks to complete">
               <span>
                 <Button

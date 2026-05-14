@@ -17,7 +17,7 @@ type Phase = ProjectSdlcPhase | null;
 
 const ACTIVE_TASK_STATUSES: ReadonlySet<string> = new Set([
   'pending',
-  'pending_deps',
+  'on_hold',
   'in_progress',
   'ready_for_review',
   'merged',

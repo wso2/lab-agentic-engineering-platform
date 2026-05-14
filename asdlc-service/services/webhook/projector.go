@@ -27,7 +27,7 @@ import (
 //
 // DispatchHook (injected via SetDispatchHook) is invoked post-commit
 // whenever a task transitions into `deployed` so dependents in
-// `pending_deps` get auto-dispatched. See docs/design/cross-component-
+// `on_hold` siblings get auto-dispatched. See docs/design/cross-component-
 // wiring-gaps.md §3 F1.
 type Projector struct {
 	db           *gorm.DB
@@ -242,7 +242,7 @@ func (p *Projector) MarkBuilding(
 //
 // Post-commit, if the transition landed the task in `deployed` and a
 // dispatch hook is wired, fire it asynchronously so dependents in
-// `pending_deps` get re-evaluated + dispatched. The hook owns its own
+// `on_hold` siblings get re-evaluated + dispatched. The hook owns its own
 // per-project advisory lock; firing here just kicks off the cascade.
 func (p *Projector) ApplyBuildResult(
 	ctx context.Context,

@@ -28,7 +28,7 @@ func NewDispatchCascadeHook(db *gorm.DB, dispatch DispatchService) *DispatchCasc
 // lock so concurrent deploys against the same project serialise (a
 // dependent shared between two deps must dispatch exactly once when the
 // second dep deploys). Inside the lock, calls DispatchTasks which handles
-// the pending_deps re-evaluation + actual dispatch.
+// the on_hold re-evaluation + actual dispatch.
 //
 // Errors are logged but never propagated — the deploy transition has
 // already committed by the time we get here, and the cascade is
@@ -57,7 +57,7 @@ func (h *DispatchCascadeHook) OnTaskDeployed(ctx context.Context, orgID, project
 		return
 	}
 	// Announce the newly-deployed dep's URL on every dependent task's
-	// issue BEFORE dispatching. Tasks waiting in `pending_deps` may flip
+	// issue BEFORE dispatching. Tasks waiting in `on_hold` may flip
 	// to `pending` and dispatch within the same lock; their agent reads
 	// the issue + its comment trail as its first move, so the comment
 	// must already be there. Best-effort: never errors. If commenting
