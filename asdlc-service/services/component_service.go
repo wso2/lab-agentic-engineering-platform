@@ -85,11 +85,13 @@ func (s *componentService) CreateComponent(ctx context.Context, orgName, project
 	return comp, nil
 }
 
-// UpdateWorkflowEnvVars mirrors a per-component env-var edit onto the OC
-// Component so the next build picks the new values up via the
-// dockerfile-builder workflow's `environmentVariables` parameter. The
-// underlying client returns nil when the Component doesn't yet exist
-// (e.g. the user is editing env vars before first dispatch).
+// UpdateWorkflowEnvVars writes per-component env vars onto each of the
+// component's ReleaseBindings (one per environment) at
+// `spec.workloadOverrides.container.env`. OC's controller picks them up
+// on the next reconcile — no rebuild required. When no ReleaseBindings
+// exist yet (the user is editing env vars before first deploy) the
+// underlying client returns nil and the caller is expected to retry
+// after the first build has produced a binding.
 func (s *componentService) UpdateWorkflowEnvVars(ctx context.Context, orgName, projectName, componentName string, envVars []models.WorkflowEnvVarRef) error {
 	if err := s.client.UpdateComponentWorkflowEnvVars(ctx, orgName, projectName, componentName, envVars); err != nil {
 		return translateComponentHTTPError(err)

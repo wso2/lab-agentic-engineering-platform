@@ -65,11 +65,12 @@ func (s *configService) UpdateConfig(ctx context.Context, orgID, projectName, co
 	slog.InfoContext(ctx, "updated component config",
 		"org", orgID, "project", projectName, "component", componentName, "envVarCount", len(envVars))
 
-	// Mirror onto the OC Component's workflow params so the next build
-	// (push-triggered or manual) ships these env vars through
-	// generate-workload-cr into the Workload CR. Best-effort — the
-	// canonical record is the DB; OC mirror is recoverable next time
-	// ensureOCComponent runs.
+	// Mirror onto each environment's ReleaseBinding
+	// (spec.workloadOverrides.container.env) so OC's controller renders
+	// the values into the pod spec on the next reconcile — no rebuild
+	// needed. Best-effort: the canonical record is the DB, and any RBs
+	// that haven't been created yet (pre-first-deploy) will pick up the
+	// values the next time this flow runs.
 	if s.componentSvc != nil {
 		wfEnvVars := make([]models.WorkflowEnvVarRef, 0, len(envVars))
 		for _, ev := range envVars {
