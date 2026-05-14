@@ -669,6 +669,15 @@ func diffWorkingTreeAgainstHEAD(ctx context.Context, clonePath, subdir string) (
 		return nil, fmt.Errorf("git status: %s: %w", stderr.String(), err)
 	}
 
+	// Paths from `git status` are repo-root-relative (e.g.
+	// `.asdlc/design/components/foo/design.md`). Strip the `subdir/` prefix
+	// so `Name` carries the path *within* subdir — including any directory
+	// nesting — rather than just the basename. `filepath.Base` here would
+	// silently drop `components/foo/` and collapse every nested file onto
+	// its leaf name, which breaks the multi-file design layout.
+	subdirPrefix := strings.TrimRight(subdir, "/") + "/"
+	relName := func(p string) string { return strings.TrimPrefix(p, subdirPrefix) }
+
 	out := stdout.Bytes()
 	var rows []changeRow
 	for len(out) > 0 {
@@ -713,15 +722,15 @@ func diffWorkingTreeAgainstHEAD(ctx context.Context, clonePath, subdir string) (
 		case x == 'R' || y == 'R':
 			// Emit D(from) + A(to) and continue.
 			rows = append(rows,
-				changeRow{Status: "D", Name: filepath.Base(fromPath)},
-				changeRow{Status: "A", Name: filepath.Base(path)},
+				changeRow{Status: "D", Name: relName(fromPath)},
+				changeRow{Status: "A", Name: relName(path)},
 			)
 			continue
 		default:
 			// Unknown / ignored status (e.g. "!!").
 			continue
 		}
-		rows = append(rows, changeRow{Status: s, Name: filepath.Base(path)})
+		rows = append(rows, changeRow{Status: s, Name: relName(path)})
 	}
 	return rows, nil
 }

@@ -544,14 +544,13 @@ export const restApi = {
     }
   },
 
-  async saveAndProceedDesign(orgHandle: string, projectId: string): Promise<Design | undefined> {
-    try {
-      return await fetchJSON<Design>(`${projectPrefix(orgHandle, projectId)}/design/save`, {
-        method: 'POST',
-      });
-    } catch {
-      return undefined;
-    }
+  async saveAndProceedDesign(orgHandle: string, projectId: string): Promise<Design> {
+    // Let ApiError bubble — Publish needs to surface the server's error
+    // message (e.g. missing requirements baseline, save-via-API failures)
+    // rather than collapsing every failure into a generic toast.
+    return fetchJSON<Design>(`${projectPrefix(orgHandle, projectId)}/design/save`, {
+      method: 'POST',
+    });
   },
 
   async listDesignVersions(orgHandle: string, projectId: string): Promise<ArtifactVersion[]> {

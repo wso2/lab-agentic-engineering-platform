@@ -305,13 +305,12 @@ export default function ProjectArchitecturePage() {
     setPublishing(true);
     setPublishError(null);
     try {
-      const result = await api.saveAndProceedDesign(routeOrgId, projectId);
-      if (!result) {
-        setPublishError('Failed to publish design.');
-        return;
-      }
+      await api.saveAndProceedDesign(routeOrgId, projectId);
       clearAllDesignDrafts(routeOrgId, projectId);
       navigate(projectTasksPath(routeOrgId, projectId));
+    } catch (err) {
+      const msg = err instanceof Error && err.message ? err.message : 'Failed to publish design.';
+      setPublishError(msg);
     } finally {
       setPublishing(false);
     }
