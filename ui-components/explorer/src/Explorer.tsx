@@ -36,6 +36,7 @@ export function Explorer({
   getFolderIcon,
   showHeadings = true,
   getFileRenderer,
+  getFileLabel,
   searchPlaceholder = 'Search documents',
   sidebarWidth = 280,
   minHeight,
@@ -239,6 +240,7 @@ export function Explorer({
           transparentFolders={transparentFolders}
           getFolderIcon={getFolderIcon}
           showHeadings={showHeadings}
+          getFileLabel={getFileLabel}
           onActivate={setActive}
           onTocClick={handleTocClick}
           onAddFile={onAddFile ? handleAddFile : undefined}

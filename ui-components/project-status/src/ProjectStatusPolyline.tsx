@@ -10,6 +10,11 @@ import type {
 } from './types.js';
 
 const NODE_SIZE = 56;
+// The cell button wraps the puck in a top-padded hit area so hover/click
+// affordances reach above the puck. Rail geometry has to know this offset
+// so the line passes through the puck's true vertical centre rather than
+// hovering near its top edge.
+const CELL_BTN_PAD_TOP = 6;
 const RING_ANIM = `
 @keyframes asdlc-ps-ring {
   0%   { transform: scale(0.9); opacity: 0.55; }
@@ -154,16 +159,21 @@ function puckColors(theme: Theme, status: DerivedStatus, isDark: boolean): PuckC
   const surface = theme.palette.background.paper;
   const line = theme.palette.divider;
   const subtle = theme.palette.text.disabled;
+  // Tinted but OPAQUE bg via color-mix so the progress rail behind the puck
+  // doesn't bleed through. `alpha()` returned a translucent overlay which
+  // let the dark-green progress line read through the light-green puck.
+  const tint = (color: string, pct: number) =>
+    `color-mix(in oklch, ${color} ${pct}%, ${surface})`;
   switch (status) {
     case 'done':
       return {
-        bg: alpha(theme.palette.success.main, isDark ? 0.18 : 0.1),
+        bg: tint(theme.palette.success.main, isDark ? 18 : 14),
         border: theme.palette.success.main,
         fg: isDark ? theme.palette.success.light : theme.palette.success.dark,
       };
     case 'active':
       return {
-        bg: alpha(theme.palette.primary.main, isDark ? 0.2 : 0.12),
+        bg: tint(theme.palette.primary.main, isDark ? 20 : 14),
         border: theme.palette.primary.main,
         fg: isDark ? theme.palette.primary.light : theme.palette.primary.dark,
         glow: alpha(theme.palette.primary.main, 0.28),
@@ -176,7 +186,7 @@ function puckColors(theme: Theme, status: DerivedStatus, isDark: boolean): PuckC
       };
     case 'blocked':
       return {
-        bg: alpha(theme.palette.error.main, isDark ? 0.18 : 0.12),
+        bg: tint(theme.palette.error.main, isDark ? 18 : 14),
         border: theme.palette.error.main,
         fg: isDark ? theme.palette.error.light : theme.palette.error.dark,
       };
@@ -286,7 +296,7 @@ export function ProjectStatusPolyline({
   const fontFamily = theme.typography.fontFamily;
   const monoFamily = `'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace`;
 
-  const railTop = NODE_SIZE / 2 - 1;
+  const railTop = CELL_BTN_PAD_TOP + NODE_SIZE / 2 - 1;
   const colHalf = `calc(100% / ${cols} / 2)`;
   const doneCount = stages.filter((s) => s.state === 'done').length;
   const pct = cols ? Math.round((doneCount / cols) * 100) : 0;
@@ -449,7 +459,10 @@ export function ProjectStatusPolyline({
         </div>
       )}
 
-      <div style={{ position: 'relative', paddingTop: 4 }}>
+      {/* No top padding here — the rail's `top: railTop` is measured from
+          this element's padding box, and any padding-top would offset the
+          rail without offsetting the in-flow puck grid, misaligning them. */}
+      <div style={{ position: 'relative' }}>
         {/* Base rail — dashed pattern to read as "future". */}
         <div
           style={{

@@ -131,6 +131,15 @@ export interface ExplorerProps {
    */
   getFileRenderer?: (path: string, content: string) => React.ReactNode | undefined;
 
+  /**
+   * Optional override for the file label displayed in the sidebar tree.
+   * Receives the file's real path; return `undefined` to fall back to the
+   * default (extension-stripped filename). Useful when on-disk names are
+   * implementation details (`openapi.yaml`) and the user-facing label
+   * should read differently ("API Spec").
+   */
+  getFileLabel?: (path: string) => string | undefined;
+
   // --- layout / style ---
   /** Placeholder shown in the sidebar search input. Default: "Search documents" */
   searchPlaceholder?: string;

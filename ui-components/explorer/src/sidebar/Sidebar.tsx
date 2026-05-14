@@ -102,6 +102,9 @@ export interface SidebarProps {
   getFolderIcon?: (path: string) => React.ReactNode | undefined;
   /** Render parsed headings under each file as nested rows. Default true. */
   showHeadings?: boolean;
+  /** Override the displayed label for specific paths. Falls back to the
+   *  extension-stripped filename when the function returns undefined. */
+  getFileLabel?: (path: string) => string | undefined;
   onActivate: (path: string) => void;
   onTocClick: (path: string, headingIndex: number) => void;
   onAddFile?: (typeId?: string) => void;
@@ -147,6 +150,7 @@ export function Sidebar({
   transparentFolders,
   getFolderIcon,
   showHeadings = true,
+  getFileLabel,
   onActivate,
   onTocClick,
   onAddFile,
@@ -496,7 +500,11 @@ export function Sidebar({
               const isRenaming = renamingPath === path;
               const info = docInfoByPath.get(path);
               const fallbackLabel = usesTree ? stripExtension(lastSegment(path)) : stripExtension(path);
-              const displayTitle = usesTree ? fallbackLabel : (info?.title ?? fallbackLabel);
+              // A custom label always wins over the filename derivation —
+              // host can surface `openapi.yaml` as "API Spec" without
+              // touching disk semantics.
+              const customLabel = getFileLabel?.(path);
+              const displayTitle = customLabel ?? (usesTree ? fallbackLabel : (info?.title ?? fallbackLabel));
               const toc = info?.toc ?? [];
               const headingCount = info?.headingCount ?? 0;
               const isCollapsed = collapsedDocs.has(path);

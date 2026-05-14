@@ -10,7 +10,7 @@ import {
   Typography,
 } from '@wso2/oxygen-ui';
 import { Package, Rocket, Sparkles } from '@wso2/oxygen-ui-icons-react';
-import { Explorer, type AddFileMenuItem, type CustomView, type ExplorerRef } from '@asdlc/explorer';
+import { Explorer, type CustomView, type ExplorerRef } from '@asdlc/explorer';
 import { CELL_DIAGRAM_VIEW_ID, CellDiagramView } from '@asdlc/cell-diagram-view';
 import { MdEditor } from '@asdlc/md-editor';
 import { OpenApiView } from '@asdlc/openapi-view';
@@ -24,8 +24,6 @@ import {
   componentDesignPath,
   componentNameFromPath,
   componentOpenApiPath,
-  defaultComponentDesignMd,
-  defaultComponentOpenApi,
   designDocumentTypeForPath,
 } from '../lib/designDocumentTypes';
 import {
@@ -58,6 +56,12 @@ const OPENAPI_PATH_RE = /^components\/[^/]+\/openapi\.ya?ml$/;
 function renderOpenApiFile(path: string, content: string): React.ReactNode | undefined {
   if (!OPENAPI_PATH_RE.test(path)) return undefined;
   return <OpenApiView spec={content} />;
+}
+// User-facing label override: components/<x>/openapi.yaml reads as "API Spec"
+// in the tree. The on-disk path stays unchanged.
+function getArchitectureFileLabel(path: string): string | undefined {
+  if (OPENAPI_PATH_RE.test(path)) return 'API Spec';
+  return undefined;
 }
 
 // ---------------------------------------------------------------------------
@@ -173,72 +177,6 @@ export default function ProjectArchitecturePage() {
       scheduleAutoSave(path, md);
     },
     [routeOrgId, projectId, savedFiles, scheduleAutoSave],
-  );
-
-  // Add file menu — Add component / Add OpenAPI for current component.
-  const addFileMenu = useMemo<{ items: AddFileMenuItem[] }>(() => {
-    const items: AddFileMenuItem[] = [
-      {
-        id: 'component',
-        label: 'Add component',
-        description: 'Create a new components/<name>/ directory with design.md.',
-      },
-    ];
-    const activeComp = activePath ? componentNameFromPath(activePath) : undefined;
-    if (activeComp && !savedFiles[componentOpenApiPath(activeComp)]) {
-      items.push({
-        id: 'openapi',
-        label: `Add OpenAPI for ${activeComp}`,
-        description: 'Create components/<name>/openapi.yaml.',
-      });
-    }
-    return { items };
-  }, [activePath, savedFiles]);
-
-  const handleAddFile = useCallback(
-    (typeId?: string): string | undefined | void => {
-      if (!projectId) return undefined;
-      if (typeId === 'component') {
-        const name = window.prompt('New component name (lowercase, kebab-case):', '');
-        if (!name) return undefined;
-        const slug = name.trim().toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/^-+|-+$/g, '');
-        if (!slug) return undefined;
-        const path = componentDesignPath(slug);
-        const content = defaultComponentDesignMd({ name: slug, type: 'service', language: 'Go' });
-        void (async () => {
-          const bundle = await api.updateDesignFile(routeOrgId, projectId, path, content);
-          if (bundle) {
-            setSavedFiles(bundle.files);
-            setDesign(bundle.design);
-            setLiveContents(bundle.files);
-            setActivePath(path);
-          }
-        })();
-        return path;
-      }
-      if (typeId === 'openapi') {
-        const activeComp = activePath ? componentNameFromPath(activePath) : undefined;
-        if (!activeComp) return undefined;
-        const path = componentOpenApiPath(activeComp);
-        void (async () => {
-          const bundle = await api.updateDesignFile(
-            routeOrgId,
-            projectId,
-            path,
-            defaultComponentOpenApi(activeComp),
-          );
-          if (bundle) {
-            setSavedFiles(bundle.files);
-            setDesign(bundle.design);
-            setLiveContents(bundle.files);
-            setActivePath(path);
-          }
-        })();
-        return path;
-      }
-      return undefined;
-    },
-    [routeOrgId, projectId, activePath],
   );
 
   const handleDelete = useCallback(
@@ -605,11 +543,15 @@ export default function ProjectArchitecturePage() {
             // page instead of falling through to the markdown editor with
             // raw YAML. All other paths use the default editor chain.
             getFileRenderer={renderOpenApiFile}
+            // …and display it in the tree as "API Spec" — the filename is
+            // an implementation detail.
+            getFileLabel={getArchitectureFileLabel}
             activePath={activePath}
             onActivePathChange={setActivePath}
             onFileChange={handleFileChange}
-            onAddFile={handleAddFile}
-            addFileMenu={addFileMenu}
+            // Manual file-add is intentionally omitted on the architecture
+            // page — components live and die with the design regeneration
+            // flow, not with hand-edited paths in the tree.
             onDelete={handleDelete}
             editorRef={editorRef}
             searchPlaceholder="Search files"
