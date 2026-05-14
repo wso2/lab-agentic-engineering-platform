@@ -1,7 +1,7 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { alpha, Box, Button, CircularProgress, IconButton, PageContent, Typography } from '@wso2/oxygen-ui';
-import { AlertTriangle, CheckCircle, ChevronRight, Info, X } from '@wso2/oxygen-ui-icons-react';
+import { AlertTriangle, CheckCircle, ChevronRight, Clock, Info, X } from '@wso2/oxygen-ui-icons-react';
 import { useProjectBoard } from '../hooks/useProjectBoard';
 import { AnimatedBanner } from '../components/tasks/AnimatedBanner';
 import { TaskSection } from '../components/tasks/TaskSection';
@@ -21,6 +21,11 @@ export default function ProjectTasksPage() {
   const navigate = useNavigate();
   const failedRef = useRef<HTMLDivElement>(null);
 
+  const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
+    Object.fromEntries(SECTIONS.map(s => [s.key, s.key === 'todo' || s.key === 'inProgress']))
+  );
+  const prevCountsRef = useRef<Record<string, number>>({});
+
   const {
     board,
     isLoading,
@@ -36,6 +41,25 @@ export default function ProjectTasksPage() {
     hideGenerateButton,
     clearGenerateBanner,
   } = useProjectBoard(orgId, projectId);
+
+  // Auto-expand sections when their task count increases
+  useEffect(() => {
+    const prev = prevCountsRef.current;
+    const toExpand: Record<string, boolean> = {};
+    let hasNew = false;
+    for (const section of SECTIONS) {
+      const prevCount = prev[section.key] ?? 0;
+      const currCount = board[section.key].length;
+      if (currCount > prevCount) {
+        toExpand[section.key] = true;
+        hasNew = true;
+      }
+      prev[section.key] = currCount;
+    }
+    if (hasNew) {
+      setExpandedSections(s => ({ ...s, ...toExpand }));
+    }
+  }, [board]);
 
   // Snapshot last non-null values so banners can render during their exit animation
   const lastGenerateBanner = useRef(generateBanner);
@@ -75,13 +99,16 @@ export default function ProjectTasksPage() {
   const failedCount     = board.failed.length;
   const inProgressCount = board.inProgress.length;
   const todoCount       = board.todo.length;
+  const onHoldCount     = board.onHold.length;
+  const buildingDepCount = board.done.filter(t => t.status === 'building').length;
 
-  type BannerVariant = 'failed' | 'in_progress' | 'all_done' | null;
+  type BannerVariant = 'failed' | 'in_progress' | 'on_hold_building' | 'all_done' | null;
   let bannerVariant: BannerVariant = null;
   if (totalTasks > 0) {
-    if (failedCount > 0)          bannerVariant = 'failed';
-    else if (inProgressCount > 0) bannerVariant = 'in_progress';
-    else if (todoCount === 0)     bannerVariant = 'all_done';
+    if (failedCount > 0)                                               bannerVariant = 'failed';
+    else if (inProgressCount > 0)                                      bannerVariant = 'in_progress';
+    else if (onHoldCount > 0 && buildingDepCount > 0 && todoCount === 0) bannerVariant = 'on_hold_building';
+    else if (todoCount === 0)                                          bannerVariant = 'all_done';
   }
 
   return (
@@ -251,6 +278,35 @@ export default function ProjectTasksPage() {
           </Box>
         </AnimatedBanner>
 
+        <AnimatedBanner show={bannerVariant === 'on_hold_building'}>
+          <Box
+            sx={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 1.5,
+              px: 2,
+              py: 1.5,
+              mb: 2,
+              borderRadius: 1.25,
+              bgcolor: (t) => alpha(t.palette.warning.main, 0.08),
+              border: '1px solid',
+              borderColor: (t) => alpha(t.palette.warning.main, 0.2),
+            }}
+          >
+            <Box sx={{ flexShrink: 0, display: 'flex', color: 'warning.main' }}>
+              <Clock size={16} />
+            </Box>
+            <Box sx={{ flex: 1 }}>
+              <Typography variant="body2" sx={{ fontWeight: 700, color: 'warning.main', lineHeight: 1.3 }}>
+                {onHoldCount} task{onHoldCount !== 1 ? 's' : ''} on hold — awaiting deployment
+              </Typography>
+              <Typography variant="caption" sx={{ color: 'text.primary', lineHeight: 1.3 }}>
+                {buildingDepCount} dependency component{buildingDepCount !== 1 ? 's are' : ' is'} still building. Held tasks will proceed once deployment completes.
+              </Typography>
+            </Box>
+          </Box>
+        </AnimatedBanner>
+
         <AnimatedBanner show={bannerVariant === 'all_done'}>
           <Box
             sx={{
@@ -318,7 +374,8 @@ export default function ProjectTasksPage() {
                 tasks={board[section.key]}
                 orgId={orgId ?? ''}
                 projectId={projectId ?? ''}
-                initiallyExpanded={section.key === 'todo' || section.key === 'inProgress'}
+                expanded={expandedSections[section.key] ?? false}
+                onExpandedChange={(val) => setExpandedSections(s => ({ ...s, [section.key]: val }))}
               />
             </Box>
           ))}

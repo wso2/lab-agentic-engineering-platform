@@ -1,4 +1,3 @@
-import { useState } from 'react';
 import { Accordion, AccordionDetails, AccordionSummary, Box, Typography, useTheme } from '@wso2/oxygen-ui';
 import { ChevronDown } from '@wso2/oxygen-ui-icons-react';
 import { TaskRow } from './TaskRow';
@@ -10,19 +9,19 @@ interface TaskSectionProps {
   tasks: Task[];
   orgId: string;
   projectId: string;
-  initiallyExpanded: boolean;
+  expanded: boolean;
+  onExpandedChange: (expanded: boolean) => void;
 }
 
-export function TaskSection({ section, tasks, orgId, projectId, initiallyExpanded }: TaskSectionProps) {
+export function TaskSection({ section, tasks, orgId, projectId, expanded, onExpandedChange }: TaskSectionProps) {
   const theme = useTheme();
-  const [expanded, setExpanded] = useState(initiallyExpanded);
 
   const labelColor = section.isPrimary ? theme.palette.primary.main : theme.palette.text.secondary;
 
   return (
     <Accordion
       expanded={expanded}
-      onChange={(_, val) => setExpanded(val)}
+      onChange={(_, val) => onExpandedChange(val)}
       disableGutters
       elevation={0}
       sx={{
