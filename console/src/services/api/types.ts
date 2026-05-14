@@ -80,6 +80,21 @@ export interface ComponentOpenAPI {
   spec: string;
 }
 
+/**
+ * DesignBundle pairs the working-tree file map (used by the Explorer
+ * architecture page) with the assembled flat Design (used by the cell
+ * diagram + downstream code). Returned by `GET /design/bundle` and the
+ * per-file mutation endpoints.
+ *
+ * Files keys are paths relative to `.asdlc/design/` with forward slashes
+ * (e.g. `design.md`, `components/user-api/design.md`,
+ * `components/user-api/openapi.yaml`).
+ */
+export interface DesignBundle {
+  files: Record<string, string>;
+  design: Design | null;
+}
+
 // -- Legacy ComponentDefinition (from OC, used in component list/detail) -----
 
 export interface ComponentDefinition {

@@ -80,6 +80,22 @@ export const ArchitectInput = z.object({
   previousDesign: ArchitectOutput.optional().describe(
     "Existing design to evolve — preserve component names and structure where possible",
   ),
+  // Wireframes / domain-models live alongside the spec under
+  // `.asdlc/requirements/`. The BFF passes the raw DSL keyed by canvas
+  // name (without extension); the architect calls `read_wireframe(name)`
+  // on demand to pull in the DSL when a screen flow is relevant.
+  wireframes: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe(
+      "Map of canvas name (e.g. 'wireframes', 'domain-model') to DSL text",
+    ),
+  availableWireframes: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "List of canvas names available via the read_wireframe tool. Mentioned in the system prompt so the model knows what to fetch.",
+    ),
 });
 
 export type ArchitectInput = z.infer<typeof ArchitectInput>;

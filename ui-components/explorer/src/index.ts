@@ -7,4 +7,5 @@ export type {
   FileMap,
   TocEntry,
   AddFileMenuItem,
+  CustomView,
 } from './types.js';

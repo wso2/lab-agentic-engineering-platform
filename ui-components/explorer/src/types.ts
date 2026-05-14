@@ -12,6 +12,23 @@ export interface AddFileMenuItem {
   disabled?: boolean;
 }
 
+/**
+ * A non-file entry in the Explorer. Custom views appear pinned above the
+ * regular file list in the sidebar; selecting one renders `content` in the
+ * editor pane instead of an `ActiveFileEditor`. View ids are used as the
+ * `activePath` sentinel and must not collide with real file paths — prefer a
+ * stable, namespaced id like `cell-diagram` or `__architecture__`.
+ *
+ * Custom views bypass the file-buffer system (no dirty tracking, no
+ * `onFileChange`) and are not rename-able or delete-able.
+ */
+export interface CustomView {
+  id: string;
+  label: string;
+  icon?: React.ReactNode;
+  content: React.ReactNode;
+}
+
 /** A heading entry parsed from a markdown document. */
 export interface TocEntry {
   /** Heading depth, 1..6. */
@@ -67,6 +84,61 @@ export interface ExplorerProps {
   addFileMenu?: { items: AddFileMenuItem[] };
   onRename?: (oldPath: string, newPath: string) => void;
   onDelete?: (path: string) => void;
+
+  // --- custom views ---
+  /**
+   * Non-file entries pinned above the file list. Selecting one renders its
+   * `content` in the editor pane. See {@link CustomView}.
+   */
+  customViews?: CustomView[];
+
+  /**
+   * Paths whose content is still being generated (e.g. by a streaming agent).
+   * Files in this set render with a spinner instead of their file icon; folders
+   * whose descendants are in the set render a spinner too. The set is purely
+   * presentational — caller still controls what's in `files`.
+   */
+  pendingPaths?: Set<string>;
+
+  /**
+   * Folder paths that should not appear as their own row in the tree. Their
+   * children promote one level up. Underlying paths in `files` are
+   * unchanged — only the visual nesting collapses. Example: pass
+   * `new Set(['components'])` so `components/foo/design.md` displays under a
+   * top-level `foo` folder.
+   */
+  transparentFolders?: Set<string>;
+
+  /**
+   * Custom icon per folder path. Receives the folder's real path (not the
+   * displayed segment) so callers can disambiguate. Return `undefined` to
+   * fall back to the default folder icon.
+   */
+  getFolderIcon?: (path: string) => React.ReactNode | undefined;
+
+  /**
+   * Whether to render parsed markdown headings as nested entries under each
+   * file in the sidebar. Default: true.
+   */
+  showHeadings?: boolean;
+
+  /**
+   * Optional override for the right-pane editor. When `getFileRenderer`
+   * returns a non-null React node for a given path, that node is rendered
+   * instead of the default markdown/Excalidraw editor. The saved content is
+   * passed as the second argument so callers can parse it without
+   * re-fetching. Returning `undefined` falls through to the default chain.
+   */
+  getFileRenderer?: (path: string, content: string) => React.ReactNode | undefined;
+
+  /**
+   * Optional override for the file label displayed in the sidebar tree.
+   * Receives the file's real path; return `undefined` to fall back to the
+   * default (extension-stripped filename). Useful when on-disk names are
+   * implementation details (`openapi.yaml`) and the user-facing label
+   * should read differently ("API Spec").
+   */
+  getFileLabel?: (path: string) => string | undefined;
 
   // --- layout / style ---
   /** Placeholder shown in the sidebar search input. Default: "Search documents" */

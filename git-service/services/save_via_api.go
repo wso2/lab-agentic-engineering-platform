@@ -25,9 +25,15 @@ import (
 	"github.com/wso2/asdlc/git-service/pkg/credentials"
 )
 
-// saveDesignViaAPI implements §8.2 (Contents API path) for V1: the working
-// tree's `.asdlc/design.json` is the draft, the precondition SHA comes from
-// current main, and the new commit + annotated tag are created via API.
+// saveDesignViaAPI implements §8.2 (Git Data API path) for V1: the working
+// tree under `.asdlc/design/` is the draft surface (root `design.md` plus
+// per-component `design.md` / `openapi.yaml`). We compute the changeset
+// against local-clone HEAD, apply it over current main via blob+tree+commit,
+// then create the next `v<N>-<M>` annotated tag.
+//
+// Mirrors saveRequirementsViaAPI's shape — the only differences are the
+// directory walked, the precondition (a v<N> tag must exist), and the tag
+// naming scheme.
 func (s *artifactService) saveDesignViaAPI(
 	ctx context.Context,
 	repoRecord *models.GitRepository,
@@ -43,22 +49,26 @@ func (s *artifactService) saveDesignViaAPI(
 		return nil, fmt.Errorf("resolve credential: %w", err)
 	}
 
-	// 1. Read the working-tree design.json (the draft surface in V1).
-	abs := filepath.Join(clonePath, DesignFilePath)
-	draftContent, err := os.ReadFile(abs)
-	if err != nil {
+	// 1. Validate the root design document exists. An empty `.asdlc/design/`
+	// can't be saved — at minimum the top-level `design.md` must be present.
+	rootAbs := filepath.Join(clonePath, DesignDir, designRootFile)
+	if _, err := os.Stat(rootAbs); err != nil {
 		if os.IsNotExist(err) {
-			return nil, fmt.Errorf("%w: %s missing", ErrArtifactPathInvalid, DesignFilePath)
+			return nil, fmt.Errorf("%w: %s/%s missing — generate design before saving",
+				ErrArtifactPathInvalid, DesignDir, designRootFile)
 		}
-		return nil, fmt.Errorf("read working tree design: %w", err)
-	}
-	draftBlobSHA, err := blobSHAFor(ctx, clonePath, draftContent)
-	if err != nil {
-		return nil, fmt.Errorf("hash-object draft: %w", err)
+		return nil, fmt.Errorf("stat %s: %w", rootAbs, err)
 	}
 
-	// 2. Tag list (lets us compute parent N and next M, and serves as the
-	// answer for unchanged-detection's "what's the latest tag for this N").
+	// 2. Compute the changeset: (working tree) vs (local HEAD)
+	// status codes: A=added, M=modified, D=deleted, R=renamed (treated as D+A)
+	changes, err := diffWorkingTreeAgainstHEAD(ctx, clonePath, DesignDir)
+	if err != nil {
+		return nil, fmt.Errorf("diff against HEAD: %w", err)
+	}
+
+	// 3. Tag list — drives the parent-N precondition, unchanged-detection,
+	// and next-revision naming.
 	tags, err := s.fetchGitHubTags(ctx, owner, repo, cred)
 	if err != nil {
 		return nil, fmt.Errorf("list tags: %w", err)
@@ -68,14 +78,10 @@ func (s *artifactService) saveDesignViaAPI(
 		return nil, ErrNoRequirementsBaseline
 	}
 
-	// 3. Current main's blob SHA for the design path. 404 = first ever save.
-	preconditionSHA, err := blobSHAOnMain(ctx, s.gitOps.gitHub, owner, repo, cred, DesignFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("fetch current main blob: %w", err)
-	}
-
-	// 4. Unchanged-detection: draft bytes already match what's on main.
-	if preconditionSHA != "" && draftBlobSHA == preconditionSHA {
+	// 4. If working tree matches local HEAD exactly (no changes), report the
+	// latest v<parentN>-<M> as "unchanged". If no design tag exists yet for
+	// this parent N, fall through and tag main's current HEAD as v<N>-1.
+	if len(changes) == 0 {
 		if latestM := latestDesignRevision(tags, parentN); latestM > 0 {
 			return &DesignSaveResult{
 				Status:              "unchanged",
@@ -84,65 +90,160 @@ func (s *artifactService) saveDesignViaAPI(
 				DesignRevision:      latestM,
 			}, nil
 		}
-		// Design content equals main but no tag exists yet for this N — fall
-		// through and create the first v<parentN>-1 tag pointing at main's HEAD.
 	}
 
-	// 5. PutContents with CAS, retrying on SHA mismatch.
+	// 5. Resolve current main commit + tree.
+	mainCommitSHA, err := s.gitOps.gitHub.GetRef(ctx, owner, repo, cred, "heads/"+repoRecord.DefaultBranch)
+	if err != nil {
+		return nil, fmt.Errorf("get ref main: %w", err)
+	}
+	mainCommit, err := s.gitOps.gitHub.GetCommit(ctx, owner, repo, cred, mainCommitSHA)
+	if err != nil {
+		return nil, fmt.Errorf("get commit %s: %w", mainCommitSHA, err)
+	}
+
+	// 6. Build tree entries from the changeset.
+	//    Add/Modify → upload blob + entry with sha
+	//    Delete     → entry with sha:null (skipped if path isn't on main — see §8.3 step 1)
+	mainTree, err := s.gitOps.gitHub.GetTree(ctx, owner, repo, cred, mainCommit.TreeSHA, true)
+	if err != nil {
+		return nil, fmt.Errorf("get tree %s: %w", mainCommit.TreeSHA, err)
+	}
+	mainPaths := make(map[string]TreeEntryResult, len(mainTree.Entries))
+	for _, e := range mainTree.Entries {
+		mainPaths[e.Path] = e
+	}
+
+	var entries []TreeEntry
+	for _, ch := range changes {
+		repoPath := filepath.ToSlash(filepath.Join(DesignDir, ch.Name))
+		switch ch.Status {
+		case "A", "M", "T":
+			data, rerr := os.ReadFile(filepath.Join(clonePath, DesignDir, ch.Name))
+			if rerr != nil {
+				return nil, fmt.Errorf("read working tree %s: %w", ch.Name, rerr)
+			}
+			blobSHA, berr := s.gitOps.gitHub.CreateBlob(ctx, owner, repo, cred, data)
+			if berr != nil {
+				return nil, fmt.Errorf("create blob %s: %w", ch.Name, berr)
+			}
+			entries = append(entries, TreeEntry{
+				Path: repoPath,
+				Mode: "100644",
+				Type: "blob",
+				SHA:  blobSHA,
+			})
+		case "D":
+			// No-op tombstone filter (§8.3 step 1): skip deletes for paths
+			// absent on main — GitHub would 422 otherwise.
+			if _, ok := mainPaths[repoPath]; !ok {
+				continue
+			}
+			entries = append(entries, TreeEntry{
+				Path: repoPath,
+				Mode: "100644",
+				Type: "blob",
+				// SHA empty → wire-serialised as `sha: null` by CreateTree.
+			})
+		default:
+			// R (rename) — diffWorkingTreeAgainstHEAD expands these into D+A
+			// upstream, so we should not see R here.
+			return nil, fmt.Errorf("unexpected diff status %q for %s", ch.Status, ch.Name)
+		}
+	}
+
+	if len(entries) == 0 {
+		// All changes were no-op tombstones — same outcome as len(changes)==0.
+		if latestM := latestDesignRevision(tags, parentN); latestM > 0 {
+			return &DesignSaveResult{
+				Status:              "unchanged",
+				Tag:                 designTagFor(parentN, latestM),
+				RequirementsVersion: parentN,
+				DesignRevision:      latestM,
+			}, nil
+		}
+		// No effective changes and no design tag yet — fall through and tag
+		// main's current HEAD as v<parentN>-1.
+	}
+
+	// 7. CreateTree / CreateCommit / UpdateRef under CAS retry.
 	bucketKey := repoRecord.OrgID + ":" + repoRecord.ProjectID
 	author, committer := s.gitOps.resolveSaveIdentities(cred)
-	var putResult *PutContentsResult
-	err = retryOnCASConflict(ctx, bucketKey, func() error {
-		// On retry, refresh the precondition first — main may have moved.
-		freshSHA, ferr := blobSHAOnMain(ctx, s.gitOps.gitHub, owner, repo, cred, DesignFilePath)
-		if ferr != nil {
-			return fmt.Errorf("refresh precondition: %w", ferr)
-		}
-		preconditionSHA = freshSHA
-		res, perr := s.gitOps.gitHub.PutContents(ctx, owner, repo, cred, PutContentsRequest{
-			Path:      DesignFilePath,
-			Branch:    repoRecord.DefaultBranch,
-			Message:   commitMessage,
-			Content:   draftContent,
-			SHA:       preconditionSHA,
-			Author:    author,
-			Committer: committer,
+
+	var newCommitSHA string
+	if len(entries) > 0 {
+		err = retryOnCASConflict(ctx, bucketKey, func() error {
+			// On retry, re-fetch ref/commit/tree so base_tree is fresh.
+			freshMain, ferr := s.gitOps.gitHub.GetRef(ctx, owner, repo, cred, "heads/"+repoRecord.DefaultBranch)
+			if ferr != nil {
+				return fmt.Errorf("refresh main: %w", ferr)
+			}
+			freshCommit, ferr := s.gitOps.gitHub.GetCommit(ctx, owner, repo, cred, freshMain)
+			if ferr != nil {
+				return fmt.Errorf("refresh commit: %w", ferr)
+			}
+			mainCommitSHA = freshMain
+			mainCommit = freshCommit
+			treeSHA, terr := s.gitOps.gitHub.CreateTree(ctx, owner, repo, cred, freshCommit.TreeSHA, entries)
+			if terr != nil {
+				return fmt.Errorf("create tree: %w", terr)
+			}
+			commitSHA, cerr := s.gitOps.gitHub.CreateCommit(ctx, owner, repo, cred, CreateCommitRequest{
+				Message:   commitMessage,
+				TreeSHA:   treeSHA,
+				Parents:   []string{freshMain},
+				Author:    author,
+				Committer: committer,
+			})
+			if cerr != nil {
+				return fmt.Errorf("create commit: %w", cerr)
+			}
+			if uerr := s.gitOps.gitHub.UpdateRef(ctx, owner, repo, cred, "heads/"+repoRecord.DefaultBranch, commitSHA, false); uerr != nil {
+				return uerr
+			}
+			newCommitSHA = commitSHA
+			return nil
 		})
-		if perr != nil {
-			return perr
+		if err != nil {
+			if errors.Is(err, ErrConflictBudgetExhausted) {
+				return nil, fmt.Errorf("save design: %w", err)
+			}
+			return nil, fmt.Errorf("commit + update ref: %w", err)
 		}
-		putResult = res
-		return nil
-	})
-	if err != nil {
-		if errors.Is(err, ErrConflictBudgetExhausted) {
-			return nil, fmt.Errorf("save design: %w", err)
-		}
-		return nil, fmt.Errorf("put contents: %w", err)
+	} else {
+		// First-ever design tag with nothing to commit — point at main.
+		newCommitSHA = mainCommitSHA
 	}
 
-	// 6. Annotated tag (two-step) with tag-collision retry. The tag may move
-	// past parentN if external tags were claimed concurrently.
+	// 8. Annotated tag with collision retry. The tag may move past parentN if
+	// external tags were claimed concurrently.
 	nextRev, tagName := nextDesignTag(tags, parentN)
 	tagBody := fmt.Sprintf("Design v%d-%d", parentN, nextRev)
 	if commitMessage != "" && commitMessage != "Update design" {
 		tagBody = fmt.Sprintf("%s\n\n%s", tagBody, commitMessage)
 	}
-	if err := s.createAnnotatedTagViaAPI(ctx, owner, repo, cred, &tags, &nextRev, &tagName, tagBody, putResult.CommitSHA, parentN, "design"); err != nil {
+	if err := s.createAnnotatedTagViaAPI(ctx, owner, repo, cred, &tags, &nextRev, &tagName, tagBody, newCommitSHA, parentN, "design"); err != nil {
 		return nil, fmt.Errorf("create tag: %w", err)
+	}
+
+	// 9. Best-effort sync local clone so subsequent reads see what we just
+	// saved. Failures are logged but don't fail the save.
+	if err := s.gitOps.bestEffortPullDefaultBranch(ctx, repoRecord); err != nil {
+		slog.WarnContext(ctx, "best-effort pull after design save failed",
+			"project", repoRecord.ProjectID, "error", err)
 	}
 
 	slog.InfoContext(ctx, "design saved + tagged via api",
 		"project", repoRecord.ProjectID,
 		"tag", tagName,
-		"commit", putResult.CommitSHA)
+		"commit", newCommitSHA)
 
 	return &DesignSaveResult{
 		Status:              "approved",
 		Tag:                 tagName,
 		RequirementsVersion: parentN,
 		DesignRevision:      nextRev,
-		CommitHash:          putResult.CommitSHA,
+		CommitHash:          newCommitSHA,
 	}, nil
 }
 
@@ -568,6 +669,15 @@ func diffWorkingTreeAgainstHEAD(ctx context.Context, clonePath, subdir string) (
 		return nil, fmt.Errorf("git status: %s: %w", stderr.String(), err)
 	}
 
+	// Paths from `git status` are repo-root-relative (e.g.
+	// `.asdlc/design/components/foo/design.md`). Strip the `subdir/` prefix
+	// so `Name` carries the path *within* subdir — including any directory
+	// nesting — rather than just the basename. `filepath.Base` here would
+	// silently drop `components/foo/` and collapse every nested file onto
+	// its leaf name, which breaks the multi-file design layout.
+	subdirPrefix := strings.TrimRight(subdir, "/") + "/"
+	relName := func(p string) string { return strings.TrimPrefix(p, subdirPrefix) }
+
 	out := stdout.Bytes()
 	var rows []changeRow
 	for len(out) > 0 {
@@ -612,15 +722,15 @@ func diffWorkingTreeAgainstHEAD(ctx context.Context, clonePath, subdir string) (
 		case x == 'R' || y == 'R':
 			// Emit D(from) + A(to) and continue.
 			rows = append(rows,
-				changeRow{Status: "D", Name: filepath.Base(fromPath)},
-				changeRow{Status: "A", Name: filepath.Base(path)},
+				changeRow{Status: "D", Name: relName(fromPath)},
+				changeRow{Status: "A", Name: relName(path)},
 			)
 			continue
 		default:
 			// Unknown / ignored status (e.g. "!!").
 			continue
 		}
-		rows = append(rows, changeRow{Status: s, Name: filepath.Base(path)})
+		rows = append(rows, changeRow{Status: s, Name: relName(path)})
 	}
 	return rows, nil
 }

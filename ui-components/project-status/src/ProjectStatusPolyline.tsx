@@ -1,73 +1,305 @@
-import { useMemo, useState, useId } from 'react';
+import { useMemo, useState } from 'react';
 import { useTheme, alpha } from '@mui/material/styles';
+import type { Theme } from '@mui/material/styles';
 import { StageDrawer } from './StageDrawer.js';
-import { resolveStateMeta } from './stateMeta.js';
-import type { ProjectStatusPolylineProps, Stage } from './types.js';
+import type {
+  ProjectStatusPolylineProps,
+  Stage,
+  ProjectState,
+  FocusOverride,
+} from './types.js';
 
-const W = 1400;
-const H = 420;
-const PAD_X = 160;
-const BASELINE_Y = 320;
-const PEAK_Y = 110;
+const NODE_SIZE = 56;
+// The cell button wraps the puck in a top-padded hit area so hover/click
+// affordances reach above the puck. Rail geometry has to know this offset
+// so the line passes through the puck's true vertical centre rather than
+// hovering near its top edge.
+const CELL_BTN_PAD_TOP = 6;
+const RING_ANIM = `
+@keyframes asdlc-ps-ring {
+  0%   { transform: scale(0.9); opacity: 0.55; }
+  100% { transform: scale(1.35); opacity: 0; }
+}
+@keyframes asdlc-ps-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50%      { opacity: 0.5; transform: scale(1.25); }
+}
+`;
+
+// Derived per-stage status used internally. The public Stage.state only
+// distinguishes done / active / pending / blocked; we promote the first
+// pending stage after the last-done/active node to "next" so it can wear
+// the distinct dashed-halo treatment.
+type DerivedStatus = 'done' | 'active' | 'next' | 'queued' | 'blocked';
+
+function deriveStatuses(stages: Stage[]): DerivedStatus[] {
+  let progressed = -1; // index of the last done or active stage
+  stages.forEach((s, i) => {
+    if (s.state === 'done' || s.state === 'active') progressed = i;
+  });
+  let nextAssigned = false;
+  return stages.map((s, i) => {
+    if (s.state === 'done') return 'done';
+    if (s.state === 'active') return 'active';
+    if (s.state === 'blocked') return 'blocked';
+    // pending
+    if (!nextAssigned && i === progressed + 1) {
+      nextAssigned = true;
+      return 'next';
+    }
+    return 'queued';
+  });
+}
+
+// Progress fill ends at the centre of the last "done" or "active" node.
+function computeProgress(statuses: DerivedStatus[]): number {
+  const n = statuses.length;
+  if (n <= 1) return 0;
+  let last = -1;
+  statuses.forEach((s, i) => {
+    if (s === 'done' || s === 'active') last = i;
+  });
+  if (last <= 0) return 0;
+  return last / (n - 1);
+}
+
+// Cursor sits 35% of the way from the last-done node towards the next stage.
+// Hidden when something is actively running (the pulsing puck carries that
+// meaning), at the very start (nothing done yet), or at the very end.
+function computeCursor(statuses: DerivedStatus[]): number | null {
+  const n = statuses.length;
+  if (n <= 1) return null;
+  let lastDone = -1;
+  let hasActive = false;
+  statuses.forEach((s, i) => {
+    if (s === 'done') lastDone = i;
+    if (s === 'active') hasActive = true;
+  });
+  if (hasActive) return null;
+  if (lastDone < 0) return null;
+  if (lastDone >= n - 1) return null;
+  return (lastDone + 0.35) / (n - 1);
+}
+
+function deriveProjectState(stages: Stage[]): ProjectState {
+  if (stages.length === 0) return 'paused';
+  if (stages.some((s) => s.state === 'active')) return 'active';
+  if (stages.some((s) => s.state === 'blocked')) return 'blocked';
+  if (stages.every((s) => s.state === 'done')) return 'done';
+  return 'paused';
+}
+
+function deriveFocus(stages: Stage[], statuses: DerivedStatus[]): FocusOverride {
+  const activeIdx = statuses.indexOf('active');
+  if (activeIdx >= 0) {
+    const s = stages[activeIdx];
+    return {
+      eyebrowKey: 'currently',
+      eyebrow: 'Currently',
+      stage: s.name,
+      detail: s.help || s.headline,
+    };
+  }
+  const blockedIdx = statuses.indexOf('blocked');
+  if (blockedIdx >= 0) {
+    const s = stages[blockedIdx];
+    return {
+      eyebrowKey: 'blocked',
+      eyebrow: 'Blocked',
+      stage: s.name,
+      detail: s.help || s.headline,
+    };
+  }
+  const nextIdx = statuses.indexOf('next');
+  if (nextIdx >= 0) {
+    const s = stages[nextIdx];
+    return {
+      eyebrowKey: 'next',
+      eyebrow: 'Up next',
+      stage: s.name,
+      detail: s.help || s.headline,
+    };
+  }
+  if (stages.length && stages.every((s) => s.state === 'done')) {
+    const last = stages[stages.length - 1];
+    return {
+      eyebrowKey: 'shipped',
+      eyebrow: 'Shipped',
+      detail: last.help || 'All stages complete',
+    };
+  }
+  return { eyebrowKey: 'idle', eyebrow: 'Idle', detail: 'No active stage' };
+}
+
+function subLabel(status: DerivedStatus): string {
+  switch (status) {
+    case 'done':
+      return 'done';
+    case 'active':
+      return 'live';
+    case 'next':
+      return 'next';
+    case 'blocked':
+      return 'stuck';
+    case 'queued':
+    default:
+      return '—';
+  }
+}
+
+interface PuckColors {
+  bg: string;
+  border: string;
+  fg: string;
+  /** Active state gets an outer halo via box-shadow. */
+  glow?: string;
+}
+
+function puckColors(theme: Theme, status: DerivedStatus, isDark: boolean): PuckColors {
+  const surface = theme.palette.background.paper;
+  const line = theme.palette.divider;
+  const subtle = theme.palette.text.disabled;
+  // Tinted but OPAQUE bg via color-mix so the progress rail behind the puck
+  // doesn't bleed through. `alpha()` returned a translucent overlay which
+  // let the dark-green progress line read through the light-green puck.
+  const tint = (color: string, pct: number) =>
+    `color-mix(in oklch, ${color} ${pct}%, ${surface})`;
+  switch (status) {
+    case 'done':
+      return {
+        bg: tint(theme.palette.success.main, isDark ? 18 : 14),
+        border: theme.palette.success.main,
+        fg: isDark ? theme.palette.success.light : theme.palette.success.dark,
+      };
+    case 'active':
+      return {
+        bg: tint(theme.palette.primary.main, isDark ? 20 : 14),
+        border: theme.palette.primary.main,
+        fg: isDark ? theme.palette.primary.light : theme.palette.primary.dark,
+        glow: alpha(theme.palette.primary.main, 0.28),
+      };
+    case 'next':
+      return {
+        bg: surface,
+        border: theme.palette.primary.main,
+        fg: isDark ? theme.palette.primary.light : theme.palette.primary.dark,
+      };
+    case 'blocked':
+      return {
+        bg: tint(theme.palette.error.main, isDark ? 18 : 14),
+        border: theme.palette.error.main,
+        fg: isDark ? theme.palette.error.light : theme.palette.error.dark,
+      };
+    case 'queued':
+    default:
+      return { bg: surface, border: line, fg: subtle };
+  }
+}
+
+function StatePill({
+  state,
+  theme,
+  isDark,
+}: {
+  state: ProjectState;
+  theme: Theme;
+  isDark: boolean;
+}) {
+  const monoFamily = `'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace`;
+  let bg = alpha(theme.palette.text.primary, isDark ? 0.06 : 0.04);
+  let fg = theme.palette.text.secondary;
+  let label = 'Paused';
+  let dotPulse = false;
+  switch (state) {
+    case 'active':
+      bg = alpha(theme.palette.primary.main, isDark ? 0.22 : 0.14);
+      fg = isDark ? theme.palette.primary.light : theme.palette.primary.dark;
+      label = 'In progress';
+      dotPulse = true;
+      break;
+    case 'done':
+      bg = alpha(theme.palette.success.main, isDark ? 0.2 : 0.12);
+      fg = isDark ? theme.palette.success.light : theme.palette.success.dark;
+      label = 'Shipped';
+      break;
+    case 'blocked':
+      bg = alpha(theme.palette.error.main, isDark ? 0.2 : 0.14);
+      fg = isDark ? theme.palette.error.light : theme.palette.error.dark;
+      label = 'Blocked';
+      break;
+    default:
+      label = 'Paused';
+  }
+  return (
+    <span
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: 6,
+        height: 24,
+        padding: '0 10px',
+        borderRadius: 999,
+        font: `500 11.5px/1 ${monoFamily}`,
+        letterSpacing: '0.02em',
+        background: bg,
+        color: fg,
+        border: state === 'paused' ? `1px solid ${theme.palette.divider}` : '1px solid transparent',
+      }}
+    >
+      <span
+        style={{
+          width: 6,
+          height: 6,
+          borderRadius: 999,
+          background: 'currentColor',
+          opacity: dotPulse ? 1 : 0.6,
+          animation: dotPulse ? 'asdlc-ps-pulse 1.6s cubic-bezier(.2,.7,.2,1) infinite' : undefined,
+        }}
+      />
+      {label}
+    </span>
+  );
+}
 
 export function ProjectStatusPolyline({
   stages,
   onStageClick,
   interactive = true,
   mode,
-  maxIteration,
+  showHeader = true,
+  projectState,
+  focus,
 }: ProjectStatusPolylineProps) {
   const theme = useTheme();
-  const gradientId = useId();
   const effectiveMode = mode ?? theme.palette.mode;
   const isDark = effectiveMode === 'dark';
-
   const [picked, setPicked] = useState<Stage | null>(null);
+
+  const statuses = useMemo(() => deriveStatuses(stages), [stages]);
+  const progress = useMemo(() => computeProgress(statuses), [statuses]);
+  const cursor = useMemo(() => computeCursor(statuses), [statuses]);
+  const derivedProjectState = useMemo(() => deriveProjectState(stages), [stages]);
+  const effectiveState = projectState ?? derivedProjectState;
+  const effectiveFocus = focus ?? deriveFocus(stages, statuses);
+
+  const cols = stages.length || 1;
 
   const surface = theme.palette.background.paper;
   const text = theme.palette.text.primary;
   const muted = theme.palette.text.secondary;
   const subtle = theme.palette.text.disabled;
-  const border = theme.palette.divider;
-  const lineColor = alpha(theme.palette.text.primary, isDark ? 0.1 : 0.09);
+  const line = theme.palette.divider;
+  const lineSoft = alpha(theme.palette.text.primary, isDark ? 0.06 : 0.08);
   const accent = theme.palette.primary.main;
+  const done = theme.palette.success.main;
+  const sunk = alpha(theme.palette.text.primary, isDark ? 0.08 : 0.05);
   const fontFamily = theme.typography.fontFamily;
-  const radius = typeof theme.shape.borderRadius === 'number' ? theme.shape.borderRadius * 2 : 16;
+  const monoFamily = `'Geist Mono', ui-monospace, 'SF Mono', Menlo, monospace`;
 
-  // Auto-scale the y-axis to the actual data range so the polyline fills the
-  // available height. The widget's outer dimensions are still fixed (1400×420);
-  // only the iteration→y mapping rescales. An explicit `maxIteration` prop
-  // overrides auto-scale (acts as a ceiling). We never go below 1 to avoid
-  // division by zero and to give a single-iteration data set a visible peak.
-  const effectiveMax = useMemo(() => {
-    if (typeof maxIteration === 'number' && maxIteration > 0) return maxIteration;
-    const dataMax = stages.reduce(
-      (acc, s) => (s.state === 'pending' ? acc : Math.max(acc, s.iteration)),
-      0,
-    );
-    return Math.max(dataMax, 1);
-  }, [stages, maxIteration]);
-
-  const innerW = W - PAD_X * 2;
-  const denom = Math.max(stages.length - 1, 1);
-  const positions = stages.map((s, i) => {
-    const x = stages.length === 1 ? W / 2 : PAD_X + (innerW * i) / denom;
-    const norm = s.state === 'pending' ? 0 : Math.min(s.iteration / effectiveMax, 1);
-    const y = BASELINE_Y - norm * (BASELINE_Y - PEAK_Y);
-    return { x, y, stage: s };
-  });
-
-  const linePath = useMemo(() => {
-    if (positions.length < 2) return '';
-    return positions.map((p, i) => (i === 0 ? `M ${p.x} ${p.y}` : `L ${p.x} ${p.y}`)).join(' ');
-  }, [positions]);
-
-  const areaPath = useMemo(() => {
-    if (positions.length < 2) return '';
-    const last = positions[positions.length - 1];
-    const first = positions[0];
-    return `${linePath} L ${last.x} ${BASELINE_Y} L ${first.x} ${BASELINE_Y} Z`;
-  }, [linePath, positions]);
+  const railTop = CELL_BTN_PAD_TOP + NODE_SIZE / 2 - 1;
+  const colHalf = `calc(100% / ${cols} / 2)`;
+  const doneCount = stages.filter((s) => s.state === 'done').length;
+  const pct = cols ? Math.round((doneCount / cols) * 100) : 0;
 
   const handlePick = (stage: Stage) => {
     if (!interactive) return;
@@ -78,223 +310,401 @@ export function ProjectStatusPolyline({
     setPicked(stage);
   };
 
+  const eyebrowKey = effectiveFocus.eyebrowKey ?? 'idle';
+  let eyebrowColor = subtle;
+  let eyebrowDotBg = subtle;
+  let eyebrowDotPulse = false;
+  if (eyebrowKey === 'currently') {
+    eyebrowColor = isDark ? theme.palette.primary.light : theme.palette.primary.dark;
+    eyebrowDotBg = accent;
+    eyebrowDotPulse = true;
+  } else if (eyebrowKey === 'next') {
+    eyebrowColor = isDark ? theme.palette.primary.light : theme.palette.primary.dark;
+    eyebrowDotBg = accent;
+  } else if (eyebrowKey === 'shipped') {
+    eyebrowColor = isDark ? theme.palette.success.light : theme.palette.success.dark;
+    eyebrowDotBg = done;
+  } else if (eyebrowKey === 'blocked') {
+    eyebrowColor = isDark ? theme.palette.error.light : theme.palette.error.dark;
+    eyebrowDotBg = theme.palette.error.main;
+  }
+
   return (
     <div
       style={{
         background: surface,
         color: text,
-        padding: '40px 56px 44px',
         fontFamily,
-        borderRadius: radius,
-        border: `1px solid ${border}`,
-        boxShadow: isDark
-          ? '0 1px 0 rgba(255,255,255,0.03) inset'
-          : '0 1px 2px rgba(0,0,0,0.02)',
-        position: 'relative',
+        padding: '36px 40px 40px',
+        borderRadius: 14,
+        border: `1px solid ${line}`,
+        boxShadow: '0 1px 2px rgba(0,0,0,0.02)',
         boxSizing: 'border-box',
       }}
     >
-      <div style={{ position: 'relative' }}>
-        <svg
-          viewBox={`0 0 ${W} ${H}`}
-          width="100%"
-          style={{ display: 'block', overflow: 'visible' }}
-          role="img"
-          aria-label="Project status overview"
+      <style>{RING_ANIM}</style>
+
+      {showHeader && (
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            gap: 24,
+            paddingBottom: 22,
+            marginBottom: 28,
+            borderBottom: `1px solid ${lineSoft}`,
+          }}
         >
-          <defs>
-            <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor={accent} stopOpacity={isDark ? 0.22 : 0.15} />
-              <stop offset="100%" stopColor={accent} stopOpacity="0" />
-            </linearGradient>
-          </defs>
-
-          <line
-            x1={PAD_X - 40}
-            y1={BASELINE_Y}
-            x2={W - PAD_X + 40}
-            y2={BASELINE_Y}
-            stroke={lineColor}
-            strokeWidth={1}
-          />
-
-          {[1 / 3, 2 / 3].map((frac) => {
-            const y = BASELINE_Y - frac * (BASELINE_Y - PEAK_Y);
-            return (
-              <line
-                key={frac}
-                x1={PAD_X - 40}
-                y1={y}
-                x2={W - PAD_X + 40}
-                y2={y}
-                stroke={lineColor}
-                strokeWidth={1}
-                strokeDasharray="1 6"
-                opacity={0.7}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, minWidth: 0 }}>
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 8,
+                font: `500 10.5px/1 ${monoFamily}`,
+                letterSpacing: '0.08em',
+                textTransform: 'uppercase',
+                color: eyebrowColor,
+              }}
+            >
+              <span
+                style={{
+                  display: 'inline-block',
+                  width: 4,
+                  height: 4,
+                  borderRadius: 999,
+                  background: eyebrowDotBg,
+                  animation: eyebrowDotPulse
+                    ? 'asdlc-ps-pulse 1.6s cubic-bezier(.2,.7,.2,1) infinite'
+                    : undefined,
+                }}
               />
-            );
-          })}
+              {effectiveFocus.eyebrow}
+            </span>
+            <div
+              style={{
+                display: 'flex',
+                alignItems: 'baseline',
+                gap: 10,
+                font: `500 17px/1.2 ${fontFamily}`,
+                letterSpacing: '-0.02em',
+                color: text,
+                flexWrap: 'wrap',
+              }}
+            >
+              {effectiveFocus.stage && (
+                <span style={{ color: text }}>{effectiveFocus.stage}</span>
+              )}
+              {effectiveFocus.stage && effectiveFocus.detail && (
+                <span style={{ color: subtle, fontWeight: 400 }}>·</span>
+              )}
+              {effectiveFocus.detail && (
+                <span
+                  style={{
+                    font: `400 14px/1.2 ${fontFamily}`,
+                    letterSpacing: '-0.01em',
+                    color: muted,
+                  }}
+                >
+                  {effectiveFocus.detail}
+                </span>
+              )}
+            </div>
+          </div>
 
-          {areaPath && <path d={areaPath} fill={`url(#${gradientId})`} />}
-          {linePath && (
-            <path
-              d={linePath}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexShrink: 0 }}>
+            <StatePill state={effectiveState} theme={theme} isDark={isDark} />
+            <div
+              style={{
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'flex-end',
+                gap: 6,
+                minWidth: 160,
+              }}
+            >
+              <span
+                style={{
+                  font: `500 11px/1 ${monoFamily}`,
+                  letterSpacing: '0.04em',
+                  textTransform: 'uppercase',
+                  color: subtle,
+                }}
+              >
+                {doneCount} / {cols} stages · {pct}%
+              </span>
+              <div
+                style={{
+                  width: 160,
+                  height: 4,
+                  background: sunk,
+                  borderRadius: 999,
+                  overflow: 'hidden',
+                }}
+              >
+                <span
+                  style={{
+                    display: 'block',
+                    height: '100%',
+                    width: `${pct}%`,
+                    background: `linear-gradient(90deg, ${done} 0%, ${done} 65%, ${accent} 100%)`,
+                    borderRadius: 'inherit',
+                    transition: 'width .45s cubic-bezier(.2,.7,.2,1)',
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* No top padding here — the rail's `top: railTop` is measured from
+          this element's padding box, and any padding-top would offset the
+          rail without offsetting the in-flow puck grid, misaligning them. */}
+      <div style={{ position: 'relative' }}>
+        {/* Base rail — dashed pattern to read as "future". */}
+        <div
+          style={{
+            position: 'absolute',
+            top: railTop,
+            height: 2,
+            left: colHalf,
+            right: colHalf,
+            borderRadius: 1,
+            background: `linear-gradient(90deg, ${line} 50%, transparent 0) 0 0 / 8px 2px repeat-x`,
+          }}
+        />
+        {/* Progress fill — solid, green→indigo at the tip. */}
+        <div
+          style={{
+            position: 'absolute',
+            top: railTop,
+            height: 2,
+            left: colHalf,
+            width: `calc((100% - 100% / ${cols}) * ${progress})`,
+            background: `linear-gradient(90deg, ${done} 0%, ${done} 80%, ${accent} 100%)`,
+            borderRadius: 1,
+            transition: 'width .45s cubic-bezier(.2,.7,.2,1)',
+          }}
+        />
+
+        {/* "You are here" cursor — only when nothing is live and some progress exists. */}
+        {cursor != null && (
+          <div
+            aria-hidden
+            style={{
+              position: 'absolute',
+              top: railTop + 1,
+              transform: 'translate(-50%, -50%)',
+              left: `calc((100% / ${cols}) / 2 + (100% - 100% / ${cols}) * ${cursor})`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              width: 18,
+              height: 18,
+              borderRadius: 999,
+              background: surface,
+              border: `1.5px solid ${accent}`,
+              color: accent,
+              transition: 'left .45s cubic-bezier(.2,.7,.2,1)',
+              zIndex: 1,
+            }}
+          >
+            <svg
+              width="8"
+              height="8"
+              viewBox="0 0 8 8"
               fill="none"
-              stroke={accent}
-              strokeWidth={2.25}
-              strokeLinejoin="round"
+              stroke="currentColor"
+              strokeWidth="1.6"
               strokeLinecap="round"
-            />
-          )}
+              strokeLinejoin="round"
+            >
+              <path d="M2.5 1.5L5.5 4l-3 2.5" />
+            </svg>
+          </div>
+        )}
 
-          {positions.map((p, i) => {
-            const meta = resolveStateMeta(theme, p.stage.state);
-            const isActive = p.stage.state === 'active';
-            const isPending = p.stage.state === 'pending';
-            const stepLabel = `STAGE ${String(i + 1).padStart(2, '0')}`;
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(${cols}, 1fr)`,
+            position: 'relative',
+          }}
+        >
+          {stages.map((stage, i) => {
+            const status = statuses[i];
+            const colors = puckColors(theme, status, isDark);
+            const isActive = status === 'active';
+            const isNext = status === 'next';
+            const isQueued = status === 'queued';
+            const versionLabel = stage.iteration > 0 ? `v${stage.iteration}` : '—';
 
             return (
-              <g
-                key={p.stage.id}
-                style={interactive ? { cursor: 'pointer' } : undefined}
-                onClick={interactive ? () => handlePick(p.stage) : undefined}
-                tabIndex={interactive ? 0 : undefined}
-                role={interactive ? 'button' : undefined}
-                aria-label={
-                  interactive
-                    ? `${p.stage.name} — ${meta.label}, version ${p.stage.iteration}`
-                    : undefined
-                }
-                onKeyDown={
-                  interactive
-                    ? (e) => {
-                        if (e.key === 'Enter' || e.key === ' ') {
-                          e.preventDefault();
-                          handlePick(p.stage);
-                        }
-                      }
-                    : undefined
-                }
+              <div
+                key={stage.id}
+                style={{
+                  position: 'relative',
+                  zIndex: 1,
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                }}
               >
-                <line
-                  x1={p.x}
-                  y1={p.y + 14}
-                  x2={p.x}
-                  y2={BASELINE_Y - 1}
-                  stroke={lineColor}
-                  strokeWidth={1}
-                  strokeDasharray="1 4"
-                />
-
-                <text
-                  x={p.x}
-                  y={p.y - 56}
-                  fontSize={10}
-                  fontWeight={600}
-                  fill={subtle}
-                  textAnchor="middle"
-                  letterSpacing={1.4}
+                <button
+                  type="button"
+                  disabled={!interactive}
+                  onClick={() => handlePick(stage)}
+                  aria-label={`${stage.name} — ${stage.headline}`}
+                  style={{
+                    all: 'unset',
+                    cursor: interactive ? 'pointer' : 'default',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    alignItems: 'center',
+                    gap: 14,
+                    padding: '6px 8px',
+                    borderRadius: 12,
+                    transition: 'background .15s cubic-bezier(.2,.7,.2,1)',
+                  }}
+                  onMouseEnter={(e) => {
+                    if (interactive) (e.currentTarget as HTMLElement).style.background = sunk;
+                  }}
+                  onMouseLeave={(e) => {
+                    (e.currentTarget as HTMLElement).style.background = 'transparent';
+                  }}
                 >
-                  {stepLabel}
-                </text>
-
-                <text
-                  x={p.x}
-                  y={p.y - 38}
-                  fontSize={16}
-                  fontWeight={600}
-                  fill={text}
-                  textAnchor="middle"
-                  letterSpacing={-0.3}
-                >
-                  {p.stage.name}
-                </text>
-
-                {isActive && (
-                  <>
-                    <circle cx={p.x} cy={p.y} r={11} fill={meta.dot} opacity={0.22}>
-                      <animate
-                        attributeName="r"
-                        values="11;26;11"
-                        dur="2.2s"
-                        repeatCount="indefinite"
-                      />
-                      <animate
-                        attributeName="opacity"
-                        values="0.32;0;0.32"
-                        dur="2.2s"
-                        repeatCount="indefinite"
-                      />
-                    </circle>
-                    <circle cx={p.x} cy={p.y} r={11} fill={meta.dot} opacity={0.18}>
-                      <animate
-                        attributeName="r"
-                        values="11;20;11"
-                        dur="2.2s"
-                        begin="0.6s"
-                        repeatCount="indefinite"
-                      />
-                      <animate
-                        attributeName="opacity"
-                        values="0.28;0;0.28"
-                        dur="2.2s"
-                        begin="0.6s"
-                        repeatCount="indefinite"
-                      />
-                    </circle>
-                  </>
-                )}
-
-                <circle cx={p.x} cy={p.y} r={11} fill={surface} stroke={meta.dot} strokeWidth={2.5} />
-                {isPending ? (
-                  <circle cx={p.x} cy={p.y} r={3} fill={meta.dot} opacity={0.5} />
-                ) : (
-                  <circle cx={p.x} cy={p.y} r={4.5} fill={meta.dot} />
-                )}
-
-                <g transform={`translate(${p.x}, ${BASELINE_Y + 36})`}>
-                  <text
-                    fontSize={26}
-                    fontWeight={600}
-                    fill={text}
-                    textAnchor="middle"
-                    letterSpacing={-0.6}
+                  <div
+                    style={{
+                      width: NODE_SIZE,
+                      height: NODE_SIZE,
+                      borderRadius: 999,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 3,
+                      background: colors.bg,
+                      boxShadow: isActive
+                        ? `inset 0 0 0 1.5px ${colors.border}, 0 0 0 4px ${surface}, 0 4px 14px -6px ${colors.glow ?? colors.border}`
+                        : `inset 0 0 0 1.5px ${colors.border}`,
+                      color: colors.fg,
+                      position: 'relative',
+                      transform: isActive ? 'scale(1.06)' : 'scale(1)',
+                      transition: 'all .3s cubic-bezier(.2,.7,.2,1)',
+                    }}
                   >
-                    {isPending ? '—' : `v${p.stage.iteration}`}
-                  </text>
-                  <g transform="translate(0, 18)">
-                    <rect x={-32} y={0} width={64} height={20} rx={10} fill={meta.pillBg} />
-                    <text
-                      x={0}
-                      y={14}
-                      fontSize={10}
-                      fontWeight={600}
-                      fill={meta.pillText}
-                      textAnchor="middle"
-                      textRendering="geometricPrecision"
-                      letterSpacing={1}
-                    >
-                      {meta.label.toUpperCase()}
-                    </text>
-                  </g>
-                  <foreignObject x={-130} y={50} width={260} height={64}>
-                    <div
+                    {isNext && (
+                      <span
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          inset: -5,
+                          borderRadius: 999,
+                          border: `1.5px dashed ${accent}`,
+                          opacity: 0.45,
+                        }}
+                      />
+                    )}
+                    {isActive && (
+                      <span
+                        aria-hidden
+                        style={{
+                          position: 'absolute',
+                          inset: -6,
+                          borderRadius: 999,
+                          border: `1.5px solid ${accent}`,
+                          opacity: 0,
+                          animation:
+                            'asdlc-ps-ring 1.8s cubic-bezier(.2,.7,.2,1) infinite',
+                        }}
+                      />
+                    )}
+                    <span
                       style={{
-                        fontSize: 13,
-                        color: muted,
-                        lineHeight: 1.45,
-                        textAlign: 'center',
-                        fontFamily,
+                        font: `500 15px/1 ${monoFamily}`,
+                        letterSpacing: '-0.02em',
                       }}
                     >
-                      {p.stage.headline}
+                      {versionLabel}
+                    </span>
+                    <span
+                      style={{
+                        font: `500 9px/1 ${monoFamily}`,
+                        letterSpacing: '0.08em',
+                        textTransform: 'uppercase',
+                        opacity: 0.7,
+                      }}
+                    >
+                      {subLabel(status)}
+                    </span>
+                  </div>
+
+                  <div
+                    style={{
+                      textAlign: 'center',
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 4,
+                      maxWidth: 180,
+                    }}
+                  >
+                    <div
+                      style={{
+                        font: `500 14px/1.15 ${fontFamily}`,
+                        letterSpacing: '-0.015em',
+                        color: isQueued ? muted : text,
+                      }}
+                    >
+                      {stage.name}
                     </div>
-                  </foreignObject>
-                </g>
-              </g>
+                    {stage.headline && (
+                      <div
+                        style={{
+                          font: `400 12px/1.3 ${fontFamily}`,
+                          color: isQueued ? subtle : muted,
+                        }}
+                      >
+                        {stage.headline}
+                      </div>
+                    )}
+                    {stage.timestamp && (
+                      <span
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          gap: 5,
+                          marginTop: 2,
+                          font: `500 10.5px/1 ${monoFamily}`,
+                          letterSpacing: '0.04em',
+                          color: subtle,
+                        }}
+                      >
+                        <svg
+                          width="9"
+                          height="9"
+                          viewBox="0 0 9 9"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth="1.3"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          style={{ display: 'block', opacity: 0.8 }}
+                        >
+                          <circle cx="4.5" cy="4.5" r="3.2" />
+                          <path d="M4.5 2.8v1.7l1.1.9" />
+                        </svg>
+                        {stage.timestamp}
+                      </span>
+                    )}
+                  </div>
+                </button>
+              </div>
             );
           })}
-        </svg>
+        </div>
       </div>
 
       {interactive && !onStageClick && (

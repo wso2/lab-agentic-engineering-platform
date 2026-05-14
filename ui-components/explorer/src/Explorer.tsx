@@ -30,6 +30,13 @@ export function Explorer({
   addFileMenu,
   onRename,
   onDelete,
+  customViews,
+  pendingPaths,
+  transparentFolders,
+  getFolderIcon,
+  showHeadings = true,
+  getFileRenderer,
+  getFileLabel,
   searchPlaceholder = 'Search documents',
   sidebarWidth = 280,
   minHeight,
@@ -39,6 +46,11 @@ export function Explorer({
   editorProps,
   editorRef,
 }: ExplorerProps) {
+  const customViewById = useMemo(() => {
+    const map = new Map<string, NonNullable<typeof customViews>[number]>();
+    for (const v of customViews ?? []) map.set(v.id, v);
+    return map;
+  }, [customViews]);
   const buffers = useFileBuffers({ files, defaultFiles });
   const {
     savedMap,
@@ -57,6 +69,7 @@ export function Explorer({
   const isActiveControlled = activePathProp !== undefined;
   const [internalActive, setInternalActive] = useState<string | null>(defaultActivePath ?? null);
   const activePath = isActiveControlled ? activePathProp : internalActive;
+  const activeCustomView = activePath ? customViewById.get(activePath) : undefined;
 
   const setActive = useCallback(
     (path: string | null) => {
@@ -125,10 +138,12 @@ export function Explorer({
       return;
     }
     if (isControlled) return;
-    const newName = generateDefaultFilename(new Set(paths));
+    const existing = new Set<string>(paths);
+    for (const id of customViewById.keys()) existing.add(id);
+    const newName = generateDefaultFilename(existing);
     setSavedMap((prev) => ({ ...prev, [newName]: '' }));
     setActive(newName);
-  }, [onAddFile, isControlled, paths, setSavedMap, setActive]);
+  }, [onAddFile, isControlled, paths, customViewById, setSavedMap, setActive]);
 
   const innerEditorRef = useRef<MdEditorRef>(null);
 
@@ -169,7 +184,9 @@ export function Explorer({
   );
 
   const activeContent: string | undefined =
-    activePath !== null && activePath !== undefined ? getBuffer(activePath) : undefined;
+    activePath !== null && activePath !== undefined && !activeCustomView
+      ? getBuffer(activePath)
+      : undefined;
 
   const handleEditorChange = useCallback(
     (md: string) => {
@@ -214,10 +231,16 @@ export function Explorer({
         <Sidebar
           searchPlaceholder={searchPlaceholder}
           paths={paths}
+          customViews={customViews}
           getContent={getContent}
           contentVersion={bufferVersion}
           activePath={activePath ?? null}
           dirtyPaths={dirtyPaths}
+          pendingPaths={pendingPaths}
+          transparentFolders={transparentFolders}
+          getFolderIcon={getFolderIcon}
+          showHeadings={showHeadings}
+          getFileLabel={getFileLabel}
           onActivate={setActive}
           onTocClick={handleTocClick}
           onAddFile={onAddFile ? handleAddFile : undefined}
@@ -228,7 +251,11 @@ export function Explorer({
         />
       </Box>
       <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        {activePath && activeContent !== undefined ? (
+        {activeCustomView ? (
+          <Box key={activeCustomView.id} sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
+            {activeCustomView.content}
+          </Box>
+        ) : activePath && activeContent !== undefined ? (
           <ActiveFileEditor
             key={activePath}
             activePath={activePath}
@@ -236,6 +263,7 @@ export function Explorer({
             onChange={handleEditorChange}
             editorProps={editorProps}
             editorRef={innerEditorRef}
+            getFileRenderer={getFileRenderer}
           />
         ) : (
           <Box

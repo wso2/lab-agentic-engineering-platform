@@ -127,17 +127,31 @@ export function registerDocumentGeneration(app: express.Express) {
         if (skill.postProcess && sawFinish && !abortController.signal.aborted) {
           try {
             const transformed = skill.postProcess.transform(accumulated);
+            // Normalise the post-process output to {primary, siblings}.
+            const primary =
+              typeof transformed === "string" ? transformed : transformed.primary;
+            const siblings =
+              typeof transformed === "string" ? undefined : transformed.siblings;
             // Emit a synthetic text-delta with replace:true. Keeps wire format
             // additive — older clients (BFF without replace handling) will
             // append it; newer clients reset their buffer.
             const replaceChunk = {
               type: "text-delta",
-              delta: transformed,
+              delta: primary,
               replace: true,
             };
             res.write(`data: ${JSON.stringify(replaceChunk)}\n\n`);
+            // If the skill emitted sibling files (e.g. wireframes/domain-model
+            // writing both `.excalidraw` and `.dsl`), emit a synthetic
+            // `finish` frame carrying the sibling map. The BFF's stream
+            // handler reads `siblings` off the finish event and writes each
+            // file alongside the primary.
+            if (siblings && Object.keys(siblings).length > 0) {
+              const finishExtra = { type: "finish", siblings };
+              res.write(`data: ${JSON.stringify(finishExtra)}\n\n`);
+            }
             console.log(
-              `[document-generation/${skillId}] post-processed ${accumulated.length} -> ${transformed.length} chars`,
+              `[document-generation/${skillId}] post-processed ${accumulated.length} -> ${primary.length} chars (${siblings ? Object.keys(siblings).length : 0} siblings)`,
             );
           } catch (err) {
             console.error(`[document-generation/${skillId}] postProcess failed:`, err);

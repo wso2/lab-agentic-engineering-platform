@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { Box, CircularProgress, PageContent, Typography } from '@wso2/oxygen-ui';
+import { Box, Button, CircularProgress, PageContent, Typography } from '@wso2/oxygen-ui';
 import { ProjectStatusPolyline, type Stage } from '@asdlc/project-status';
-import { api } from '../services/api';
+import { api, ApiError } from '../services/api';
 import type { ComponentTask, ProjectSdlcPhase, ProjectStatus } from '../services/api';
 import {
   projectArchitecturePath,
@@ -10,10 +10,14 @@ import {
   projectTasksPath,
 } from '../lib/paths';
 import { buildProjectStages } from '../lib/buildProjectStages';
+import { useAuth } from '../auth';
 import ProjectPromptPage from './ProjectPromptPage';
 import ProjectComponentsPage from './ProjectComponentsPage';
 
-type Phase = ProjectSdlcPhase | null;
+// Local-only phase added on top of the BFF's ProjectSdlcPhase to distinguish
+// "BFF rejected our JWT" from "BFF says no repo" — the two look identical
+// otherwise (status fetch returned nothing) and shouldn't share UI.
+type Phase = ProjectSdlcPhase | 'auth-expired' | null;
 
 const ACTIVE_TASK_STATUSES: ReadonlySet<string> = new Set([
   'pending',
@@ -35,10 +39,17 @@ export default function ProjectOverviewPage() {
 
   const fetchAll = useCallback(async () => {
     if (!projectId) return;
-    const [s, t] = await Promise.all([
-      api.getProjectStatus(routeOrgId, projectId),
-      api.listTasks(routeOrgId, projectId).catch(() => [] as ComponentTask[]),
-    ]);
+    let s: ProjectStatus | undefined;
+    try {
+      s = await api.getProjectStatus(routeOrgId, projectId);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setPhase('auth-expired');
+        return;
+      }
+      throw e;
+    }
+    const t = await api.listTasks(routeOrgId, projectId).catch(() => [] as ComponentTask[]);
     setStatus(s);
     setPhase(s ? s.phase : 'no-repo');
     setTasks(t);
@@ -114,6 +125,10 @@ export default function ProjectOverviewPage() {
     );
   }
 
+  if (phase === 'auth-expired') {
+    return <AuthExpiredState />;
+  }
+
   if (phase === 'no-repo') {
     return (
       <PageContent>
@@ -137,5 +152,28 @@ export default function ProjectOverviewPage() {
     <ProjectComponentsPage
       statusBanner={<ProjectStatusPolyline stages={stages} onStageClick={handleStageClick} />}
     />
+  );
+}
+
+// Rendered when the BFF rejected our JWT with 401 — almost always means the
+// access token expired while the SPA was open. Re-signing in is the only
+// path back; the in-memory React state otherwise still looks "signed in"
+// because asgardeo hasn't observed the failure.
+function AuthExpiredState() {
+  const { signIn } = useAuth();
+  return (
+    <PageContent>
+      <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', py: 12, gap: 1.5 }}>
+        <Typography variant="h6" color="text.secondary">
+          Your session has expired
+        </Typography>
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: 360, textAlign: 'center' }}>
+          Sign in again to continue. Your in-progress work was not lost.
+        </Typography>
+        <Button variant="contained" size="small" sx={{ mt: 1 }} onClick={() => signIn()}>
+          Sign in again
+        </Button>
+      </Box>
+    </PageContent>
   );
 }

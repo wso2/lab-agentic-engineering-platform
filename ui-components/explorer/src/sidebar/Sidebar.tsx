@@ -2,6 +2,7 @@ import { useMemo, useRef, useState } from 'react';
 import {
   Box,
   Chip,
+  CircularProgress,
   IconButton,
   InputAdornment,
   InputBase,
@@ -17,6 +18,7 @@ import {
 import {
   ChevronRight,
   FileText,
+  Folder,
   MoreVertical,
   Pencil,
   Plus,
@@ -24,16 +26,85 @@ import {
   Trash2,
   X,
 } from '@wso2/oxygen-ui-icons-react';
-import type { AddFileMenuItem, TocEntry } from '../types.js';
+import type { AddFileMenuItem, CustomView, TocEntry } from '../types.js';
 import { parseToc } from '../toc/parseToc.js';
+
+// Tree rendering: when any path contains '/', the sidebar groups files
+// under virtual folder rows. Folders are derived from paths (not stored
+// separately). Clicking a folder toggles its expansion; clicking a leaf
+// activates the file like before. For flat usage (requirements page),
+// no folder rows are emitted and behaviour is identical to before.
+type TreeRow =
+  | { kind: 'folder'; path: string; depth: number }
+  | { kind: 'file'; path: string; depth: number };
+
+function buildTreeRows(paths: string[], transparentFolders?: Set<string>): TreeRow[] {
+  const sorted = [...paths].sort((a, b) => {
+    // Sort: files at root first, then folders alphabetically, then files
+    // alphabetically. This mirrors the design page intent: root
+    // `design.md` shows up first, then `components/` subtree.
+    const aHasSlash = a.includes('/');
+    const bHasSlash = b.includes('/');
+    if (aHasSlash !== bHasSlash) return aHasSlash ? 1 : -1;
+    return a.localeCompare(b);
+  });
+  const rows: TreeRow[] = [];
+  const emitted = new Set<string>();
+  for (const path of sorted) {
+    const parts = path.split('/');
+    let prefix = '';
+    // `visibleDepth` tracks indent shown to the user. It diverges from the
+    // loop index whenever we pass through a transparent folder (the folder
+    // is omitted and its children promote one level up).
+    let visibleDepth = 0;
+    for (let i = 0; i < parts.length - 1; i++) {
+      prefix = prefix ? `${prefix}/${parts[i]}` : parts[i];
+      if (transparentFolders?.has(prefix)) continue;
+      if (!emitted.has(prefix)) {
+        emitted.add(prefix);
+        rows.push({ kind: 'folder', path: prefix, depth: visibleDepth });
+      }
+      visibleDepth++;
+    }
+    rows.push({ kind: 'file', path, depth: visibleDepth });
+  }
+  return rows;
+}
+
+function isAncestorCollapsed(path: string, collapsed: Set<string>): boolean {
+  const parts = path.split('/');
+  for (let i = 1; i < parts.length; i++) {
+    const ancestor = parts.slice(0, i).join('/');
+    if (collapsed.has(ancestor)) return true;
+  }
+  return false;
+}
+
+function lastSegment(path: string): string {
+  const slash = path.lastIndexOf('/');
+  return slash < 0 ? path : path.slice(slash + 1);
+}
 
 export interface SidebarProps {
   searchPlaceholder: string;
   paths: string[];
+  /** Non-file entries pinned above the file list; not renameable / deletable. */
+  customViews?: CustomView[];
   getContent: (path: string) => string | undefined;
   contentVersion: number;
   activePath: string | null;
   dirtyPaths: Set<string>;
+  /** Paths in this set render a spinner instead of their file/folder icon. */
+  pendingPaths?: Set<string>;
+  /** Folder paths that should not appear in the tree (children promote up). */
+  transparentFolders?: Set<string>;
+  /** Override the folder icon per-path. Return undefined to use the default. */
+  getFolderIcon?: (path: string) => React.ReactNode | undefined;
+  /** Render parsed headings under each file as nested rows. Default true. */
+  showHeadings?: boolean;
+  /** Override the displayed label for specific paths. Falls back to the
+   *  extension-stripped filename when the function returns undefined. */
+  getFileLabel?: (path: string) => string | undefined;
   onActivate: (path: string) => void;
   onTocClick: (path: string, headingIndex: number) => void;
   onAddFile?: (typeId?: string) => void;
@@ -70,10 +141,16 @@ function computeDocInfo(path: string, markdown: string): DocInfo {
 export function Sidebar({
   searchPlaceholder,
   paths,
+  customViews,
   getContent,
   contentVersion,
   activePath,
   dirtyPaths,
+  pendingPaths,
+  transparentFolders,
+  getFolderIcon,
+  showHeadings = true,
+  getFileLabel,
   onActivate,
   onTocClick,
   onAddFile,
@@ -82,6 +159,16 @@ export function Sidebar({
   onDelete,
   validateRename,
 }: SidebarProps) {
+  // A folder is "pending" if any of the pending paths sits underneath it.
+  // Cheap on small trees; kept inline so callers don't have to compute it.
+  const folderIsPending = (folderPath: string): boolean => {
+    if (!pendingPaths || pendingPaths.size === 0) return false;
+    const prefix = folderPath + '/';
+    for (const p of pendingPaths) {
+      if (p === folderPath || p.startsWith(prefix)) return true;
+    }
+    return false;
+  };
   const [query, setQuery] = useState('');
   const [renamingPath, setRenamingPath] = useState<string | null>(null);
   const [kebab, setKebab] = useState<{ path: string; anchor: HTMLElement } | null>(null);
@@ -89,6 +176,7 @@ export function Sidebar({
     null,
   );
   const [collapsedDocs, setCollapsedDocs] = useState<Set<string>>(() => new Set());
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => new Set());
   const [addMenuAnchor, setAddMenuAnchor] = useState<HTMLElement | null>(null);
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
@@ -121,6 +209,34 @@ export function Sidebar({
       return next;
     });
   };
+
+  const toggleFolderCollapsed = (path: string) => {
+    setCollapsedFolders((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const treeRows = useMemo(() => {
+    const rows = buildTreeRows(filteredPaths, transparentFolders);
+    return rows.filter((row) => {
+      if (row.depth === 0) return true;
+      return !isAncestorCollapsed(row.path, collapsedFolders);
+    });
+  }, [filteredPaths, collapsedFolders, transparentFolders]);
+
+  const usesTree = useMemo(() => filteredPaths.some((p) => p.includes('/')), [filteredPaths]);
+
+  const filteredCustomViews = useMemo(() => {
+    const list = customViews ?? [];
+    const q = query.trim().toLowerCase();
+    if (!q) return list;
+    return list.filter((v) => v.label.toLowerCase().includes(q) || v.id.toLowerCase().includes(q));
+  }, [customViews, query]);
+
+  const hasAnyContent = filteredCustomViews.length > 0 || filteredPaths.length > 0;
 
   const beginRename = (path: string) => {
     setRenamingPath(path);
@@ -250,26 +366,152 @@ export function Sidebar({
       </Stack>
 
       <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 0.5, pb: 2 }}>
-        {paths.length === 0 ? (
+        {paths.length === 0 && (customViews ?? []).length === 0 ? (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center', py: 2 }}>
             No files
           </Typography>
-        ) : filteredPaths.length === 0 ? (
+        ) : !hasAnyContent ? (
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', textAlign: 'center', py: 2 }}>
             No matches for "{query}"
           </Typography>
         ) : (
           <Box component="ul" role="tree" sx={{ listStyle: 'none', m: 0, p: 0 }}>
-            {filteredPaths.map((path) => {
+            {filteredCustomViews.map((view) => {
+              const isActive = view.id === activePath;
+              return (
+                <Box component="li" key={`custom:${view.id}`} role="treeitem" aria-selected={isActive} sx={{ listStyle: 'none' }}>
+                  <Box
+                    onClick={() => onActivate(view.id)}
+                    sx={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: 1,
+                      mx: 1,
+                      my: 0.25,
+                      px: 1,
+                      pl: '8px',
+                      py: 0.75,
+                      borderRadius: 999,
+                      cursor: 'pointer',
+                      color: isActive ? 'primary.main' : 'text.primary',
+                      bgcolor: isActive
+                        ? 'color-mix(in srgb, currentColor 12%, transparent)'
+                        : 'transparent',
+                      fontWeight: isActive ? 500 : 400,
+                      transition: 'background-color 80ms ease',
+                      '&:hover': {
+                        bgcolor: isActive
+                          ? 'color-mix(in srgb, currentColor 18%, transparent)'
+                          : 'action.hover',
+                      },
+                    }}
+                  >
+                    <Box sx={{ width: 22, height: 22, flexShrink: 0 }} />
+                    <Box
+                      component="span"
+                      sx={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}
+                    >
+                      {view.icon ?? <FileText size={16} />}
+                    </Box>
+                    <Typography
+                      component="span"
+                      title={view.label}
+                      sx={{
+                        flex: 1,
+                        minWidth: 0,
+                        fontSize: 13,
+                        fontWeight: 'inherit',
+                        color: 'inherit',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {view.label}
+                    </Typography>
+                  </Box>
+                </Box>
+              );
+            })}
+            {treeRows.map((row) => {
+              if (row.kind === 'folder') {
+                const isFolderCollapsed = collapsedFolders.has(row.path);
+                return (
+                  <Box component="li" key={`folder:${row.path}`} role="treeitem" aria-expanded={!isFolderCollapsed} sx={{ listStyle: 'none' }}>
+                    <Box
+                      onClick={() => toggleFolderCollapsed(row.path)}
+                      sx={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 1,
+                        mx: 1,
+                        my: 0.25,
+                        px: 1,
+                        pl: `${8 + row.depth * 14}px`,
+                        py: 0.75,
+                        borderRadius: 999,
+                        cursor: 'pointer',
+                        color: 'text.secondary',
+                        '&:hover': { bgcolor: 'action.hover', color: 'text.primary' },
+                      }}
+                    >
+                      <Box
+                        component="span"
+                        sx={{
+                          width: 22,
+                          height: 22,
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          color: 'inherit',
+                          transition: 'transform 120ms ease',
+                          transform: isFolderCollapsed ? 'rotate(0deg)' : 'rotate(90deg)',
+                        }}
+                      >
+                        <ChevronRight size={14} />
+                      </Box>
+                      {folderIsPending(row.path) ? (
+                        <CircularProgress size={14} sx={{ flexShrink: 0 }} />
+                      ) : (
+                        getFolderIcon?.(row.path) ?? <Folder size={16} style={{ flexShrink: 0 }} />
+                      )}
+                      <Typography
+                        component="span"
+                        title={row.path}
+                        sx={{
+                          flex: 1,
+                          minWidth: 0,
+                          fontSize: 13,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                      >
+                        {lastSegment(row.path)}
+                      </Typography>
+                    </Box>
+                  </Box>
+                );
+              }
+
+              const path = row.path;
               const isActive = path === activePath;
               const isDirty = dirtyPaths.has(path);
               const isRenaming = renamingPath === path;
               const info = docInfoByPath.get(path);
-              const displayTitle = info?.title ?? stripExtension(path);
+              const fallbackLabel = usesTree ? stripExtension(lastSegment(path)) : stripExtension(path);
+              // A custom label always wins over the filename derivation —
+              // host can surface `openapi.yaml` as "API Spec" without
+              // touching disk semantics.
+              const customLabel = getFileLabel?.(path);
+              const displayTitle = customLabel ?? (usesTree ? fallbackLabel : (info?.title ?? fallbackLabel));
               const toc = info?.toc ?? [];
               const headingCount = info?.headingCount ?? 0;
               const isCollapsed = collapsedDocs.has(path);
-              const hasToc = toc.length > 0;
+              // `showHeadings` disables the in-tree TOC entirely — when it's
+              // off there's nothing to expand, so the chevron + nested list
+              // both vanish via this single gate.
+              const hasToc = showHeadings && toc.length > 0;
 
               return (
                 <Box component="li" key={path} role="treeitem" aria-selected={isActive} aria-expanded={hasToc ? !isCollapsed : undefined} sx={{ listStyle: 'none' }}>
@@ -286,6 +528,7 @@ export function Sidebar({
                       mx: 1,
                       my: 0.25,
                       px: 1,
+                      pl: `${8 + row.depth * 14}px`,
                       py: 0.75,
                       borderRadius: 999,
                       cursor: 'pointer',
@@ -322,7 +565,11 @@ export function Sidebar({
                     >
                       <ChevronRight size={14} />
                     </IconButton>
-                    <FileText size={16} style={{ flexShrink: 0 }} />
+                    {pendingPaths?.has(path) ? (
+                      <CircularProgress size={14} sx={{ flexShrink: 0 }} />
+                    ) : (
+                      <FileText size={16} style={{ flexShrink: 0 }} />
+                    )}
                     {isRenaming ? (
                       <InlineRenameField
                         initialName={path}

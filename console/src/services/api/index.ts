@@ -3,6 +3,7 @@ export type {
   Project,
   RequirementsBundle,
   Design,
+  DesignBundle,
   DesignComponent,
   ComponentDefinition,
   ComponentOpenAPI,

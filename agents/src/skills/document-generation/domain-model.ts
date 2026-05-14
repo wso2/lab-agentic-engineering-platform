@@ -105,7 +105,16 @@ Output the DSL now.`,
     return prompt;
   },
   postProcess: {
-    transform: (raw: string) => dslToExcalidraw("domain-model", stripFences(raw)),
+    transform: (raw: string) => {
+      const dsl = stripFences(raw);
+      const excalidraw = dslToExcalidraw("domain-model", dsl);
+      return {
+        primary: excalidraw,
+        siblings: {
+          "domain-model.dsl": dsl + "\n",
+        },
+      };
+    },
   },
 };
 

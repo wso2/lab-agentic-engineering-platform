@@ -16,6 +16,13 @@ interface ActiveFileEditorProps {
   onChange: (md: string) => void;
   editorProps?: ExplorerEditorProps;
   editorRef?: React.Ref<MdEditorRef>;
+  /**
+   * Optional override that lets the host render a custom view for specific
+   * paths (e.g. an OpenAPI renderer for `**\/openapi.yaml`). Called before
+   * the built-in dispatch; returning `undefined` falls back to the default
+   * editor chain (Excalidraw / markdown).
+   */
+  getFileRenderer?: (path: string, content: string) => React.ReactNode | undefined;
 }
 
 function isExcalidrawPath(path: string): boolean {
@@ -37,7 +44,12 @@ export function ActiveFileEditor({
   onChange,
   editorProps,
   editorRef,
+  getFileRenderer,
 }: ActiveFileEditorProps) {
+  if (getFileRenderer) {
+    const custom = getFileRenderer(activePath, initialContent);
+    if (custom !== undefined && custom !== null) return <>{custom}</>;
+  }
   if (isExcalidrawPath(activePath)) {
     return (
       <ExcalidrawFileEditor

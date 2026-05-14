@@ -223,6 +223,11 @@ func (s *requirementsService) StreamGenerate(
 	var accumulated strings.Builder
 	var sawFinish bool
 	var streamErr string
+	// siblings is populated when the agents-service skill's post-processor
+	// emits additional output files alongside the primary stream (e.g.
+	// wireframes/domain-model writing both `<name>.dsl` and
+	// `<name>.excalidraw`).
+	var siblings map[string]string
 
 	scanner := bufio.NewScanner(upstream)
 	scanner.Buffer(make([]byte, 1024*1024), 4*1024*1024)
@@ -245,9 +250,10 @@ func (s *requirementsService) StreamGenerate(
 			continue
 		}
 		var chunk struct {
-			Type      string `json:"type"`
-			Delta     string `json:"delta"`
-			ErrorText string `json:"errorText"`
+			Type      string            `json:"type"`
+			Delta     string            `json:"delta"`
+			ErrorText string            `json:"errorText"`
+			Siblings  map[string]string `json:"siblings,omitempty"`
 			// Replace, when set, signals that the skill has post-processed
 			// the live deltas and this delta carries the final payload to
 			// persist (e.g. wireframes/domain-model: DSL -> Excalidraw JSON).
@@ -265,6 +271,9 @@ func (s *requirementsService) StreamGenerate(
 			accumulated.WriteString(chunk.Delta)
 		case "finish":
 			sawFinish = true
+			if len(chunk.Siblings) > 0 {
+				siblings = chunk.Siblings
+			}
 		case "error":
 			streamErr = chunk.ErrorText
 		}
@@ -287,8 +296,18 @@ func (s *requirementsService) StreamGenerate(
 	if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, name, content); err != nil {
 		return fmt.Errorf("write %s: %w", name, err)
 	}
+	for sName, sContent := range siblings {
+		if sName == name {
+			continue
+		}
+		if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, sName, sContent); err != nil {
+			slog.WarnContext(ctx, "failed to write sibling file",
+				"target", sName, "error", err)
+		}
+	}
 	slog.InfoContext(ctx, "document written from stream",
-		"project", projectID, "target", name, "bytes", len(content))
+		"project", projectID, "target", name, "bytes", len(content),
+		"siblings", len(siblings))
 	return nil
 }
 
@@ -311,16 +330,12 @@ func fileMapsEqual(a, b map[string]string) bool {
 	return true
 }
 
-// ParseDesignJSON re-exposes the artifact-store's internal parser for
-// callers that receive design content out of band (e.g. task generation
-// reading a design from a tagged version).
-func ParseDesignJSON(data string) (*DesignFile, error) {
-	df, err := parseDesignJSON(data)
-	if err != nil {
-		return nil, err
+// AssembleDesignFromFiles wraps the artifact-store assembler and rejects an
+// empty file map. Used by callers that receive a tagged design file map out
+// of band (e.g. task generation reading a design from a tagged version).
+func AssembleDesignFromFiles(files map[string]string) (*DesignFile, error) {
+	if len(files) == 0 {
+		return nil, fmt.Errorf("decode design: empty file map")
 	}
-	if df == nil {
-		return nil, fmt.Errorf("decode design: empty content")
-	}
-	return df, nil
+	return AssembleDesign(files)
 }

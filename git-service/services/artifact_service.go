@@ -52,11 +52,17 @@ const (
 	// markdown documents. Each file is one document; the bundle is versioned
 	// together as a single artifact.
 	RequirementsDir = ".asdlc/requirements"
-	// DesignFilePath is the working-tree path of the architecture artifact.
-	DesignFilePath = ".asdlc/design.json"
+	// DesignDir is the working-tree directory holding all design files. The
+	// architecture artifact is multi-file: a root `design.md` plus
+	// `components/<name>/design.md` (+ optional `openapi.yaml`) per component.
+	// Versioned as a single artifact under `v<N>-<M>` tags.
+	DesignDir = ".asdlc/design"
 	// requirementsMainFile is the canonical "main" requirements document.
 	// Cannot be deleted/renamed at the BFF layer.
 	requirementsMainFile = "requirements.md"
+	// designRootFile is the canonical root design document (system overview).
+	// Cannot be deleted at the BFF layer.
+	designRootFile = "design.md"
 )
 
 // ----- Wire shapes -----
@@ -120,8 +126,9 @@ type VersionRequirementsResult struct {
 // composes with gitOpsService so they share the per-project mutex +
 // clone-readiness machinery.
 type ArtifactService interface {
-	// Generic file I/O — used for design (single file) and any one-off reads
-	// that don't fall under requirements/ multi-file semantics.
+	// Generic file I/O — used for individual file reads/writes (both
+	// requirements and design files). Path validation is the controller's
+	// responsibility before calling these.
 	GetFile(ctx context.Context, projectID, relPath string) (*FileResult, error)
 	PutFile(ctx context.Context, projectID, relPath, content, ifMatch string) (*PutResult, error)
 
@@ -129,17 +136,22 @@ type ArtifactService interface {
 	ListRequirementFiles(ctx context.Context, projectID string) (map[string]string, error)
 	DeleteRequirementFile(ctx context.Context, projectID, name string) error
 
+	// Design multi-file ops. `sub` is relative to `.asdlc/design/`.
+	ListDesignFiles(ctx context.Context, projectID string) (map[string]string, error)
+	DeleteDesignFile(ctx context.Context, projectID, sub string) error
+	DeleteDesignDirectory(ctx context.Context, projectID, sub string) error
+
 	// Save / Discard.
 	SaveRequirements(ctx context.Context, projectID string, req SaveRequest) (*RequirementsSaveResult, error)
 	SaveDesign(ctx context.Context, projectID string, req SaveRequest) (*DesignSaveResult, error)
 	DiscardRequirements(ctx context.Context, projectID string) (map[string]string, error)
-	DiscardDesign(ctx context.Context, projectID string) (*FileResult, error)
+	DiscardDesign(ctx context.Context, projectID string) (map[string]string, error)
 
 	// Versions.
 	ListRequirementsVersions(ctx context.Context, projectID string) ([]RequirementsVersionInfo, error)
 	ListDesignVersions(ctx context.Context, projectID string) ([]DesignVersionInfo, error)
 	GetRequirementsAtTag(ctx context.Context, projectID, tag string) (map[string]string, error)
-	GetDesignAtTag(ctx context.Context, projectID, tag string) (*FileResult, error)
+	GetDesignAtTag(ctx context.Context, projectID, tag string) (map[string]string, error)
 }
 
 type artifactService struct {
@@ -189,8 +201,24 @@ func validateRelPath(relPath string) error {
 
 // allowedRequirementExts is the set of file extensions recognised inside
 // `.asdlc/requirements/`. Markdown holds prose; `.excalidraw` holds
-// Excalidraw scene JSON for wireframes / domain models.
-var allowedRequirementExts = []string{".md", ".excalidraw"}
+// rendered Excalidraw scene JSON for wireframes / domain models; `.dsl` is
+// the source-of-truth canvas DSL the architect agent reads.
+var allowedRequirementExts = []string{".md", ".excalidraw", ".dsl"}
+
+// allowedDesignExts is the set of file extensions recognised inside
+// `.asdlc/design/`. Markdown holds prose + frontmatter for component design;
+// YAML is for OpenAPI specs.
+var allowedDesignExts = []string{".md", ".yaml", ".yml"}
+
+func hasAllowedDesignExt(name string) bool {
+	lower := strings.ToLower(name)
+	for _, ext := range allowedDesignExts {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
 
 func hasAllowedRequirementExt(name string) bool {
 	lower := strings.ToLower(name)
@@ -228,6 +256,70 @@ func RequirementFilePath(name string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(RequirementsDir, name), nil
+}
+
+// validateDesignSubPath validates a path relative to `.asdlc/design/`. The
+// path may contain forward slashes (e.g. `components/user-api/design.md`)
+// but must not have backslashes, traversal segments, or trailing slashes.
+// The leaf must end in an allowed design extension.
+func validateDesignSubPath(sub string) error {
+	if sub == "" {
+		return fmt.Errorf("%w: empty design path", ErrArtifactPathInvalid)
+	}
+	if strings.Contains(sub, "\\") {
+		return fmt.Errorf("%w: backslashes not allowed", ErrArtifactPathInvalid)
+	}
+	clean := filepath.ToSlash(filepath.Clean(sub))
+	if clean != filepath.ToSlash(sub) {
+		return fmt.Errorf("%w: non-canonical design path %q", ErrArtifactPathInvalid, sub)
+	}
+	if strings.HasPrefix(clean, "/") {
+		return fmt.Errorf("%w: design path must be relative", ErrArtifactPathInvalid)
+	}
+	for _, seg := range strings.Split(clean, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("%w: invalid segment %q", ErrArtifactPathInvalid, seg)
+		}
+	}
+	if !hasAllowedDesignExt(clean) {
+		return fmt.Errorf("%w: design files must end with %s",
+			ErrArtifactPathInvalid, strings.Join(allowedDesignExts, " or "))
+	}
+	return nil
+}
+
+// validateDesignSubDir validates a directory path relative to
+// `.asdlc/design/` (used by DeleteDesignDirectory). No extension is required.
+func validateDesignSubDir(sub string) error {
+	if sub == "" {
+		return fmt.Errorf("%w: empty design directory path", ErrArtifactPathInvalid)
+	}
+	if strings.Contains(sub, "\\") {
+		return fmt.Errorf("%w: backslashes not allowed", ErrArtifactPathInvalid)
+	}
+	clean := filepath.ToSlash(filepath.Clean(sub))
+	if clean != filepath.ToSlash(sub) {
+		return fmt.Errorf("%w: non-canonical design directory %q", ErrArtifactPathInvalid, sub)
+	}
+	if strings.HasPrefix(clean, "/") {
+		return fmt.Errorf("%w: design directory must be relative", ErrArtifactPathInvalid)
+	}
+	for _, seg := range strings.Split(clean, "/") {
+		if seg == "" || seg == "." || seg == ".." {
+			return fmt.Errorf("%w: invalid segment %q", ErrArtifactPathInvalid, seg)
+		}
+	}
+	return nil
+}
+
+// DesignFilePath returns the repo-relative path for a design file after
+// validating its sub-path. Exported so HTTP handlers can validate without
+// duplicating the rules.
+func DesignFilePath(sub string) (string, error) {
+	if err := validateDesignSubPath(sub); err != nil {
+		return "", err
+	}
+	return filepath.Join(DesignDir, sub), nil
 }
 
 // ----- Generic file ops -----
@@ -422,12 +514,16 @@ func (s *artifactService) SaveRequirements(ctx context.Context, projectID string
 	return s.saveRequirementsViaAPI(ctx, repoRecord, repoRecord.ClonePath, commitMsg)
 }
 
-// SaveDesign persists the working-tree `.asdlc/design.json` as a new commit
-// on remote main, then creates the next `v<N>-<M>` annotated tag. Replaces
-// the legacy `git commit + push + tag` flow with GitHub API calls
-// (Contents API path) per docs/design/artifact-store-v2.md V1.
+// SaveDesign stages every file under `.asdlc/design/` (root `design.md` plus
+// per-component `design.md` and optional `openapi.yaml`), pushes the
+// changeset to remote main via the GitHub Git Data API, then creates the
+// next `v<N>-<M>` annotated tag where N is the latest requirements version.
+// Replaces the legacy `git commit + push + tag` flow with API calls per
+// docs/design/artifact-store-v2.md V1.
 //
-// Returns ErrNoRequirementsBaseline (409) if no `v<N>` tag exists yet.
+// Returns ErrNoRequirementsBaseline (409) if no `v<N>` tag exists yet, and
+// ErrArtifactPathInvalid (400) if the root `design.md` is missing — a save
+// must produce at least that file.
 func (s *artifactService) SaveDesign(ctx context.Context, projectID string, req SaveRequest) (*DesignSaveResult, error) {
 	mu := s.gitOps.getRepoLock(projectID)
 	mu.Lock()
@@ -494,9 +590,11 @@ func (s *artifactService) DiscardRequirements(ctx context.Context, projectID str
 	return readMarkdownDir(filepath.Join(clonePath, RequirementsDir))
 }
 
-// DiscardDesign reverts `.asdlc/design.json` to the content at the latest
-// `v<N>-<M>` tag. Returns ErrNoVersionToDiscard if no design tag exists.
-func (s *artifactService) DiscardDesign(ctx context.Context, projectID string) (*FileResult, error) {
+// DiscardDesign reverts the working-tree `.asdlc/design/` directory to its
+// content at the latest `v<N>-<M>` tag. Files added since that tag are
+// removed; deletions are restored. Returns ErrNoVersionToDiscard if no
+// design tag exists.
+func (s *artifactService) DiscardDesign(ctx context.Context, projectID string) (map[string]string, error) {
 	mu := s.gitOps.getRepoLock(projectID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -530,18 +628,10 @@ func (s *artifactService) DiscardDesign(ctx context.Context, projectID string) (
 		return nil, ErrNoVersionToDiscard
 	}
 
-	taggedContent, err := runGitOutput(ctx, clonePath, "show", tagName+":"+DesignFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("git show %s:%s: %w", tagName, DesignFilePath, err)
+	if err := restoreDirAtTag(ctx, clonePath, tagName, DesignDir); err != nil {
+		return nil, err
 	}
-
-	abs := filepath.Join(clonePath, DesignFilePath)
-	if err := atomicWrite(abs, []byte(taggedContent)); err != nil {
-		return nil, fmt.Errorf("write %s: %w", DesignFilePath, err)
-	}
-
-	sha, _ := blobSHAFor(ctx, clonePath, []byte(taggedContent))
-	return &FileResult{Content: taggedContent, SHA: sha}, nil
+	return readDesignDirRecursive(filepath.Join(clonePath, DesignDir))
 }
 
 // ----- Versions -----
@@ -592,7 +682,7 @@ func (s *artifactService) GetRequirementsAtTag(ctx context.Context, projectID, t
 	return out, nil
 }
 
-func (s *artifactService) GetDesignAtTag(ctx context.Context, projectID, tag string) (*FileResult, error) {
+func (s *artifactService) GetDesignAtTag(ctx context.Context, projectID, tag string) (map[string]string, error) {
 	if _, _, ok := parseDesignTag(tag); !ok {
 		return nil, fmt.Errorf("%w: %q is not a v<N>-<M> tag", ErrInvalidVersionTag, tag)
 	}
@@ -610,15 +700,117 @@ func (s *artifactService) GetDesignAtTag(ctx context.Context, projectID, tag str
 	}
 	clonePath := repoRecord.ClonePath
 
-	content, err := runGitOutput(ctx, clonePath, "show", tag+":"+DesignFilePath)
+	out, err := readDesignDirAtTagRecursive(ctx, clonePath, tag, DesignDir)
 	if err != nil {
-		errMsg := err.Error()
-		if strings.Contains(errMsg, "not a valid object") || strings.Contains(errMsg, "does not exist") {
+		if errors.Is(err, ErrArtifactNotFound) {
 			return nil, ErrArtifactNotFound
 		}
-		return nil, fmt.Errorf("git show %s:%s: %w", tag, DesignFilePath, err)
+		return nil, fmt.Errorf("read %s at %s: %w", DesignDir, tag, err)
 	}
-	return &FileResult{Content: content}, nil
+	return out, nil
+}
+
+// ----- Design multi-file ops -----
+
+func (s *artifactService) ListDesignFiles(ctx context.Context, projectID string) (map[string]string, error) {
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("ensure clone: %w", err)
+	}
+
+	dir := filepath.Join(repoRecord.ClonePath, DesignDir)
+	return readDesignDirRecursive(dir)
+}
+
+func (s *artifactService) DeleteDesignFile(ctx context.Context, projectID, sub string) error {
+	if err := validateDesignSubPath(sub); err != nil {
+		return err
+	}
+	if sub == designRootFile {
+		return fmt.Errorf("%w: %s cannot be deleted", ErrArtifactPathInvalid, designRootFile)
+	}
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return fmt.Errorf("ensure clone: %w", err)
+	}
+
+	abs := filepath.Join(repoRecord.ClonePath, DesignDir, sub)
+	if err := os.Remove(abs); err != nil {
+		if os.IsNotExist(err) {
+			return ErrArtifactNotFound
+		}
+		return fmt.Errorf("remove %s/%s: %w", DesignDir, sub, err)
+	}
+
+	// Best-effort: if the parent directory is now empty (e.g. last file under
+	// `components/<name>/` was removed), clean it up so the tree doesn't show
+	// an empty folder.
+	parent := filepath.Dir(abs)
+	designAbs := filepath.Join(repoRecord.ClonePath, DesignDir)
+	for parent != designAbs && strings.HasPrefix(parent, designAbs) {
+		entries, err := os.ReadDir(parent)
+		if err != nil || len(entries) > 0 {
+			break
+		}
+		if err := os.Remove(parent); err != nil {
+			break
+		}
+		parent = filepath.Dir(parent)
+	}
+	return nil
+}
+
+func (s *artifactService) DeleteDesignDirectory(ctx context.Context, projectID, sub string) error {
+	if err := validateDesignSubDir(sub); err != nil {
+		return err
+	}
+	// Refuse to delete the design dir root (would wipe the whole artifact).
+	if sub == "." || sub == "" {
+		return fmt.Errorf("%w: cannot delete the design root", ErrArtifactPathInvalid)
+	}
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return fmt.Errorf("ensure clone: %w", err)
+	}
+
+	abs := filepath.Join(repoRecord.ClonePath, DesignDir, sub)
+	info, err := os.Stat(abs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return ErrArtifactNotFound
+		}
+		return fmt.Errorf("stat %s: %w", abs, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%w: %s is not a directory", ErrArtifactPathInvalid, sub)
+	}
+	if err := os.RemoveAll(abs); err != nil {
+		return fmt.Errorf("remove %s: %w", abs, err)
+	}
+	return nil
 }
 
 // ----- Internal helpers -----
@@ -775,6 +967,75 @@ func restoreDirAtTag(ctx context.Context, clonePath, tag, relPath string) error 
 		return fmt.Errorf("git checkout %s -- %s: %w", tag, relPath, err)
 	}
 	return nil
+}
+
+// readDesignDirRecursive walks `dir` and returns every file with an
+// allowed design extension, keyed by path RELATIVE to `dir` (forward
+// slashes). Missing dir → empty map (no error).
+func readDesignDirRecursive(dir string) (map[string]string, error) {
+	out := make(map[string]string)
+	err := filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			if os.IsNotExist(walkErr) && path == dir {
+				return filepath.SkipAll
+			}
+			return walkErr
+		}
+		if d.IsDir() {
+			return nil
+		}
+		if !hasAllowedDesignExt(d.Name()) {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return fmt.Errorf("rel %s: %w", path, err)
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read %s: %w", path, err)
+		}
+		out[filepath.ToSlash(rel)] = string(data)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("walk %s: %w", dir, err)
+	}
+	return out, nil
+}
+
+// readDesignDirAtTagRecursive reads every allowed-extension file under
+// `relPath` at `tag` from the git object store (no working-tree
+// side-effects). Returns ErrArtifactNotFound when the directory entry
+// doesn't exist at that tag.
+func readDesignDirAtTagRecursive(ctx context.Context, clonePath, tag, relPath string) (map[string]string, error) {
+	// `git ls-tree -r` lists every blob recursively under the tree.
+	out, err := runGitOutput(ctx, clonePath, "ls-tree", "-r", "--name-only", tag+":"+relPath)
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "Not a valid object name") || strings.Contains(errMsg, "does not exist") {
+			return nil, ErrArtifactNotFound
+		}
+		return nil, fmt.Errorf("ls-tree: %w", err)
+	}
+	files := make(map[string]string)
+	for _, name := range strings.Split(strings.TrimSpace(out), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || !hasAllowedDesignExt(name) {
+			continue
+		}
+		content, err := runGitOutput(ctx, clonePath, "show", tag+":"+relPath+"/"+name)
+		if err != nil {
+			return nil, fmt.Errorf("show %s/%s: %w", relPath, name, err)
+		}
+		files[name] = content
+	}
+	keys := make([]string, 0, len(files))
+	for k := range files {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return files, nil
 }
 
 // readMarkdownDirAtTag reads every *.md file under `relPath` at `tag` from

@@ -155,8 +155,8 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 		// Best-effort: pull the prior design + spec at the baseline tag. Diff
 		// computers tolerate empty/nil prevs.
 		if s.gitClient != nil && baseline.SourceDesignVersion != "" {
-			if raw, err := s.gitClient.GetFileAtTag(ctx, orgID, projectID, baseline.SourceDesignVersion, ".asdlc/design.json"); err == nil {
-				prevDesign, _ = parseDesignJSON(raw)
+			if files, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, baseline.SourceDesignVersion); err == nil {
+				prevDesign, _ = AssembleDesign(files)
 			}
 		}
 		if s.gitClient != nil && baseline.SourceSpecVersion != "" {
@@ -930,7 +930,7 @@ func buildDetailRequest(
 	}
 }
 
-// parseDesignJSON is defined in artifact_store.go.
+// AssembleDesign is defined in artifact_store.go.
 
 // shadow to keep the lint quiet for the unused result on advisory lock scan.
 var _ = strconv.Itoa

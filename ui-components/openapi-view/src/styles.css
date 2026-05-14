@@ -1,0 +1,230 @@
+/*
+ * Trimmed port of the "Strata Payments API" prototype CSS. Every selector
+ * is scoped under `.oapi` so the file can be imported from a workspace
+ * package without leaking globally. Tokens (--bg, --fg, --accent, …) and
+ * method tint variables follow the prototype verbatim — the look depends
+ * on them lining up across the JSX and the CSS.
+ */
+
+.oapi {
+  --font-sans: "Inter Tight", "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+
+  /* Page background is plain white. The off-white shades below are kept
+     for the inner cards / params / models so they still differentiate
+     subtly against the white surface. */
+  --bg: #ffffff;
+  --bg-elev: #ffffff;
+  --bg-sunk: oklch(97% 0.004 250);
+  --bg-soft: oklch(95% 0.005 250);
+  --line: oklch(89% 0.006 250);
+  --line-soft: oklch(93% 0.005 250);
+
+  --fg: oklch(22% 0.02 250);
+  --fg-mute: oklch(46% 0.015 250);
+  --fg-soft: oklch(62% 0.01 250);
+
+  --accent: oklch(56% 0.17 264);
+  --accent-soft: oklch(56% 0.17 264 / 0.12);
+
+  --m-bg-l: 96%;
+  --m-bg-c: 0.022;
+  --m-bg-hov-l: 93%;
+  --m-bg-hov-c: 0.032;
+  --m-fg-l: 40%;
+  --m-fg-c: 0.10;
+  --m-line-l: 86%;
+  --m-line-c: 0.030;
+  --m-chip-l: 50%;
+  --m-chip-c: 0.13;
+
+  --status-ok: oklch(58% 0.16 152);
+  --status-warn: oklch(64% 0.17 60);
+  --status-err: oklch(60% 0.20 25);
+  --status-info: oklch(60% 0.16 220);
+
+  --pad-section-y: 36px;
+  --pad-op-y: 12px;
+  --pad-op-body: 20px;
+  --row-y: 10px;
+  --gap-op: 8px;
+
+  --r: 10px;
+  --r-row: 8px;
+
+  --shadow-2: 0 2px 14px oklch(0% 0 0 / 0.06);
+
+  /* The component is the scroll surface in the host's right pane — it
+     takes the full pane height via flex:1 and owns its own y-scroll so
+     the markdown editor / cell diagram next to it stay parked. */
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  font-family: var(--font-sans);
+  color: var(--fg);
+  background: var(--bg);
+}
+
+/* Inner content column. Same 816px width as the cell-diagram figure
+   and the markdown editor's content column, so the three views line
+   up vertically when the user switches between them. */
+.oapi-doc {
+  width: 100%;
+  max-width: 816px;
+  margin: 0 auto;
+  padding: 28px 24px 64px;
+}
+
+.oapi *,
+.oapi *::before,
+.oapi *::after { box-sizing: border-box; }
+
+/* ── Hero ───────────────────────────────────────────────────────────────── */
+.oapi .hero { display: flex; flex-direction: column; gap: 10px; padding-bottom: 24px; border-bottom: 1px solid var(--line-soft); margin-bottom: 28px; }
+.oapi .hero-eyebrow { display: inline-flex; align-items: center; gap: 8px; font: 600 10.5px/1 var(--font-mono); color: var(--status-ok); letter-spacing: 0.08em; text-transform: uppercase; }
+.oapi .status-dot { width: 6px; height: 6px; border-radius: 999px; background: var(--status-ok); }
+.oapi .hero-eyebrow-sep { width: 1px; height: 10px; background: var(--line); }
+.oapi .hero-title { margin: 0; font-size: 28px; font-weight: 600; letter-spacing: -0.02em; line-height: 1.2; }
+.oapi .hero-lede { margin: 0; font-size: 14.5px; line-height: 1.55; color: var(--fg-mute); max-width: 720px; text-wrap: pretty; }
+
+/* ── Toolbar ────────────────────────────────────────────────────────────── */
+.oapi .toolbar { display: flex; align-items: center; gap: 14px; margin: 20px 0 12px; }
+.oapi .search { display: flex; align-items: center; gap: 8px; flex: 1; max-width: 480px; padding: 7px 12px; border: 1px solid var(--line); border-radius: 999px; background: var(--bg-elev); color: var(--fg-soft); transition: border-color .15s, color .15s; }
+.oapi .search:focus-within { border-color: var(--accent); color: var(--fg); }
+.oapi .search input { flex: 1; appearance: none; border: 0; outline: 0; background: transparent; color: var(--fg); font: 400 13px/1.3 var(--font-sans); }
+.oapi .search input::placeholder { color: var(--fg-soft); }
+.oapi .search-clear { appearance: none; border: 0; background: transparent; padding: 2px 4px; color: var(--fg-soft); cursor: pointer; border-radius: 4px; }
+.oapi .search-clear:hover { background: var(--bg-soft); color: var(--fg); }
+
+/* ── Section (tag) ─────────────────────────────────────────────────────── */
+.oapi .sections { display: flex; flex-direction: column; gap: var(--pad-section-y); margin-top: 28px; }
+.oapi .tag-section { display: flex; flex-direction: column; gap: 14px; }
+.oapi .tag-head { display: flex; flex-direction: column; gap: 6px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+.oapi .tag-title { margin: 0; font-size: 19px; font-weight: 600; letter-spacing: -0.015em; }
+.oapi .tag-blurb { margin: 0; font-size: 13.5px; color: var(--fg-mute); line-height: 1.55; max-width: 720px; text-wrap: pretty; }
+
+/* ── Operation row ─────────────────────────────────────────────────────── */
+.oapi .op-list { display: flex; flex-direction: column; gap: var(--gap-op); }
+.oapi .op {
+  --m-bg: oklch(var(--m-bg-l) var(--m-bg-c) var(--mh));
+  --m-bg-hov: oklch(var(--m-bg-hov-l) var(--m-bg-hov-c) var(--mh));
+  --m-line: oklch(var(--m-line-l) var(--m-line-c) var(--mh));
+  --m-chip: oklch(var(--m-chip-l) var(--m-chip-c) var(--mh));
+  border: 1px solid var(--m-line);
+  border-radius: var(--r);
+  background: var(--m-bg);
+  overflow: hidden;
+  transition: border-color .15s, box-shadow .15s;
+}
+.oapi .op:hover { border-color: color-mix(in oklch, var(--m-line), var(--fg) 12%); }
+.oapi .op.is-open { box-shadow: var(--shadow-2); }
+.oapi .op-head { width: 100%; appearance: none; border: 0; background: transparent; text-align: left; display: flex; align-items: center; gap: 14px; padding: var(--pad-op-y) 16px; cursor: pointer; transition: background .12s; }
+.oapi .op:not(.is-open) .op-head:hover { background: var(--m-bg-hov); }
+.oapi .op.is-open .op-head { border-bottom: 1px solid var(--m-line); }
+.oapi .op-method { display: inline-flex; align-items: center; justify-content: center; min-width: 64px; height: 26px; padding: 0 10px; border-radius: 6px; font: 700 11px/1 var(--font-mono); letter-spacing: 0.06em; background: var(--m-chip); color: #fff; text-transform: uppercase; flex-shrink: 0; }
+.oapi .op-path { font: 500 14px/1.3 var(--font-mono); color: var(--fg); letter-spacing: -0.005em; white-space: nowrap; flex-shrink: 0; }
+.oapi .op-summary { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--fg-mute); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: right; }
+.oapi .op-chev { display: inline-grid; place-items: center; width: 20px; height: 20px; color: var(--fg-soft); flex-shrink: 0; transition: transform .15s, color .15s; }
+.oapi .op-chev[data-open="0"] { transform: rotate(-90deg); }
+.oapi .op-head:hover .op-chev { color: var(--fg); }
+
+.oapi .op-body { padding: var(--pad-op-body); background: var(--bg-elev); display: flex; flex-direction: column; gap: 22px; }
+.oapi .op-desc { margin: 0; font-size: 14px; color: var(--fg-mute); max-width: 760px; line-height: 1.6; text-wrap: pretty; }
+
+.oapi .op-sect { display: flex; flex-direction: column; gap: 10px; }
+.oapi .op-sect-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--line-soft); }
+.oapi .op-sect-head h4 { margin: 0; font-size: 11.5px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--fg); }
+.oapi .op-sect-meta { font: 500 11px/1 var(--font-mono); color: var(--fg-soft); letter-spacing: 0.02em; }
+
+/* ── Parameters table ──────────────────────────────────────────────────── */
+.oapi .params { display: flex; flex-direction: column; border: 1px solid var(--line-soft); border-radius: var(--r-row); overflow: hidden; background: var(--bg); }
+.oapi .params-head,
+.oapi .param-row { display: grid; grid-template-columns: minmax(160px, 1.1fr) minmax(120px, 0.8fr) minmax(0, 2.2fr); gap: 16px; padding: 8px 12px; align-items: baseline; }
+.oapi .params-head { background: var(--bg-sunk); border-bottom: 1px solid var(--line-soft); font: 600 10.5px/1 var(--font-sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg-soft); }
+.oapi .param-row { padding: var(--row-y) 12px; border-bottom: 1px solid var(--line-soft); }
+.oapi .param-row:last-child { border-bottom: 0; }
+.oapi .param-name-col { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.oapi .param-name { font: 500 13px/1.3 var(--font-mono); color: var(--fg); }
+.oapi .param-req { font: 600 9.5px/1 var(--font-sans); letter-spacing: 0.08em; text-transform: uppercase; color: var(--status-err); }
+.oapi .param-desc-col { font-size: 13px; color: var(--fg-mute); line-height: 1.5; text-wrap: pretty; }
+.oapi .params-empty { padding: 10px 12px; font-size: 13px; color: var(--fg-soft); font-style: italic; border: 1px dashed var(--line); border-radius: var(--r-row); }
+
+/* ── Responses ─────────────────────────────────────────────────────────── */
+.oapi .resp-list { display: flex; flex-direction: column; gap: 6px; }
+.oapi .resp-row { border: 1px solid var(--line-soft); border-radius: var(--r-row); background: var(--bg); overflow: hidden; }
+.oapi .resp-head { width: 100%; appearance: none; border: 0; background: transparent; text-align: left; display: flex; align-items: center; gap: 14px; padding: 8px 12px; cursor: pointer; }
+.oapi .resp-row:not(.is-open) .resp-head:hover { background: var(--bg-soft); }
+.oapi .resp-code { display: inline-flex; align-items: center; justify-content: center; min-width: 48px; height: 22px; padding: 0 8px; border-radius: 5px; font: 700 11px/1 var(--font-mono); letter-spacing: 0.04em; }
+.oapi .resp-row[data-kind="ok"] .resp-code   { background: color-mix(in oklch, var(--status-ok), transparent 86%);   color: var(--status-ok); }
+.oapi .resp-row[data-kind="warn"] .resp-code { background: color-mix(in oklch, var(--status-warn), transparent 86%); color: var(--status-warn); }
+.oapi .resp-row[data-kind="err"]  .resp-code { background: color-mix(in oklch, var(--status-err), transparent 86%);  color: var(--status-err); }
+.oapi .resp-row[data-kind="info"] .resp-code { background: color-mix(in oklch, var(--status-info), transparent 86%); color: var(--status-info); }
+.oapi .resp-desc { flex: 1; font-size: 13px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.oapi .resp-ref { font: 500 11.5px/1 var(--font-mono); color: var(--fg-mute); padding: 3px 6px; background: var(--bg-soft); border-radius: 4px; }
+.oapi .resp-chev { display: inline-grid; place-items: center; width: 18px; height: 18px; color: var(--fg-soft); transition: transform .15s, color .15s; flex-shrink: 0; }
+.oapi .resp-chev[data-open="0"] { transform: rotate(-90deg); }
+.oapi .resp-head:hover .resp-chev { color: var(--fg); }
+.oapi .resp-body { padding: 6px 12px 12px; border-top: 1px solid var(--line-soft); background: var(--bg-sunk); }
+.oapi .resp-tabs { display: flex; align-items: center; gap: 4px; padding: 4px 0 10px; }
+.oapi .resp-tabs button { appearance: none; border: 0; background: transparent; font: 500 11.5px/1 var(--font-sans); color: var(--fg-mute); padding: 6px 9px; border-radius: 5px; letter-spacing: 0.02em; cursor: pointer; }
+.oapi .resp-tabs button:hover { color: var(--fg); background: var(--bg-soft); }
+.oapi .resp-tabs button.is-active { color: var(--fg); background: var(--bg-elev); box-shadow: 0 0 0 1px var(--line); }
+.oapi .resp-tab-meta { margin-left: auto; font: 500 10.5px/1 var(--font-mono); color: var(--fg-soft); letter-spacing: 0.02em; }
+
+/* ── Schema tree ───────────────────────────────────────────────────────── */
+.oapi .sch-tree { background: var(--bg-elev); border: 1px solid var(--line-soft); border-radius: var(--r-row); overflow: hidden; }
+.oapi .sch-field { border-bottom: 1px solid var(--line-soft); transition: background .12s; --type-hue: 200; }
+.oapi .sch-field:last-child { border-bottom: 0; }
+.oapi .sch-field.sch-active { background: var(--accent-soft); }
+.oapi .sch-row { display: grid; grid-template-columns: 22px 1fr; gap: 8px; padding: var(--row-y) 10px var(--row-y) calc(10px + var(--d, 0) * 14px); align-items: start; }
+.oapi .sch-gutter { padding-top: 2px; display: flex; justify-content: center; }
+.oapi .sch-toggle { display: inline-grid; place-items: center; width: 18px; height: 18px; border: 0; background: transparent; border-radius: 4px; color: var(--fg-mute); transition: transform .15s, background .15s; cursor: pointer; }
+.oapi .sch-toggle[data-open="0"] { transform: rotate(-90deg); }
+.oapi .sch-toggle:hover { background: var(--bg-soft); color: var(--fg); }
+.oapi .sch-dot { width: 4px; height: 4px; border-radius: 50%; background: var(--line); margin-top: 7px; }
+.oapi .sch-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.oapi .sch-name { font: 500 13px/1.3 var(--font-mono); color: var(--fg); }
+.oapi .sch-type { --type-hue: 200; font: 500 11px/1.3 var(--font-mono); padding: 2px 7px; border-radius: 999px; letter-spacing: 0.01em; color: oklch(38% 0.15 var(--type-hue)); background: oklch(96% 0.04 var(--type-hue)); border: 1px solid oklch(88% 0.06 var(--type-hue)); }
+.oapi .sch-desc { font-size: 12.5px; color: var(--fg-mute); margin-top: 3px; line-height: 1.5; max-width: 620px; text-wrap: pretty; }
+.oapi .sch-enum { display: flex; gap: 5px; flex-wrap: wrap; margin-top: 6px; }
+.oapi .sch-enum code { font: 500 11px/1 var(--font-mono); padding: 3px 6px; border-radius: 4px; background: var(--bg-sunk); border: 1px solid var(--line-soft); color: var(--fg); }
+.oapi .sch-children { border-top: 1px dashed var(--line-soft); }
+
+/* ── Code block + JSON tokens ──────────────────────────────────────────── */
+.oapi .code-block { position: relative; padding: 12px 14px; margin: 0; font: 500 12.5px/1.55 var(--font-mono); background: var(--bg-elev); border: 1px solid var(--line-soft); border-radius: var(--r-row); overflow: auto; }
+.oapi .code-block code { white-space: pre; }
+.oapi .j-key { color: var(--fg); border-radius: 3px; padding: 0 2px; margin: 0 -2px; transition: background .12s; }
+.oapi .j-key-on { background: var(--accent-soft); color: var(--accent); }
+.oapi .j-str { color: oklch(46% 0.14 152); }
+.oapi .j-num { color: oklch(50% 0.16 250); }
+.oapi .j-bool { color: oklch(54% 0.18 300); }
+.oapi .j-null { color: var(--fg-soft); font-style: italic; }
+.oapi .j-pun { color: var(--fg-soft); }
+
+/* ── Models (schemas section) ──────────────────────────────────────────── */
+.oapi .model { border: 1px solid var(--line); border-radius: var(--r); background: var(--bg-elev); overflow: hidden; transition: border-color .15s; }
+.oapi .model:hover { border-color: color-mix(in oklch, var(--line), var(--fg) 8%); }
+.oapi .model-head { appearance: none; border: 0; background: transparent; text-align: left; width: 100%; display: flex; align-items: center; gap: 14px; padding: var(--pad-op-y) 16px; cursor: pointer; }
+.oapi .model:not(.is-open) .model-head:hover { background: var(--bg-soft); }
+.oapi .model.is-open .model-head { border-bottom: 1px solid var(--line-soft); background: var(--bg-elev); }
+.oapi .model-name { font: 600 13.5px/1.2 var(--font-mono); color: var(--fg); letter-spacing: -0.005em; }
+.oapi .model-type { font: 500 10.5px/1 var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-soft); padding: 3px 7px; border-radius: 999px; background: var(--bg-sunk); border: 1px solid var(--line-soft); }
+.oapi .model-fields { margin-left: auto; font-size: 12px; color: var(--fg-soft); }
+.oapi .model-body { padding: 14px; background: var(--bg-sunk); }
+.oapi .model-body .sch-tree { background: var(--bg); }
+
+/* ── Empty ─────────────────────────────────────────────────────────────── */
+.oapi .empty { padding: 40px; text-align: center; color: var(--fg-soft); border: 1px dashed var(--line); border-radius: var(--r); font-size: 14px; }
+.oapi .oapi-error { padding: 18px; border: 1px solid var(--line); border-radius: var(--r); background: var(--bg-elev); color: var(--fg); font-size: 13px; line-height: 1.55; }
+.oapi .oapi-error h3 { margin: 0 0 6px; font-size: 13.5px; color: var(--status-err); }
+
+/* ── Narrow viewports ──────────────────────────────────────────────────── */
+@media (max-width: 900px) {
+  .oapi .op-summary { display: none; }
+}
+@media (max-width: 720px) {
+  .oapi { padding: 18px 16px 64px; }
+  .oapi .params-head,
+  .oapi .param-row { grid-template-columns: 1fr; gap: 4px; }
+  .oapi .params-head { display: none; }
+}

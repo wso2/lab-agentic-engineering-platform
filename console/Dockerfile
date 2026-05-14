@@ -16,6 +16,8 @@ COPY console/package.json ./console/
 COPY ui-components/md-editor/package.json ./ui-components/md-editor/
 COPY ui-components/excalidraw-editor/package.json ./ui-components/excalidraw-editor/
 COPY ui-components/explorer/package.json ./ui-components/explorer/
+COPY ui-components/cell-diagram-view/package.json ./ui-components/cell-diagram-view/
+COPY ui-components/openapi-view/package.json ./ui-components/openapi-view/
 COPY ui-components/project-status/package.json ./ui-components/project-status/
 RUN pnpm install --frozen-lockfile
 
