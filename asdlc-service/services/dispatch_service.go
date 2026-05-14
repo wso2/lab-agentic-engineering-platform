@@ -243,9 +243,36 @@ func (s *dispatchService) dispatchOne(
 	// cluster and local flows read from the same source.
 	depEndpoints, err := s.resolveDependencyEndpoints(ctx, task)
 	if err != nil {
-		s.markFailed(ctx, task, fmt.Sprintf("resolve dependency endpoints: %v", err))
+		const deferDeadline = 2 * time.Minute
+		now := time.Now()
+		if task.DispatchDeferredAt != nil && time.Since(*task.DispatchDeferredAt) > deferDeadline {
+			// Deadline exceeded — not a timing race, genuine misconfiguration.
+			s.markFailed(ctx, task, fmt.Sprintf("resolve dependency endpoints: %v", err))
+			return failResult(res, task.ErrorMessage)
+		}
+		// First attempt or still within deadline — the OC ReleaseBinding
+		// controller may not have resolved the external URL yet (timing race
+		// between build WorkflowRun completion and ingress provisioning).
+		// Revert to on_hold; the on_hold_watcher retries every 10s.
+		if task.DispatchDeferredAt == nil {
+			task.DispatchDeferredAt = &now
+		}
+		task.Status = string(models.TaskStatusOnHold)
+		task.ErrorMessage = fmt.Sprintf("resolve dependency endpoints: %v", err)
+		if err := s.taskRepo.Update(ctx, task); err != nil {
+			slog.WarnContext(ctx, "dispatchOne: revert to on_hold failed", "task", task.ID, "error", err)
+		}
+		if task.IssueURL != "" {
+			if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "On Hold"); err != nil {
+				slog.WarnContext(ctx, "dispatchOne: move board item to On Hold", "task", task.ID, "error", err)
+			}
+		}
+		slog.WarnContext(ctx, "dispatch deferred: dep external URL not yet available",
+			"task", task.ID, "deferredAt", task.DispatchDeferredAt, "deadline", deferDeadline)
 		return failResult(res, task.ErrorMessage)
 	}
+	// URL resolved — clear the deferred timestamp from any prior attempts.
+	task.DispatchDeferredAt = nil
 	prompt := buildAgentPrompt(task)
 	slog.InfoContext(ctx, "dispatched with dep endpoints",
 		"task", task.ID,
@@ -325,6 +352,12 @@ func (s *dispatchService) markFailed(ctx context.Context, task *models.Component
 		slog.ErrorContext(ctx, "failed to mark task failed", "task", task.ID, "error", err)
 	}
 	slog.ErrorContext(ctx, "dispatch step failed", "task", task.ID, "error", msg)
+	// Sync the GitHub project board item so it surfaces in the Failed column.
+	if task.IssueURL != "" {
+		if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "Failed"); err != nil {
+			slog.WarnContext(ctx, "markFailed: move board item to Failed", "task", task.ID, "error", err)
+		}
+	}
 }
 
 // MarkVerificationFailed (F3c) transitions a task from in_progress to

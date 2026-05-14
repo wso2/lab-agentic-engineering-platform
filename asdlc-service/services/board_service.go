@@ -153,12 +153,18 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			task.ErrorMessage = meta.errorMessage
 		}
 		// The BFF's ComponentTask.Status is authoritative for kanban routing
-		// of `on_hold` (dep-gated) and `verification_failed` tasks.
+		// of `on_hold` (dep-gated), terminal failure states, and
+		// `verification_failed` tasks. Terminal failure states must never be
+		// overridden by the GitHub board column (which may not have been
+		// updated yet, e.g. when markFailed's MoveIssueToStatus call fails).
 		switch task.Status {
 		case string(models.TaskStatusOnHold):
 			board.OnHold = append(board.OnHold, task)
 			continue
-		case string(models.TaskStatusVerificationFailed):
+		case string(models.TaskStatusFailed),
+			string(models.TaskStatusRejected),
+			string(models.TaskStatusAbandoned),
+			string(models.TaskStatusVerificationFailed):
 			board.Failed = append(board.Failed, task)
 			continue
 		}

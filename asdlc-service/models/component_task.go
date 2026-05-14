@@ -155,6 +155,14 @@ type ComponentTask struct {
 	// git_clone_failed_auth. Budget enforced in build_watcher.
 	BuildAuthRetryCount int `gorm:"not null;default:0" json:"buildAuthRetryCount,omitempty"`
 
+	// DispatchDeferredAt is set the first time dispatchOne reverts a task
+	// to on_hold because a dependency's external URL is not yet available
+	// in the OC ReleaseBinding status (timing race between build completion
+	// and the OC controller resolving the ingress). The on_hold_watcher
+	// retries dispatch every 10s; after deferDeadline (2 min) the task is
+	// permanently failed. Nil on tasks that were never deferred.
+	DispatchDeferredAt *time.Time `gorm:"column:dispatch_deferred_at" json:"dispatchDeferredAt,omitempty"`
+
 	// BodySyncPending is set when the GitHub issue body edit failed after
 	// retries; a periodic reconciler re-attempts the edit. The DB row's
 	// Body field is canonical for dispatch regardless of GH state.

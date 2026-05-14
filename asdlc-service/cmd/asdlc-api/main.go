@@ -401,6 +401,10 @@ func main() {
 		}
 	}()
 
+	// On-hold watcher retries dispatch for tasks deferred due to OC
+	// ReleaseBinding URL resolution lag (timing race at cascade time).
+	onHoldWatcher := webhook.NewOnHoldWatcher(db, dispatchSvc)
+
 	// Build watcher polls OC for in-flight WorkflowRun status. Goroutine is
 	// fine because state lives in Postgres — a restart resumes from the
 	// next tick with no in-memory state.
@@ -408,6 +412,7 @@ func main() {
 	defer cancelWatcher()
 	go buildWatcher.Run(watcherCtx)
 	go codingAgentWatcher.Run(watcherCtx)
+	go onHoldWatcher.Run(watcherCtx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
