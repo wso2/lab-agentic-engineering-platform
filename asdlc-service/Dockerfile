@@ -15,7 +15,7 @@ RUN addgroup -g 1000 appgroup && adduser -S -u 1000 -G appgroup appuser
 WORKDIR /app
 COPY --from=builder /app/bin/asdlc-api .
 
-USER appuser
+USER 1000
 
 EXPOSE 8080
 

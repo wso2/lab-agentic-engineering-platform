@@ -146,6 +146,7 @@ func (c *projectController) DeleteProject(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if errors.Is(err, services.ErrForbidden) {
+			slog.ErrorContext(r.Context(), "delete project forbidden by upstream", "error", err, "org", org, "project", projectName)
 			utils.WriteErrorResponse(w, http.StatusForbidden, "insufficient permissions to delete this project")
 			return
 		}

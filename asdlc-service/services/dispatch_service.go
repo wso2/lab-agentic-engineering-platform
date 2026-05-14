@@ -634,10 +634,15 @@ func (s *dispatchService) ensureOCComponent(
 		dockerContext = "."
 	}
 
-	if repoInfo == nil || repoInfo.OcSecretRefName == nil || *repoInfo.OcSecretRefName == "" {
-		return fmt.Errorf("repo has no SecretReference name; project=%s", task.ProjectID)
+	// Per docs/design/build-credential-injection.md: build credentials are
+	// pre-staged per WorkflowRun as a K8s Secret in workflows-<orgID> by
+	// git-service. The Component's `repository.secretRef` parameter stays
+	// empty so the upstream dockerfile-builder ClusterWorkflow skips its
+	// SecretReference / ExternalSecret synth path entirely.
+	const secretRefName = ""
+	if repoInfo == nil {
+		return fmt.Errorf("repo info missing for project=%s", task.ProjectID)
 	}
-	secretRefName := *repoInfo.OcSecretRefName
 
 	branch := repoInfo.DefaultBranch
 	if branch == "" {
@@ -649,13 +654,14 @@ func (s *dispatchService) ensureOCComponent(
 		description = task.Title + " — " + task.Rationale
 	}
 
-	// Stamp the current per-component env vars onto the Component's
-	// workflow parameters so the build's generate-workload-cr step writes
-	// them into the Workload CR. autoDeploy then carries them into the
-	// ReleaseBinding. Env-var changes after first dispatch flow in via
-	// componentEnvVarsUpdated below.
-	envVars := s.workflowEnvVars(ctx, task.OrgID, task.ProjectID, componentName)
-
+	// Per-component env vars are no longer stamped onto the Component's
+	// workflow parameters. They live on the per-environment ReleaseBindings
+	// (spec.workloadOverrides.container.env). configService.UpdateEnvVars
+	// writes them out via componentSvc.UpdateWorkflowEnvVars, which patches
+	// each ReleaseBinding for this component. On first dispatch the
+	// ReleaseBindings don't exist yet — OC creates them after autoDeploy
+	// observes the build's Workload — so the next config save (or the
+	// caller's post-dispatch reconcile) is what lands env vars into them.
 	_, err = s.componentSvc.CreateComponent(ctx, task.OrgID, task.ProjectID, &models.CreateComponentRequest{
 		Name:        componentName,
 		DisplayName: task.ComponentName,
@@ -677,7 +683,6 @@ func (s *dispatchService) ensureOCComponent(
 					Context:  dockerContext,
 					FilePath: dockerFilePath,
 				},
-				EnvironmentVariables: envVars,
 			},
 		},
 	})
@@ -685,29 +690,4 @@ func (s *dispatchService) ensureOCComponent(
 		return fmt.Errorf("create component: %w", err)
 	}
 	return nil
-}
-
-// workflowEnvVars reads the stored env vars for this component and shapes
-// them into the WorkflowEnvVarRef slice that the dockerfile-builder
-// ClusterWorkflow's `environmentVariables` schema expects. Returns nil
-// when nothing is configured or the lookup fails — the build workflow's
-// `default: []` covers that case.
-func (s *dispatchService) workflowEnvVars(ctx context.Context, orgID, projectID, componentName string) []models.WorkflowEnvVarRef {
-	if s.configSvc == nil {
-		return nil
-	}
-	stored, err := s.configSvc.GetEnvVarsForDeploy(ctx, orgID, projectID, componentName)
-	if err != nil {
-		slog.WarnContext(ctx, "fetch env vars for component workflow params; proceeding without",
-			"org", orgID, "project", projectID, "component", componentName, "error", err)
-		return nil
-	}
-	if len(stored) == 0 {
-		return nil
-	}
-	out := make([]models.WorkflowEnvVarRef, 0, len(stored))
-	for _, ev := range stored {
-		out = append(out, models.WorkflowEnvVarRef{Key: ev.Key, Value: ev.Value})
-	}
-	return out
 }

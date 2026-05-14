@@ -278,36 +278,42 @@ func (s *workflowRunService) DispatchTaskBuild(ctx context.Context, task *models
 	return s.dispatchBuild(ctx, task, task.OrgID, task.ProjectID, repoSlug, sha)
 }
 
-// dispatchBuild is the shared inner path: mint token, trigger OC, mark
-// building atomically. Callers handle filtering / iteration.
+// dispatchBuild is the shared inner path: pre-stage the per-WorkflowRun
+// build Secret in workflows-<orgID> (`<runName>-git-secret`), trigger OC,
+// mark building atomically. Callers handle filtering / iteration. See
+// docs/design/build-credential-injection.md.
 func (s *workflowRunService) dispatchBuild(
 	ctx context.Context,
 	task *models.ComponentTask,
 	orgID, projectID, repoSlug, sha string,
 ) (string, error) {
-	// Phase 2 PR C — mint a fresh GitHub token immediately before the
-	// build pod's git clone. Errors classify per phase2.md §5.2:
-	// 404 → skip, 409 → skip (disconnect race), 5xx → log + retry.
+	// Generate the WorkflowRun name upfront so we can race-free stage the
+	// per-build K8s Secret before the WorkflowRun spawns the Argo pod.
+	runName := openchoreo.NewBuildRunName(projectID, task.ComponentName)
+
+	// Stage the per-WorkflowRun build Secret in workflows-<orgID> with the
+	// org's GitHub credential. Errors classify identically to the previous
+	// mint-build surface (404 → skip, 409 → skip, 5xx → log + retry).
 	if s.gitClient != nil && repoSlug != "" {
-		if _, err := s.gitClient.MintBuildToken(ctx, orgID, repoSlug); err != nil {
+		if _, err := s.gitClient.StageBuildSecret(ctx, orgID, repoSlug, runName); err != nil {
 			switch {
 			case errors.Is(err, gitservice.ErrRepoNotInOrg):
-				slog.WarnContext(ctx, "mint-build refused: repo/org mismatch",
+				slog.WarnContext(ctx, "stage-build-secret refused: repo/org mismatch",
 					"orgId", orgID, "repoSlug", repoSlug, "task", task.ID)
 				return "", err
 			case errors.Is(err, gitservice.ErrOrgDisconnected):
-				slog.WarnContext(ctx, "mint-build refused: org disconnected; skipping build",
+				slog.WarnContext(ctx, "stage-build-secret refused: org disconnected; skipping build",
 					"orgId", orgID, "repoSlug", repoSlug, "task", task.ID)
 				return "", err
 			default:
-				slog.ErrorContext(ctx, "mint-build transient",
+				slog.ErrorContext(ctx, "stage-build-secret transient",
 					"orgId", orgID, "repoSlug", repoSlug, "task", task.ID, "error", err)
 				return "", err
 			}
 		}
 	}
 
-	run, err := s.ocClient.TriggerBuildAtCommit(ctx, orgID, projectID, task.ComponentName, sha)
+	run, err := s.ocClient.TriggerBuildAtCommit(ctx, orgID, projectID, task.ComponentName, sha, runName)
 	if err != nil {
 		slog.ErrorContext(ctx, "trigger build failed",
 			"component", task.ComponentName, "sha", sha, "error", err)
@@ -435,15 +441,16 @@ func (s *workflowRunService) RetryAuthFailedBuild(ctx context.Context, task *mod
 	if repo == nil || repo.RepoSlug == "" {
 		return "", fmt.Errorf("retry-auth-failed: project %s has no repo slug", task.ProjectID)
 	}
-	if _, err := s.gitClient.MintBuildToken(ctx, task.OrgID, repo.RepoSlug); err != nil {
+	runName := openchoreo.NewBuildRunName(task.ProjectID, task.ComponentName)
+	if _, err := s.gitClient.StageBuildSecret(ctx, task.OrgID, repo.RepoSlug, runName); err != nil {
 		switch {
 		case errors.Is(err, gitservice.ErrRepoNotInOrg), errors.Is(err, gitservice.ErrOrgDisconnected):
 			return "", err
 		default:
-			return "", fmt.Errorf("retry-auth-failed: mint-build: %w", err)
+			return "", fmt.Errorf("retry-auth-failed: stage-build-secret: %w", err)
 		}
 	}
-	run, err := s.ocClient.TriggerBuildAtCommit(ctx, task.OrgID, task.ProjectID, task.ComponentName, task.LastBuildSHA)
+	run, err := s.ocClient.TriggerBuildAtCommit(ctx, task.OrgID, task.ProjectID, task.ComponentName, task.LastBuildSHA, runName)
 	if err != nil {
 		return "", fmt.Errorf("retry-auth-failed: trigger build: %w", err)
 	}

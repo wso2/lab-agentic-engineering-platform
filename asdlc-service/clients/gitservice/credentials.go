@@ -286,33 +286,42 @@ func (c *client) ResolveUserInstallations(ctx context.Context, ocOrgID, oauthCod
 }
 
 // ----------------------------------------------------------------------------
-// Phase 2 PR C — mint-build.
+// Build-credential staging (replaces mint-build).
 // ----------------------------------------------------------------------------
 
-// MintResult is the response from POST /internal/credentials/orgs/{ocOrgId}/mint-build.
-// The token itself never crosses the BFF↔git-service boundary — the BFF only
-// receives the SecretReference name + token expiry.
-type MintResult struct {
-	SecretRefName string    `json:"secretRefName"`
-	ExpiresAt     time.Time `json:"expiresAt"`
+// StageResult is the response from POST
+// /internal/credentials/orgs/{ocOrgId}/stage-build-secret. Returns only the
+// K8s Secret name git-service materialised in workflows-<ocOrgID>; the
+// token itself never crosses the BFF↔git-service boundary. The Secret name
+// matches the upstream `dockerfile-builder` ClusterWorkflow's expected
+// default (`${metadata.workflowRunName}-git-secret`) so the BFF doesn't
+// need to thread it onto the WorkflowRun spec.
+type StageResult struct {
+	SecretName string `json:"secretName"`
 }
 
 // Errors with stable codes the build pipeline reacts to.
 var (
-	ErrRepoNotInOrg    = errors.New("mint-build: repo not in org")
-	ErrOrgDisconnected = errors.New("mint-build: org disconnected")
+	ErrRepoNotInOrg    = errors.New("stage-build-secret: repo not in org")
+	ErrOrgDisconnected = errors.New("stage-build-secret: org disconnected")
 )
 
-// MintBuildToken asks git-service to mint a fresh per-build GitHub token,
-// write it into OpenBao, and return only the SecretReference name + expiry.
-func (c *client) MintBuildToken(ctx context.Context, ocOrgID, repoSlug string) (*MintResult, error) {
-	body, _ := json.Marshal(map[string]string{"repoSlug": repoSlug})
-	url := fmt.Sprintf("%s/internal/credentials/orgs/%s/mint-build", c.baseURL, ocOrgID)
+// StageBuildSecret asks git-service to pre-stage a per-WorkflowRun
+// `kubernetes.io/basic-auth` Secret named `<workflowRunName>-git-secret`
+// in workflows-<ocOrgID>, carrying the org's GitHub credential. Called by
+// the dispatch path immediately before POSTing the WorkflowRun. See
+// docs/design/build-credential-injection.md.
+func (c *client) StageBuildSecret(ctx context.Context, ocOrgID, repoSlug, workflowRunName string) (*StageResult, error) {
+	body, _ := json.Marshal(map[string]string{
+		"repoSlug":        repoSlug,
+		"workflowRunName": workflowRunName,
+	})
+	url := fmt.Sprintf("%s/internal/credentials/orgs/%s/stage-build-secret", c.baseURL, ocOrgID)
 	httpReq, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	httpReq.Header.Set("Content-Type", "application/json")
 
-	var mint MintResult
-	if err := c.doInternal(httpReq, &mint); err != nil {
+	var res StageResult
+	if err := c.doInternal(httpReq, &res); err != nil {
 		var ce *CredentialError
 		if errors.As(err, &ce) {
 			switch ce.Code {
@@ -324,7 +333,7 @@ func (c *client) MintBuildToken(ctx context.Context, ocOrgID, repoSlug string) (
 		}
 		return nil, err
 	}
-	return &mint, nil
+	return &res, nil
 }
 
 // doInternal executes the request and decodes the response into out (if

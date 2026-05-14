@@ -38,11 +38,11 @@ type DockerParameters struct {
 	FilePath string `json:"filePath,omitempty"`
 }
 
-// WorkflowEnvVarRef is a Workload-style env entry passed into the
-// dockerfile-builder ClusterWorkflow's `environmentVariables` parameter.
-// The build's `generate-workload-cr` step splices these into
-// `Workload.spec.container.env` so the auto-deployed pod picks them up.
-// Either Value or ValueFrom must be set, not both.
+// WorkflowEnvVarRef is the BFF-internal shape for a per-component env
+// var. The componentClient maps it onto a ReleaseBinding's
+// `spec.workloadOverrides.container.env` so OC's controller stamps the
+// values into the rendered pod spec — no rebuild needed. Either Value
+// or ValueFrom must be set, not both.
 type WorkflowEnvVarRef struct {
 	Key       string                  `json:"key"`
 	Value     string                  `json:"value,omitempty"`
@@ -59,9 +59,8 @@ type WorkflowSecretKeyRef struct {
 }
 
 type ComponentWorkflowParameters struct {
-	Repository           *WorkflowRepository `json:"repository,omitempty"`
-	Docker               *DockerParameters   `json:"docker,omitempty"`
-	EnvironmentVariables []WorkflowEnvVarRef `json:"environmentVariables,omitempty"`
+	Repository *WorkflowRepository `json:"repository,omitempty"`
+	Docker     *DockerParameters   `json:"docker,omitempty"`
 }
 
 type ComponentWorkflowSpec struct {

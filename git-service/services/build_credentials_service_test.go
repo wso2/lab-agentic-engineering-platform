@@ -10,7 +10,8 @@ import (
 	"github.com/wso2/asdlc/git-service/pkg/credentials"
 )
 
-// fakeRepoRepo is a minimal in-memory RepoRepository for the mint-build tests.
+// fakeRepoRepo is a minimal in-memory RepoRepository for the
+// stage-build-secret tests.
 type fakeRepoRepo struct {
 	rows map[string]*models.GitRepository // key = ocOrgID + "/" + repoSlug
 }
@@ -27,10 +28,10 @@ func (f *fakeRepoRepo) ListAllReady(context.Context) ([]models.GitRepository, er
 func (f *fakeRepoRepo) GetByOrgAndSlug(ctx context.Context, ocOrgID, repoSlug string) (*models.GitRepository, error) {
 	return f.rows[ocOrgID+"/"+repoSlug], nil
 }
-func (f *fakeRepoRepo) Create(context.Context, *models.GitRepository) error            { return nil }
-func (f *fakeRepoRepo) Update(context.Context, *models.GitRepository) error            { return nil }
-func (f *fakeRepoRepo) Delete(context.Context, string) error                           { return nil }
-func (f *fakeRepoRepo) DeleteAll(context.Context) error                                { return nil }
+func (f *fakeRepoRepo) Create(context.Context, *models.GitRepository) error { return nil }
+func (f *fakeRepoRepo) Update(context.Context, *models.GitRepository) error { return nil }
+func (f *fakeRepoRepo) Delete(context.Context, string) error                { return nil }
+func (f *fakeRepoRepo) DeleteAll(context.Context) error                     { return nil }
 
 // fakeResolver dispatches a fixed Credential or returns a fixed error.
 type fakeResolver struct {
@@ -61,86 +62,61 @@ func (c *fakeCred) WebhookStrategy() credentials.WebhookStrategy {
 	return credentials.WebhookPerRepo
 }
 
-// fakeStore records Put calls and surfaces a fixed error.
-type fakeStore struct {
-	puts map[string][]byte // key = ocOrgID + ":" + key
-	err  error
-}
+const testRunName = "default-greeting-api-1731538100123"
 
-func (s *fakeStore) Get(context.Context, string, string) ([]byte, error)    { return nil, nil }
-func (s *fakeStore) Delete(context.Context, string, string) error           { return nil }
-func (s *fakeStore) Put(_ context.Context, ocOrgID, key string, value []byte) error {
-	if s.err != nil {
-		return s.err
-	}
-	if s.puts == nil {
-		s.puts = map[string][]byte{}
-	}
-	s.puts[ocOrgID+":"+key] = value
-	return nil
-}
-
-func TestMintBuildToken_Happy(t *testing.T) {
-	secretRef := models.SecretRefNameFor("default", "asdlc-repos-myrepo")
+func TestStageBuildSecret_Happy(t *testing.T) {
 	repo := &models.GitRepository{
-		OrgID:           "default",
-		ProjectID:       "p1",
-		RepoSlug:        "asdlc-repos-myrepo",
-		OcSecretRefName: &secretRef,
+		OrgID:     "default",
+		ProjectID: "p1",
+		RepoSlug:  "asdlc-repos-myrepo",
 	}
 	repos := &fakeRepoRepo{rows: map[string]*models.GitRepository{"default/asdlc-repos-myrepo": repo}}
-	expiry := time.Now().Add(1 * time.Hour)
-	res := &fakeResolver{cred: &fakeCred{token: "ghs_abc123", exp: expiry}}
-	store := &fakeStore{}
+	res := &fakeResolver{cred: &fakeCred{token: "ghs_abc123", exp: time.Now().Add(time.Hour)}}
 
-	svc := NewBuildCredentialsService(repos, res, store, nil)
-	mint, err := svc.MintBuildToken(context.Background(), "default", "asdlc-repos-myrepo")
+	// wpClient=nil: SSA is skipped (with a warn) but the method should still
+	// return the expected name. Production wires a real controller-runtime
+	// client via NewInClusterClient.
+	svc := NewBuildCredentialsService(repos, res, nil)
+	got, err := svc.StageBuildSecret(context.Background(), "default", "asdlc-repos-myrepo", testRunName)
 	if err != nil {
-		t.Fatalf("MintBuildToken: %v", err)
+		t.Fatalf("StageBuildSecret: %v", err)
 	}
-	if mint.SecretRefName != secretRef {
-		t.Errorf("SecretRefName = %q; want %q", mint.SecretRefName, secretRef)
-	}
-	if !mint.ExpiresAt.Equal(expiry) {
-		t.Errorf("ExpiresAt mismatch")
-	}
-	if string(store.puts["default:git/asdlc-repos-myrepo"]) != "ghs_abc123" {
-		t.Errorf("OpenBao Put missing or wrong value: %v", store.puts)
+	want := models.BuildSecretNameFor(testRunName)
+	if got.SecretName != want {
+		t.Errorf("SecretName = %q; want %q", got.SecretName, want)
 	}
 }
 
-func TestMintBuildToken_RepoNotInOrg(t *testing.T) {
+func TestStageBuildSecret_RepoNotInOrg(t *testing.T) {
 	repos := &fakeRepoRepo{rows: map[string]*models.GitRepository{}}
-	svc := NewBuildCredentialsService(repos, &fakeResolver{}, &fakeStore{}, nil)
-	_, err := svc.MintBuildToken(context.Background(), "default", "missing-slug")
+	svc := NewBuildCredentialsService(repos, &fakeResolver{}, nil)
+	_, err := svc.StageBuildSecret(context.Background(), "default", "missing-slug", testRunName)
 	if !errors.Is(err, ErrRepoNotInOrg) {
 		t.Errorf("got %v; want ErrRepoNotInOrg", err)
 	}
 }
 
-func TestMintBuildToken_OrgDisconnected(t *testing.T) {
-	secretRef := models.SecretRefNameFor("default", "slug")
+func TestStageBuildSecret_OrgDisconnected(t *testing.T) {
 	repos := &fakeRepoRepo{rows: map[string]*models.GitRepository{
-		"default/slug": {OrgID: "default", RepoSlug: "slug", OcSecretRefName: &secretRef},
+		"default/slug": {OrgID: "default", RepoSlug: "slug"},
 	}}
 	res := &fakeResolver{err: &credentials.OrgNotActiveError{OcOrgID: "default", Status: "disconnected"}}
-	svc := NewBuildCredentialsService(repos, res, &fakeStore{}, nil)
-	_, err := svc.MintBuildToken(context.Background(), "default", "slug")
+	svc := NewBuildCredentialsService(repos, res, nil)
+	_, err := svc.StageBuildSecret(context.Background(), "default", "slug", testRunName)
 	if !errors.Is(err, ErrOrgDisconnected) {
 		t.Errorf("got %v; want ErrOrgDisconnected", err)
 	}
 }
 
-func TestMintBuildToken_OpenBaoUnavailable(t *testing.T) {
-	secretRef := models.SecretRefNameFor("default", "slug")
-	repos := &fakeRepoRepo{rows: map[string]*models.GitRepository{
-		"default/slug": {OrgID: "default", RepoSlug: "slug", OcSecretRefName: &secretRef},
-	}}
-	res := &fakeResolver{cred: &fakeCred{token: "t", exp: time.Now().Add(time.Hour)}}
-	store := &fakeStore{err: errors.New("openbao down")}
-	svc := NewBuildCredentialsService(repos, res, store, nil)
-	_, err := svc.MintBuildToken(context.Background(), "default", "slug")
-	if !errors.Is(err, ErrOpenBaoUnavailable) {
-		t.Errorf("got %v; want ErrOpenBaoUnavailable", err)
+func TestStageBuildSecret_MissingArgs(t *testing.T) {
+	svc := NewBuildCredentialsService(&fakeRepoRepo{}, &fakeResolver{}, nil)
+	for _, tc := range []struct{ org, slug, wrn string }{
+		{"", "slug", testRunName},
+		{"default", "", testRunName},
+		{"default", "slug", ""},
+	} {
+		if _, err := svc.StageBuildSecret(context.Background(), tc.org, tc.slug, tc.wrn); err == nil {
+			t.Errorf("StageBuildSecret(%q,%q,%q): expected error", tc.org, tc.slug, tc.wrn)
+		}
 	}
 }

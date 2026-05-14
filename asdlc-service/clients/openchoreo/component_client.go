@@ -30,25 +30,31 @@ type ComponentClient interface {
 	ListComponents(ctx context.Context, orgName, projectName string, limit int, cursor string) (*models.ComponentList, error)
 	GetComponent(ctx context.Context, orgName, projectName, componentName string) (*models.Component, error)
 	CreateComponent(ctx context.Context, orgName, projectName string, req *models.CreateComponentRequest) (*models.Component, error)
-	// UpdateComponentWorkflowEnvVars rewrites the Component's
-	// `spec.workflow.parameters.environmentVariables` array. This is the
-	// signal the next build picks up: when the user edits per-component
-	// env vars, the BFF mirrors the change onto the OC Component so the
-	// next WorkflowRun (triggered by push or manual click) ships the
-	// updated env vars through `generate-workload-cr` into the Workload
-	// CR. Other workflow parameters (repository, docker, ...) are left
-	// untouched.
+	// UpdateComponentWorkflowEnvVars writes per-component env vars onto each
+	// of the component's ReleaseBindings at
+	// `spec.workloadOverrides.container.env`. Per-env (one RB per
+	// environment) so OC's controller renders the values straight into the
+	// pod spec on the next reconcile — no rebuild required, matching how
+	// PE-managed components (app-factory-api, agent-manager-service, etc.)
+	// carry their env. ReleaseBindings are listed by component label and
+	// each is updated independently; if no RBs exist yet (pre-first-deploy)
+	// the call is a soft no-op and the caller is expected to retry once
+	// the first build has produced RBs.
 	UpdateComponentWorkflowEnvVars(ctx context.Context, orgName, projectName, componentName string, envVars []models.WorkflowEnvVarRef) error
 
 	// Deploy (read-only — auto-deploy on the Component drives the chain)
 	ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error)
 
-	// Build (workflow runs)
-	TriggerBuild(ctx context.Context, orgName, projectName, componentName string) (*models.WorkflowRun, error)
+	// Build (workflow runs). `runName` is the WorkflowRun metadata.name; if
+	// empty the OC client auto-generates one via NewBuildRunName. Callers
+	// that need to know the name ahead of time (so they can stage a
+	// per-WorkflowRun build Secret) MUST pass it.
+	TriggerBuild(ctx context.Context, orgName, projectName, componentName, runName string) (*models.WorkflowRun, error)
 	// TriggerBuildAtCommit creates a WorkflowRun pinned to commitSHA via
 	// params.repository.revision.commit. Mirrors agent-manager's pattern at
 	// agent-manager-service/clients/openchoreosvc/client/builds.go:71-85.
-	TriggerBuildAtCommit(ctx context.Context, orgName, projectName, componentName, commitSHA string) (*models.WorkflowRun, error)
+	// See TriggerBuild for the `runName` contract.
+	TriggerBuildAtCommit(ctx context.Context, orgName, projectName, componentName, commitSHA, runName string) (*models.WorkflowRun, error)
 	// TriggerCodingAgent creates a WorkflowRun of ClusterWorkflow
 	// `app-factory-coding-agent` for the per-task ephemeral pod that runs the
 	// Claude Agent SDK against the task's feature branch. Replaces the legacy
@@ -352,71 +358,66 @@ func (c *componentClient) CreateComponent(ctx context.Context, orgName, projectN
 	})
 }
 
-// UpdateComponentWorkflowEnvVars fetches the Component, rewrites its
-// `spec.workflow.parameters.environmentVariables` array, and PUTs the
-// whole Component back. We do a read-modify-write rather than blasting
-// the entire spec from scratch because the build workflow's other
-// parameters (repository, docker, ...) are owned by the dispatch path
-// and we don't want to lose them.
+// UpdateComponentWorkflowEnvVars lists the component's ReleaseBindings
+// and writes the env vars onto each one at
+// `spec.workloadOverrides.container.env`. One RB per environment — OC's
+// controller renders the value into the pod spec on the next reconcile,
+// so changing env vars no longer requires a rebuild.
 //
-// Returns nil on 404 — a missing Component means the user is editing
-// env vars before the first dispatch, which is allowed: the values will
-// be stamped onto the Component when ensureOCComponent fires (see
-// dispatch_service.workflowEnvVars).
+// When no ReleaseBindings exist yet (the first build hasn't produced
+// one), the call is a soft no-op: the caller is expected to retry after
+// a successful deploy. An empty `envVars` slice clears any previously
+// set env block on each binding.
 func (c *componentClient) UpdateComponentWorkflowEnvVars(ctx context.Context, orgName, projectName, componentName string, envVars []models.WorkflowEnvVarRef) error {
 	scopedComp := ScopedComponentName(projectName, componentName)
-	getResp, err := c.oc.GetComponentWithResponse(ctx, orgName, scopedComp)
+	componentQ := gen.ComponentQueryParam(scopedComp)
+	listResp, err := c.oc.ListReleaseBindingsWithResponse(ctx, orgName, &gen.ListReleaseBindingsParams{
+		Component: &componentQ,
+	})
 	if err != nil {
-		return fmt.Errorf("failed to get component for env-var update: %w", err)
+		return fmt.Errorf("failed to list release bindings for env-var update: %w", err)
 	}
-	if getResp.StatusCode() == http.StatusNotFound {
+	if listResp.StatusCode() != http.StatusOK || listResp.JSON200 == nil {
+		return handleErrorResponse(listResp.StatusCode(), ErrorResponses{
+			JSON401: listResp.JSON401,
+			JSON403: listResp.JSON403,
+			JSON500: listResp.JSON500,
+		})
+	}
+
+	rbs := listResp.JSON200.Items
+	if len(rbs) == 0 {
+		// First build hasn't produced a ReleaseBinding yet — nothing to
+		// patch. The caller retries once the deploy chain catches up.
 		return nil
 	}
-	if getResp.StatusCode() != http.StatusOK || getResp.JSON200 == nil {
-		return handleErrorResponse(getResp.StatusCode(), ErrorResponses{
-			JSON401: getResp.JSON401,
-			JSON403: getResp.JSON403,
-			JSON404: getResp.JSON404,
-			JSON500: getResp.JSON500,
-		})
-	}
 
-	body := *getResp.JSON200
-	if body.Spec == nil {
-		body.Spec = &gen.ComponentSpec{}
-	}
-	if body.Spec.Workflow == nil {
-		// No workflow on this Component — env vars can't take effect.
-		// Don't synthesize one here; the dispatch path is the only place
-		// that knows the builder kind/name. Surface a soft error so the
-		// caller can warn.
-		return fmt.Errorf("component %s/%s has no workflow; env vars cannot be applied", projectName, componentName)
-	}
-	var params map[string]interface{}
-	if body.Spec.Workflow.Parameters != nil {
-		params = cloneParameterMap(*body.Spec.Workflow.Parameters)
-	} else {
-		params = map[string]interface{}{}
-	}
-	if list := workflowEnvVarsToList(envVars); list != nil {
-		params["environmentVariables"] = list
-	} else {
-		delete(params, "environmentVariables")
-	}
-	body.Spec.Workflow.Parameters = &params
+	envList := workflowEnvVarRefsToGen(envVars)
+	for _, rb := range rbs {
+		if rb.Spec == nil {
+			rb.Spec = &gen.ReleaseBindingSpec{}
+		}
+		if rb.Spec.WorkloadOverrides == nil {
+			rb.Spec.WorkloadOverrides = &gen.WorkloadOverrides{}
+		}
+		if rb.Spec.WorkloadOverrides.Container == nil {
+			rb.Spec.WorkloadOverrides.Container = &gen.ContainerOverride{}
+		}
+		rb.Spec.WorkloadOverrides.Container.Env = envList
 
-	updateResp, err := c.oc.UpdateComponentWithResponse(ctx, orgName, scopedComp, gen.UpdateComponentJSONRequestBody(body))
-	if err != nil {
-		return fmt.Errorf("failed to update component env vars: %w", err)
-	}
-	if updateResp.StatusCode() != http.StatusOK && updateResp.StatusCode() != http.StatusCreated {
-		return handleErrorResponse(updateResp.StatusCode(), ErrorResponses{
-			JSON400: updateResp.JSON400,
-			JSON401: updateResp.JSON401,
-			JSON403: updateResp.JSON403,
-			JSON404: updateResp.JSON404,
-			JSON500: updateResp.JSON500,
-		})
+		updResp, uerr := c.oc.UpdateReleaseBindingWithResponse(ctx, orgName, gen.ReleaseBindingNameParam(rb.Metadata.Name), gen.UpdateReleaseBindingJSONRequestBody(rb))
+		if uerr != nil {
+			return fmt.Errorf("failed to update release binding %s: %w", rb.Metadata.Name, uerr)
+		}
+		if updResp.StatusCode() != http.StatusOK && updResp.StatusCode() != http.StatusCreated {
+			return handleErrorResponse(updResp.StatusCode(), ErrorResponses{
+				JSON400: updResp.JSON400,
+				JSON401: updResp.JSON401,
+				JSON403: updResp.JSON403,
+				JSON404: updResp.JSON404,
+				JSON500: updResp.JSON500,
+			})
+		}
 	}
 	return nil
 }
@@ -517,43 +518,40 @@ func workflowParametersToMap(p *models.ComponentWorkflowParameters) map[string]i
 			out["docker"] = docker
 		}
 	}
-	if envVars := workflowEnvVarsToList(p.EnvironmentVariables); envVars != nil {
-		out["environmentVariables"] = envVars
-	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
 }
 
-// workflowEnvVarsToList shapes the typed env-var slice into the
-// `[]map[string]interface{}` form OC's dockerfile-builder
-// `environmentVariables` parameter expects. The build workflow's
-// `generate-workload-cr` step splices this into the generated Workload's
-// `spec.container.env`, so the auto-deployed pod picks the values up.
-// Returns nil when there's nothing to inject so the JSON body stays
-// `[]`-clean (the workflow's schema default).
-func workflowEnvVarsToList(envVars []models.WorkflowEnvVarRef) []map[string]interface{} {
-	if len(envVars) == 0 {
-		return nil
-	}
-	out := make([]map[string]interface{}, 0, len(envVars))
+// workflowEnvVarRefsToGen converts the BFF-internal env-var model into
+// the gen.EnvVar slice that goes onto a ReleaseBinding's
+// `spec.workloadOverrides.container.env`. An empty `envVars` returns a
+// pointer to an empty slice so the server-side patch clears the field
+// rather than leaving stale values in place.
+func workflowEnvVarRefsToGen(envVars []models.WorkflowEnvVarRef) *[]gen.EnvVar {
+	out := make([]gen.EnvVar, 0, len(envVars))
 	for _, ev := range envVars {
-		entry := map[string]interface{}{"key": ev.Key}
-		switch {
-		case ev.ValueFrom != nil && ev.ValueFrom.SecretKeyRef != nil:
-			entry["valueFrom"] = map[string]interface{}{
-				"secretKeyRef": map[string]interface{}{
-					"name": ev.ValueFrom.SecretKeyRef.Name,
-					"key":  ev.ValueFrom.SecretKeyRef.Key,
+		entry := gen.EnvVar{Key: ev.Key}
+		if ev.ValueFrom != nil && ev.ValueFrom.SecretKeyRef != nil {
+			name := ev.ValueFrom.SecretKeyRef.Name
+			key := ev.ValueFrom.SecretKeyRef.Key
+			entry.ValueFrom = &gen.EnvVarValueFrom{
+				SecretKeyRef: &struct {
+					Key  *string `json:"key,omitempty"`
+					Name *string `json:"name,omitempty"`
+				}{
+					Key:  &key,
+					Name: &name,
 				},
 			}
-		default:
-			entry["value"] = ev.Value
+		} else {
+			v := ev.Value
+			entry.Value = &v
 		}
 		out = append(out, entry)
 	}
-	return out
+	return &out
 }
 
 // -- Deployments (read-only) -------------------------------------------------
@@ -584,12 +582,12 @@ func (c *componentClient) ListDeployments(ctx context.Context, orgName, projectN
 
 // -- WorkflowRuns (builds + coding-agent) ------------------------------------
 
-func (c *componentClient) TriggerBuild(ctx context.Context, orgName, projectName, componentName string) (*models.WorkflowRun, error) {
-	return c.triggerBuildInner(ctx, orgName, projectName, componentName, "")
+func (c *componentClient) TriggerBuild(ctx context.Context, orgName, projectName, componentName, runName string) (*models.WorkflowRun, error) {
+	return c.triggerBuildInner(ctx, orgName, projectName, componentName, "", runName)
 }
 
-func (c *componentClient) TriggerBuildAtCommit(ctx context.Context, orgName, projectName, componentName, commitSHA string) (*models.WorkflowRun, error) {
-	return c.triggerBuildInner(ctx, orgName, projectName, componentName, commitSHA)
+func (c *componentClient) TriggerBuildAtCommit(ctx context.Context, orgName, projectName, componentName, commitSHA, runName string) (*models.WorkflowRun, error) {
+	return c.triggerBuildInner(ctx, orgName, projectName, componentName, commitSHA, runName)
 }
 
 // triggerBuildInner fetches the Component to grab its declared Workflow
@@ -597,7 +595,13 @@ func (c *componentClient) TriggerBuildAtCommit(ctx context.Context, orgName, pro
 // non-empty it's stamped onto `parameters.repository.revision.commit` so the
 // build pod clones the exact merge SHA — webhook-driven builds set this
 // from `pull_request.closed`'s merge_commit_sha.
-func (c *componentClient) triggerBuildInner(ctx context.Context, orgName, projectName, componentName, commitSHA string) (*models.WorkflowRun, error) {
+//
+// When runName is empty the BFF gets a fresh NewBuildRunName-shaped name —
+// retained for tests / call sites that don't need to pre-stage anything.
+// Production callers (dispatch path, console "Build" button) pass runName
+// because they staged the per-WorkflowRun build Secret with that name
+// upfront.
+func (c *componentClient) triggerBuildInner(ctx context.Context, orgName, projectName, componentName, commitSHA, runName string) (*models.WorkflowRun, error) {
 	scopedComp := ScopedComponentName(projectName, componentName)
 
 	compResp, err := c.oc.GetComponentWithResponse(ctx, orgName, scopedComp)
@@ -618,7 +622,9 @@ func (c *componentClient) triggerBuildInner(ctx context.Context, orgName, projec
 		return nil, fmt.Errorf("trigger build: component %s/%s has no workflow configured", projectName, componentName)
 	}
 
-	runName := fmt.Sprintf("%s-%d", scopedComp, time.Now().UnixMilli())
+	if runName == "" {
+		runName = NewBuildRunName(projectName, componentName)
+	}
 	labels := map[string]string{
 		string(LabelKeyComponent): scopedComp,
 		string(LabelKeyProject):   projectName,
@@ -661,8 +667,30 @@ func buildWorkflowFromComponent(comp *gen.Component, commitSHA string) gen.Workf
 	if commitSHA != "" {
 		injectCommitSHA(params, commitSHA)
 	}
+	// Force-blank repository.secretRef. App Factory delivers the per-build
+	// credential by pre-staging a K8s Secret named
+	// `<workflowRunName>-git-secret` in workflows-<orgID> (see
+	// docs/design/build-credential-injection.md); the upstream
+	// dockerfile-builder workflow's externalRefs lookup is skipped when
+	// secretRef is empty (openchoreo internal/controller/workflowrun/
+	// externalref.go:41-44) and its git-secret ExternalSecret resource is
+	// gated on `secretRef != ""`. Legacy Components may still have a
+	// non-empty secretRef stored from the SecretReference-era flow — wipe
+	// it at trigger time so the workflow never tries to resolve it.
+	blankRepoSecretRef(params)
 	out.Parameters = &params
 	return out
+}
+
+// blankRepoSecretRef sets params["repository"]["secretRef"] = "", creating
+// the nested map if needed. No-op for components that never had a
+// repository block.
+func blankRepoSecretRef(params map[string]interface{}) {
+	repo, ok := params["repository"].(map[string]interface{})
+	if !ok {
+		return
+	}
+	repo["secretRef"] = ""
 }
 
 // injectCommitSHA stamps params["repository"]["revision"]["commit"] = sha,

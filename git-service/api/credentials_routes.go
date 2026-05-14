@@ -285,11 +285,13 @@ func registerCredentialsInternalRoutes(mux *http.ServeMux, svc *services.Credent
 		writeJSON(w, http.StatusOK, map[string]any{"repositories": repos})
 	})
 
-	// POST /internal/credentials/orgs/{ocOrgId}/mint-build — Phase 2 PR C.
-	// Validates (ocOrgId, repoSlug) ownership, mints a fresh GitHub token
-	// via the resolver, writes it to OpenBao at secret/asdlc/{ocOrgId}/git/{repoSlug},
-	// returns {secretRefName, expiresAt}. The BFF never sees the token.
-	internal.HandleFunc("POST /internal/credentials/orgs/{ocOrgId}/mint-build", func(w http.ResponseWriter, r *http.Request) {
+	// POST /internal/credentials/orgs/{ocOrgId}/stage-build-secret —
+	// pre-stages a per-WorkflowRun K8s Secret named
+	// <workflowRunName>-git-secret in workflows-<ocOrgId> with the org's
+	// GitHub credential as kubernetes.io/basic-auth. The BFF calls this
+	// immediately before POSTing the WorkflowRun. The token never crosses
+	// the boundary. See docs/design/build-credential-injection.md.
+	internal.HandleFunc("POST /internal/credentials/orgs/{ocOrgId}/stage-build-secret", func(w http.ResponseWriter, r *http.Request) {
 		if buildSvc == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "build-credentials service unavailable")
 			return
@@ -300,7 +302,8 @@ func registerCredentialsInternalRoutes(mux *http.ServeMux, svc *services.Credent
 			return
 		}
 		var body struct {
-			RepoSlug string `json:"repoSlug"`
+			RepoSlug        string `json:"repoSlug"`
+			WorkflowRunName string `json:"workflowRunName"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeJSONError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -310,12 +313,16 @@ func registerCredentialsInternalRoutes(mux *http.ServeMux, svc *services.Credent
 			writeJSONError(w, http.StatusBadRequest, "repoSlug is required")
 			return
 		}
-		mint, err := buildSvc.MintBuildToken(r.Context(), ocOrgID, body.RepoSlug)
-		if err != nil {
-			writeMintError(w, err)
+		if body.WorkflowRunName == "" {
+			writeJSONError(w, http.StatusBadRequest, "workflowRunName is required")
 			return
 		}
-		writeJSON(w, http.StatusOK, mint)
+		res, err := buildSvc.StageBuildSecret(r.Context(), ocOrgID, body.RepoSlug, body.WorkflowRunName)
+		if err != nil {
+			writeStageError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, res)
 	})
 
 	// POST /internal/credentials/app/resolve-user-installations — the only
@@ -377,17 +384,15 @@ func registerCredentialsInternalRoutes(mux *http.ServeMux, svc *services.Credent
 
 }
 
-// writeMintError maps build_credentials_service errors to the §5.2 status
-// codes. ErrRepoNotInOrg → 404 (server-side ownership fence). ErrOrgDisconnected
-// → 409. ErrOpenBaoUnavailable → 503. Everything else is 500.
-func writeMintError(w http.ResponseWriter, err error) {
+// writeStageError maps build_credentials_service errors to status codes.
+// ErrRepoNotInOrg → 404 (server-side ownership fence). ErrOrgDisconnected
+// → 409. Everything else is 500.
+func writeStageError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, services.ErrRepoNotInOrg):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error(), "code": "repo_not_in_org"})
 	case errors.Is(err, services.ErrOrgDisconnected):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error(), "code": "org_disconnected"})
-	case errors.Is(err, services.ErrOpenBaoUnavailable):
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error(), "code": "openbao_unavailable"})
 	default:
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	}

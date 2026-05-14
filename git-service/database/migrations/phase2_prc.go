@@ -49,10 +49,11 @@ func RunPhase2PRC(ctx context.Context, db *gorm.DB) error {
 		     )
 		   )
 		   WHERE repo_slug IS NULL OR repo_slug = ''`,
-		// Backfill oc_secret_ref_name: 'git-' + org_id + '-' + repo_slug.
-		// Only populated for rows shorter than the K8s DNS-label limit; long
-		// rows get NULL and the application's models.SecretRefNameFor adds the
-		// hash-trim suffix lazily at next dispatch.
+		// Legacy backfill of oc_secret_ref_name. The column is no longer
+		// read by the application (build credentials are now pre-staged as
+		// per-WorkflowRun K8s Secrets; see
+		// docs/design/build-credential-injection.md), but kept populated
+		// on legacy rows so older snapshots remain debuggable.
 		`UPDATE git_repositories
 		   SET oc_secret_ref_name = 'git-' || org_id || '-' || repo_slug
 		   WHERE (oc_secret_ref_name IS NULL OR oc_secret_ref_name = '')

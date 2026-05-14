@@ -89,21 +89,21 @@ func (s *repoService) CreateRepo(ctx context.Context, orgID, projectID, projectN
 
 	clonePath := filepath.Join(s.repoBasePath, orgID, projectID)
 
-	// Compute the SecretReference slug from the GitHub clone URL and the
-	// deterministic CR name. Both are stored once at INSERT and never edited.
-	// Used by MintBuildToken to validate (ocOrgId, repoSlug) ownership and by
-	// the BFF's OC SecretReference creation.
+	// Compute the per-repo slug from the GitHub clone URL — used by
+	// StageBuildSecret to validate (ocOrgId, repoSlug) ownership. The
+	// build credential itself is now pre-staged per WorkflowRun directly
+	// as a K8s Secret in workflows-<ocOrgID> (see
+	// docs/design/build-credential-injection.md), so no SecretReference
+	// name is computed here; OcSecretRefName is left nil on new rows.
 	repoSlug := models.SlugForURL(cloneURL)
-	secretRefName := models.SecretRefNameFor(orgID, repoSlug)
 
 	gitRepo := &models.GitRepository{
-		OrgID:           orgID,
-		ProjectID:       projectID,
-		RepoURL:         cloneURL,
-		ClonePath:       clonePath,
-		Status:          "cloning",
-		RepoSlug:        repoSlug,
-		OcSecretRefName: &secretRefName,
+		OrgID:     orgID,
+		ProjectID: projectID,
+		RepoURL:   cloneURL,
+		ClonePath: clonePath,
+		Status:    "cloning",
+		RepoSlug:  repoSlug,
 	}
 
 	if err := s.repo.Create(ctx, gitRepo); err != nil {
