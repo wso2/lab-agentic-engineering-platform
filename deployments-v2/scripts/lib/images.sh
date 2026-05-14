@@ -5,10 +5,12 @@
 set -u
 
 content_hash() {
-  local src_dir=$1
-  ( cd "$src_dir" && { git ls-files; git ls-files -mo --exclude-standard; } \
-    | sort -u | xargs sha256sum 2>/dev/null \
-    | sha256sum | cut -c1-12 )
+  # Hash one or more dirs together. Tracked + uncommitted files contribute.
+  local d
+  ( for d in "$@"; do
+      ( cd "$d" && { git ls-files; git ls-files -mo --exclude-standard; } \
+        | sort -u | xargs sha256sum 2>/dev/null )
+    done | sort -u | sha256sum | cut -c1-12 )
 }
 
 build_image() {

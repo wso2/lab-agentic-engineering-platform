@@ -689,7 +689,10 @@ export default function ProjectArchitecturePage() {
       }
       setViewingHistorical(false);
     } else {
-      const result = await api.getDesignAtVersion(routeOrgId, projectId, version);
+      // Find the tag for the requested version (design tags are v<N>-<M>).
+      const tag = versions.find((v) => v.version === version)?.tagName;
+      if (!tag) return;
+      const result = await api.getDesignAtVersion(routeOrgId, projectId, tag);
       if (result) {
         setDesign(result);
         setCurrentVersion(version);

@@ -5,5 +5,10 @@ endpoints:
   - name: http
     type: HTTP
     port: 3300
+    # `internal` makes git-service reachable cluster-wide from any namespace,
+    # but only by pods carrying the `openchoreo.dev/system-component` label.
+    # The coding-agent runner pod (in workflows-<ns>) is labeled accordingly
+    # in the app-factory-coding-agent ClusterWorkflow's pod template, so OC's
+    # auto-generated NetworkPolicy admits it without a side-channel manifest.
     visibility:
-      - project
+      - internal

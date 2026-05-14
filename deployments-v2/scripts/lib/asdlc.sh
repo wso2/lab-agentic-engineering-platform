@@ -12,12 +12,16 @@ seed_openbao() {
   spinner "Waiting for OpenBao to be ready" "1 min" -- \
     kubectl wait --for=condition=Ready pod -n openbao -l app.kubernetes.io/name=openbao --timeout=180s || true
 
-  log_info "seeding 4 secrets via bao kv put"
+  log_info "seeding app secrets via bao kv put"
 
+  # OpenBao runs in dev mode (in-memory) so the seed is idempotent and
+  # re-runs every setup. The platform binary is org-agnostic — there is
+  # no platform-wide GitHub PAT here. The admin user's PAT (if set) is
+  # written via seed-admin-github.sh after BFF + git-service are up,
+  # routed through the same Connect endpoint the console UI uses.
   kubectl exec -n openbao openbao-0 -- sh -c "
-    bao kv put secret/apps/anthropic            key='${ANTHROPIC_API_KEY}' >/dev/null
-    bao kv put secret/apps/github-platform-pat  value='${GITHUB_PLATFORM_PAT}' >/dev/null
-    bao kv put secret/apps/github-webhook       delivery_url='${GITHUB_WEBHOOK_DELIVERY_URL}' secret='${GITHUB_WEBHOOK_SECRET}' >/dev/null
+    bao kv put secret/apps/anthropic      key='${ANTHROPIC_API_KEY}' >/dev/null
+    bao kv put secret/apps/github-webhook delivery_url='${GITHUB_WEBHOOK_DELIVERY_URL}' secret='${GITHUB_WEBHOOK_SECRET}' >/dev/null
   " || log_warn "bao kv put for text secrets failed — OpenBao may already be seeded"
 
   local PEM_B64
@@ -46,6 +50,24 @@ apply_postgres() {
   log_ok "postgres applied"
 }
 
+# Apply the ClusterRole + ClusterRoleBinding that lets git-service SSA
+# build-credential Secrets straight into workflows-<orgID> namespaces.
+# See deployments-v2/manifests/git-service-wp-rbac.yaml for the design
+# rationale (post-2f26614 redesign,
+# docs/design/cross-component-wiring-gaps.md follow-up).
+apply_git_service_wp_rbac() {
+  local manifest="$ROOT_DIR/deployments-v2/manifests/git-service-wp-rbac.yaml"
+  if [ ! -f "$manifest" ]; then
+    die "missing git-service WP RBAC manifest: $manifest"
+  fi
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    log_skip "[dry-run] would apply git-service WP RBAC from $manifest"
+    return
+  fi
+  kubectl apply -f "$manifest"
+  log_ok "git-service WP RBAC applied"
+}
+
 bootstrap_workloads() {
   if [ "${DRY_RUN:-0}" = 1 ]; then
     log_skip "[dry-run] would build + render + apply 5 workloads"
@@ -53,22 +75,27 @@ bootstrap_workloads() {
   fi
 
   # Ensure env vars used in env-overlay templates are exported for envsubst.
-  export GITHUB_REPO_OWNER="${GITHUB_REPO_OWNER:-}"
-  export GITHUB_PLATFORM_PAT="${GITHUB_PLATFORM_PAT:-}"
+  # The platform binary is org-agnostic — no platform-wide GitHub PAT or
+  # repo owner is exported here. The admin org's GitHub credential (if
+  # any) is seeded by seed-admin-github.sh after BFF + git-service are up.
   export GITHUB_WEBHOOK_DELIVERY_URL="${GITHUB_WEBHOOK_DELIVERY_URL:-}"
   export GITHUB_WEBHOOK_SECRET="${GITHUB_WEBHOOK_SECRET:-}"
   export PUBLIC_THUNDER_URL="${PUBLIC_THUNDER_URL:-}"
   export PUBLIC_CONSOLE_URL="${PUBLIC_CONSOLE_URL:-}"
 
-  log_info "bootstrapping 5 workloads (build + import + apply)"
   source "$ROOT_DIR/deployments-v2/scripts/components.sh"
   source "$ROOT_DIR/deployments-v2/scripts/lib/images.sh"
   source "$ROOT_DIR/deployments-v2/scripts/lib/workload.sh"
 
+  log_info "bootstrapping ${#COMPONENTS[@]} workloads (build + import + apply)"
+
   for row in "${COMPONENTS[@]}"; do
-    IFS='|' read -r name src dockerfile context <<<"$row"
+    IFS='|' read -r name src dockerfile context hash_paths <<<"$row"
+    [ -z "$hash_paths" ] && hash_paths="$src"
     local hash image
-    hash=$(content_hash "$ROOT_DIR/$src")
+    local hash_dirs=() p
+    for p in $hash_paths; do hash_dirs+=("$ROOT_DIR/$p"); done
+    hash=$(content_hash "${hash_dirs[@]}")
     image="asdlc.local/${name}:${hash}"
     log_step "$name"
     build_image "$name" "$ROOT_DIR/$src" "$dockerfile" "$context" "$image"
@@ -77,6 +104,60 @@ bootstrap_workloads() {
   done
 
   log_ok "workloads bootstrapped"
+
+  if [ "${#RUNNER_IMAGES[@]}" -gt 0 ]; then
+    log_info "bootstrapping ${#RUNNER_IMAGES[@]} runner image(s) (build + import)"
+    for row in "${RUNNER_IMAGES[@]}"; do
+      IFS='|' read -r name src dockerfile context <<<"$row"
+      local image
+      image="asdlc.local/${name}:local"
+      log_step "$name (runner image)"
+      build_image "$name" "$ROOT_DIR/$src" "$dockerfile" "$context" "$image"
+      import_image "$image"
+    done
+    log_ok "runner images imported"
+  fi
+}
+
+# migrate_components_autodeploy patches every existing OC Component to
+# `spec.autoDeploy: true`. New components dispatched after this commit
+# get autoDeploy=true at creation time (dispatch_service.go), but any
+# component that pre-dates the switch was created with autoDeploy=false
+# and would otherwise sit forever waiting for the legacy
+# DeployFromBuild call that no longer exists. The patch is a merge
+# patch, so re-applying is a no-op once spec.autoDeploy is already true.
+# Skipped on dry-run.
+migrate_components_autodeploy() {
+  if [ "${DRY_RUN:-0}" = 1 ]; then
+    log_skip "[dry-run] would patch every existing Component to spec.autoDeploy=true"
+    return
+  fi
+
+  local ns name auto count=0 patched=0
+  # One JSON-Lines row per Component, "<namespace>:<name>:<autoDeploy>".
+  # Using newline-terminated rows + IFS=: avoids zsh/bash word-splitting
+  # surprises with a trailing-space-delimited namespace list.
+  while IFS=: read -r ns name auto; do
+    [ -z "$name" ] && continue
+    count=$((count + 1))
+    if [ "$auto" = "true" ]; then
+      continue
+    fi
+    if kubectl patch components.openchoreo.dev "$name" -n "$ns" --type merge \
+        -p '{"spec":{"autoDeploy":true}}' >/dev/null 2>&1; then
+      patched=$((patched + 1))
+      log_info "patched $ns/$name autoDeploy=true"
+    else
+      log_warn "failed to patch $ns/$name; will retry on next setup"
+    fi
+  done < <(kubectl get components.openchoreo.dev -A \
+    -o jsonpath='{range .items[*]}{.metadata.namespace}{":"}{.metadata.name}{":"}{.spec.autoDeploy}{"\n"}{end}' \
+    2>/dev/null || true)
+  if [ "$count" -eq 0 ]; then
+    log_info "no existing Components found — skipping autoDeploy migration"
+    return
+  fi
+  log_ok "autoDeploy migration: $patched of $count Component(s) updated"
 }
 
 # discover_console_origin polls for the console HTTPRoute hostname (OpenChoreo
@@ -213,8 +294,9 @@ register_streaming_timeouts() {
     return
   fi
 
-  # Clean up any stale copy from the default namespace (can't target
-  # cross-namespace HTTPRoute).
+  # Clean up any stale copy from the workload-source namespace (can't
+  # target cross-namespace HTTPRoute).
+  kubectl delete trafficpolicy app-factory-console-streaming -n "${WORKLOAD_NAMESPACE:-wso2cloud}" --ignore-not-found 2>/dev/null || true
   kubectl delete trafficpolicy app-factory-console-streaming -n default --ignore-not-found 2>/dev/null || true
 
   log_info "Applying SSE streaming timeout TrafficPolicy in $dp_ns"
@@ -264,11 +346,15 @@ register_service_oauth_clients() {
   # Service-to-service client config (client_credentials grant).
   local oauth_config='{"redirect_uris":null,"grant_types":["client_credentials"],"response_types":[],"token_endpoint_auth_method":"client_secret_post","pkce_required":false,"public_client":false,"token":{"access_token":{"validity_period":3600},"id_token":{"validity_period":3600}},"user_info":{"response_type":"JSON"}}'
 
+  # TODO: imperative Thunder OAuth client registration is acceptable
+  # only on local-app-factory. On dev/stage/prod the equivalent must
+  # be declared in the Thunder HelmRelease values block. See
+  # docs/design/default-org-seed-removal.md §3.5.
   local registered=0 skipped=0
   for pair in \
     "asdlc-bff-to-agents-service:asdlc-bff-to-agents-service-secret" \
     "asdlc-bff-to-git-service:asdlc-bff-to-git-service-secret" \
-    "asdlc-bff-to-remote-worker:asdlc-bff-to-remote-worker-secret"; do
+    "local-dev-seeder:local-dev-seeder-secret"; do
     local client_id="${pair%%:*}" client_secret="${pair##*:}"
 
     local exists

@@ -76,7 +76,6 @@ log_step "deleting OpenBao seeds"
 if kubectl get pod openbao-0 -n openbao >/dev/null 2>&1; then
   kubectl exec -n openbao openbao-0 -- sh -c "
     bao kv metadata delete secret/apps/anthropic 2>/dev/null || true
-    bao kv metadata delete secret/apps/github-platform-pat 2>/dev/null || true
     bao kv metadata delete secret/apps/github-webhook 2>/dev/null || true
     bao kv metadata delete secret/apps/bff-task-signing-key 2>/dev/null || true
   " 2>/dev/null || log_warn "OpenBao seed deletion failed (cluster may be up but OpenBao not ready)"

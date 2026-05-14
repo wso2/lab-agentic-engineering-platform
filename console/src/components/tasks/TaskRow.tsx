@@ -1,8 +1,9 @@
-import { useRef, useState } from 'react';
-import { alpha, Box, IconButton, Tooltip, Typography } from '@wso2/oxygen-ui';
+import { useState } from 'react';
+import { alpha, Box, Collapse, IconButton, Tooltip, Typography } from '@wso2/oxygen-ui';
 import { ChevronDown, ChevronRight, Github, OctagonAlert } from '@wso2/oxygen-ui-icons-react';
-import { TaskDetailPopup } from './TaskDetailPopup';
+import { TaskDetailPanel } from './TaskDetailPanel';
 import { LabelList } from './LabelList';
+import { TaskStatusInline } from './TaskStatusInline';
 import type { Task } from '../../services/api';
 import type { SectionConfig } from './types';
 
@@ -23,8 +24,7 @@ const CARD_ANIMATION = {
 } as const;
 
 export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps) {
-  const rowRef = useRef<HTMLDivElement>(null);
-  const [popupOpen, setPopupOpen] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const lifecycle = task.lifecycleStatus ?? 'gh_issue_created';
   const isWaiting = lifecycle === 'gh_issue_waiting';
@@ -83,10 +83,31 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
   }
 
   return (
-    <>
+    <Box
+      sx={{
+        borderRadius: 1.25,
+        border: '1px solid',
+        borderColor: isFailed
+          ? 'error.main'
+          : expanded ? 'primary.main' : 'divider',
+        ...(isFailed && { borderLeft: '3px solid', borderLeftColor: 'error.main' }),
+        ...(!isFailed && section.borderColor && { borderLeft: '3px solid', borderLeftColor: section.borderColor }),
+        ...(!isFailed && section.isPrimary && { borderLeft: '3px solid', borderLeftColor: 'primary.main' }),
+        bgcolor: isFailed ? (t) => alpha(t.palette.error.main, 0.04) : 'background.paper',
+        overflow: 'hidden',
+        transition: 'border-color 0.15s, background-color 0.15s, box-shadow 0.15s',
+        boxShadow: expanded ? (t) => `0 1px 3px ${alpha(t.palette.text.primary, 0.06)}` : 'none',
+        '&:hover': {
+          borderColor: isFailed
+            ? 'error.dark'
+            : expanded ? 'primary.main' : (t) => alpha(t.palette.text.primary, 0.13),
+        },
+        ...CARD_ANIMATION,
+        animationDelay,
+      }}
+    >
       <Box
-        ref={rowRef}
-        onClick={() => setPopupOpen(p => !p)}
+        onClick={() => setExpanded(p => !p)}
         sx={{
           display: 'flex',
           alignItems: 'center',
@@ -94,26 +115,12 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
           px: 2,
           py: 1.5,
           cursor: 'pointer',
-          borderRadius: 1.25,
-          border: '1px solid',
-          borderColor: isFailed
-            ? 'error.main'
-            : popupOpen ? 'primary.main' : 'divider',
-          ...(isFailed && { borderLeft: '3px solid', borderLeftColor: 'error.main' }),
-          ...(!isFailed && section.borderColor && { borderLeft: '3px solid', borderLeftColor: section.borderColor }),
-          ...(!isFailed && section.isPrimary && { borderLeft: '3px solid', borderLeftColor: 'primary.main' }),
-          bgcolor: isFailed ? (t) => alpha(t.palette.error.main, 0.04) : 'background.paper',
-          transition: 'border-color 0.15s, background-color 0.15s',
+          transition: 'background-color 0.15s',
           '&:hover': {
-            borderColor: isFailed
-              ? 'error.dark'
-              : popupOpen ? 'primary.main' : (t) => alpha(t.palette.text.primary, 0.13),
             bgcolor: isFailed
               ? (t) => alpha(t.palette.error.main, 0.07)
-              : (t) => alpha(t.palette.text.primary, 0.01),
+              : (t) => alpha(t.palette.text.primary, 0.02),
           },
-          ...CARD_ANIMATION,
-          animationDelay,
         }}
       >
         {/* Status dot */}
@@ -142,20 +149,60 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
           )}
         </Box>
 
-        {/* Title */}
-        <Typography
-          variant="body2"
-          sx={{
-            fontWeight: 450,
-            flex: 1,
-            color: isFailed ? 'error.main' : 'text.primary',
-            overflow: 'hidden',
-            textOverflow: 'ellipsis',
-            whiteSpace: 'nowrap',
-          }}
-        >
-          {task.title}
-        </Typography>
+        {/* Title (+ F4 "Waiting on" subline for pending_deps tasks, +
+            F3c diagnostic for verification_failed tasks) */}
+        <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column' }}>
+          <Typography
+            variant="body2"
+            sx={{
+              fontWeight: 450,
+              color: isFailed ? 'error.main' : 'text.primary',
+              overflow: 'hidden',
+              textOverflow: 'ellipsis',
+              whiteSpace: 'nowrap',
+              minWidth: 0,
+            }}
+          >
+            {task.title}
+          </Typography>
+          {task.status === 'pending_deps' && task.dependsOnComponents && task.dependsOnComponents.length > 0 && (
+            <Typography
+              variant="caption"
+              sx={{
+                color: 'warning.main',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+              }}
+            >
+              Waiting for: {task.dependsOnComponents.join(', ')}
+            </Typography>
+          )}
+          {task.status === 'verification_failed' && task.errorMessage && (
+            <Typography
+              variant="caption"
+              sx={{
+                color: 'error.main',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                fontStyle: 'italic',
+              }}
+            >
+              Verification failed — {task.errorMessage}
+            </Typography>
+          )}
+        </Box>
+
+        {/* Inline execution status + Live progress button — only shows
+            once the task has been dispatched. */}
+        <TaskStatusInline
+          status={task.status}
+          dispatchedAt={task.dispatchedAt}
+          componentTaskId={task.componentTaskId}
+          orgId={orgId}
+          projectId={projectId}
+        />
 
         {/* Labels */}
         {task.labels && task.labels.length > 0 && (
@@ -188,20 +235,19 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
         ) : null}
 
         {/* Expand indicator */}
-        <Box sx={{ flexShrink: 0, color: 'text.disabled' }}>
-          {popupOpen ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+        <Box sx={{ flexShrink: 0, color: 'text.disabled', display: 'flex' }}>
+          {expanded ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
         </Box>
       </Box>
 
-      <TaskDetailPopup
-        open={popupOpen}
-        anchorEl={rowRef.current}
-        task={task}
-        isInTodo={section.key === 'todo'}
-        orgId={orgId}
-        projectId={projectId}
-        onClose={() => setPopupOpen(false)}
-      />
-    </>
+      <Collapse in={expanded} timeout={220} unmountOnExit>
+        <TaskDetailPanel
+          task={task}
+          orgId={orgId}
+          projectId={projectId}
+          onClose={() => setExpanded(false)}
+        />
+      </Collapse>
+    </Box>
   );
 }

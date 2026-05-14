@@ -1,8 +1,6 @@
 package models
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"regexp"
 	"strings"
 	"time"
@@ -55,21 +53,37 @@ func SlugForURL(repoURL string) string {
 	return strings.ToLower(strings.ReplaceAll(m[1], "/", "-"))
 }
 
-// SecretRefNameFor returns the deterministic OC SecretReference CR name for
-// a repo identified by (ocOrgID, repoSlug). The name is bounded by the K8s
-// DNS-label limit (63 chars); over-long names are trimmed with a SHA-256
-// suffix to preserve uniqueness. Mirrors phase2.md §9.1.
-func SecretRefNameFor(ocOrgID, repoSlug string) string {
-	name := "git-" + ocOrgID + "-" + repoSlug
-	if len(name) <= 63 {
-		return name
+// OwnerRepoFromURL extracts (owner, repo) from a GitHub HTTPS URL, preserving
+// the original case (unlike SlugForURL which lowercases). Returns empty
+// strings if the URL doesn't match the GitHub HTTPS pattern. Used by the
+// artifact-store v2 save flow to address the repo over the GitHub REST API.
+func OwnerRepoFromURL(repoURL string) (owner, repo string) {
+	m := repoURLPattern.FindStringSubmatch(repoURL)
+	if len(m) < 2 {
+		return "", ""
 	}
-	// Truncate and append a short hash to keep uniqueness across long slugs.
-	sum := sha256.Sum256([]byte(name))
-	hashSuffix := hex.EncodeToString(sum[:])[:8]
-	const reserved = 9 // "-" + 8-char hex
-	if len(name) > 63-reserved {
-		name = name[:63-reserved]
+	parts := strings.SplitN(m[1], "/", 2)
+	if len(parts) != 2 {
+		return "", ""
 	}
-	return name + "-" + hashSuffix
+	return parts[0], parts[1]
+}
+
+// SecretRefNameFor returns the deterministic K8s Secret name for the per-org
+// build credential. As of the post-2f26614 redesign the secret is per-org
+// (not per-repo) because the underlying GitHub credential is per-installation
+// (App mode) or per-PAT — one token grants access to every repo the
+// install/PAT can see, so a per-repo fan-out would be N copies of the same
+// value. The second `repoSlug` parameter is retained for call-site
+// compatibility and intentionally unused.
+//
+// The returned name is also what git-service writes into the workflow-plane
+// namespace via BuildCredentialsService.applyBuildSecret; the build's
+// checkout step mounts it as a regular volume.secret.secretName.
+//
+// Delegates to BuildSecretName which is the single source of truth. The
+// older comment about a SHA-256 truncation suffix no longer applies — the
+// name shape is `git-<ocOrgID>` and ocOrgIDs are short slugs by contract.
+func SecretRefNameFor(ocOrgID, _ string) string {
+	return BuildSecretName(ocOrgID)
 }

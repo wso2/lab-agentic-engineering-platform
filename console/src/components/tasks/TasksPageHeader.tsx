@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { Link as RouterLink, useParams } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -10,9 +11,11 @@ import {
   Menu,
   MenuItem,
   Stack,
+  Tooltip,
   Typography,
 } from '@wso2/oxygen-ui';
-import { ChevronDown, Cloud, ExternalLink, Github, Laptop, Play, Sparkles } from '@wso2/oxygen-ui-icons-react';
+import { AlertCircle, ChevronDown, Cloud, ExternalLink, Github, Laptop, Play, Sparkles } from '@wso2/oxygen-ui-icons-react';
+import { useOrgAnthropic } from '../../hooks/useOrgAnthropic';
 
 interface TasksPageHeaderProps {
   projectId: string;
@@ -37,6 +40,10 @@ export function TasksPageHeader({
 }: TasksPageHeaderProps) {
   const [implMenuAnchor, setImplMenuAnchor] = useState<HTMLElement | null>(null);
   const [showLocalGuide, setShowLocalGuide] = useState(false);
+  const { orgId } = useParams();
+  const { data: anthropicProj } = useOrgAnthropic(orgId);
+  const anthropicReady = anthropicProj?.status === 'active';
+  const settingsUrl = `/organizations/${orgId ?? 'default'}/settings/anthropic`;
 
   const handleRemoteImplementation = () => {
     setImplMenuAnchor(null);
@@ -61,9 +68,9 @@ export function TasksPageHeader({
         </Box>
 
         <Stack direction="row" spacing={1} alignItems="center">
-          {!hideGenerateButton && totalTasks === 0 && (
+          {!hideGenerateButton && (
             <Button
-              variant="contained"
+              variant={totalTasks === 0 ? 'contained' : 'outlined'}
               size="small"
               startIcon={isGenerating ? <CircularProgress size={14} color="inherit" /> : <Sparkles size={15} />}
               disabled={isGenerating}
@@ -73,7 +80,7 @@ export function TasksPageHeader({
             </Button>
           )}
 
-          {(hideGenerateButton || totalTasks > 0) && (
+          {totalTasks > 0 && (
             <>
               <Button
                 variant="contained"
@@ -94,17 +101,44 @@ export function TasksPageHeader({
                 anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
                 transformOrigin={{ vertical: 'top', horizontal: 'right' }}
               >
-                <MenuItem onClick={handleRemoteImplementation} sx={{ alignItems: 'flex-start', py: 1.5, gap: 1.5, minWidth: 320 }}>
-                  <Box sx={{ mt: 0.25, flexShrink: 0, display: 'flex' }}>
-                    <Cloud size={20} />
-                  </Box>
-                  <Box>
-                    <Typography variant="body2" fontWeight={600}>Implement via Remote Agents</Typography>
-                    <Typography variant="caption" color="text.secondary">
-                      Platform spawns Claude agents on the host to work on every task.
-                    </Typography>
-                  </Box>
-                </MenuItem>
+                <Tooltip
+                  title={
+                    anthropicReady
+                      ? ''
+                      : 'Configure an Anthropic API key in Org Settings → Anthropic Integration to dispatch the remote coding agent.'
+                  }
+                  placement="left"
+                  arrow
+                  disableHoverListener={anthropicReady}
+                >
+                  <span>
+                    <MenuItem
+                      onClick={handleRemoteImplementation}
+                      disabled={!anthropicReady}
+                      sx={{ alignItems: 'flex-start', py: 1.5, gap: 1.5, minWidth: 320 }}
+                    >
+                      <Box sx={{ mt: 0.25, flexShrink: 0, display: 'flex' }}>
+                        {anthropicReady ? <Cloud size={20} /> : <AlertCircle size={20} color="var(--color-warning, #d97706)" />}
+                      </Box>
+                      <Box>
+                        <Typography variant="body2" fontWeight={600}>Implement via Remote Agents</Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          {anthropicReady
+                            ? 'Platform spawns Claude agents on the host to work on every task.'
+                            : (
+                              <>
+                                Anthropic API key required —{' '}
+                                <RouterLink to={settingsUrl} style={{ color: 'inherit', textDecoration: 'underline' }}>
+                                  configure in Org Settings
+                                </RouterLink>
+                                .
+                              </>
+                            )}
+                        </Typography>
+                      </Box>
+                    </MenuItem>
+                  </span>
+                </Tooltip>
                 <MenuItem onClick={handleLocalImplementation} sx={{ alignItems: 'flex-start', py: 1.5, gap: 1.5, minWidth: 320 }}>
                   <Box sx={{ mt: 0.25, flexShrink: 0, display: 'flex' }}>
                     <Laptop size={20} />

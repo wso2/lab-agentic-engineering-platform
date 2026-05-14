@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
@@ -20,16 +21,48 @@ type BoardTask struct {
 	ComponentTaskID string                 `json:"componentTaskId,omitempty"`
 	Labels          []gitservice.LabelInfo `json:"labels,omitempty"`
 	LifecycleStatus string                 `json:"lifecycleStatus,omitempty"`
+	// Status is the ComponentTask execution status (pending, pending_deps,
+	// in_progress, verification_failed, ready_for_review, merged, building,
+	// deployed, rejected, failed, abandoned). Empty when the row has no
+	// backing ComponentTask.
+	Status string `json:"status,omitempty"`
+	// DispatchedAt is the time the task was dispatched for execution.
+	// Nil for never-dispatched tasks; the frontend uses it to render
+	// "started Xm ago" and to gate the Live progress affordance.
+	DispatchedAt *time.Time `json:"dispatchedAt,omitempty"`
+	// ExecType mirrors ComponentTask.ExecType ("SYSTEM","WORKER"). The
+	// frontend gates the per-task "Execute Now" button on this — the
+	// endpoint behind that button (/tasks/{id}/exec) only does meaningful
+	// work for SYSTEM tasks; WORKER (coding-agent) tasks must go through
+	// the batch /tasks/dispatch path via "Execute all → Remote Agents".
+	ExecType string `json:"execType,omitempty"`
+	// DependsOnComponents mirrors ComponentTask.DependsOnComponents — the
+	// list of component names this task is waiting to be deployed before
+	// it can dispatch. Populated for every task; the F4 PendingDeps
+	// column reads it to show "Waiting for: …".
+	DependsOnComponents []string `json:"dependsOnComponents,omitempty"`
+	// ComponentName mirrors ComponentTask.ComponentName so the frontend
+	// can resolve dep -> task lookups (e.g. "what is component `todo-api`'s
+	// task currently doing while we wait?").
+	ComponentName string `json:"componentName,omitempty"`
+	// ErrorMessage mirrors ComponentTask.ErrorMessage. For F3c
+	// verification_failed it's the diagnostic the agent reported, shown
+	// on the card so the operator can decide whether to retry.
+	ErrorMessage string `json:"errorMessage,omitempty"`
 }
 
 // ProjectBoard holds tasks grouped by their kanban column.
 type ProjectBoard struct {
-	URL        string      `json:"url"`
-	Todo       []BoardTask `json:"todo"`
-	InProgress []BoardTask `json:"inProgress"`
-	Done       []BoardTask `json:"done"`
-	OnHold     []BoardTask `json:"onHold"`
-	Failed     []BoardTask `json:"failed"`
+	URL string `json:"url"`
+	Todo        []BoardTask `json:"todo"`
+	InProgress  []BoardTask `json:"inProgress"`
+	Done        []BoardTask `json:"done"`
+	OnHold      []BoardTask `json:"onHold"`
+	Failed      []BoardTask `json:"failed"`
+	// PendingDeps (F4) collects tasks in TaskStatusPendingDeps, distinct
+	// from OnHold (which is user-managed) so the operator can see at a
+	// glance which tasks are blocked by an upstream component's deploy.
+	PendingDeps []BoardTask `json:"pendingDeps"`
 }
 
 // BoardService fetches the kanban board for a project.
@@ -48,12 +81,13 @@ func NewBoardService(gitClient gitservice.Client, taskRepo repositories.TaskRepo
 
 func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*ProjectBoard, error) {
 	board := &ProjectBoard{
-		URL:        "",
-		Todo:       []BoardTask{},
-		InProgress: []BoardTask{},
-		Done:       []BoardTask{},
-		OnHold:     []BoardTask{},
-		Failed:     []BoardTask{},
+		URL:         "",
+		Todo:        []BoardTask{},
+		InProgress:  []BoardTask{},
+		Done:        []BoardTask{},
+		OnHold:      []BoardTask{},
+		Failed:      []BoardTask{},
+		PendingDeps: []BoardTask{},
 	}
 
 	if s.gitClient == nil {
@@ -67,8 +101,14 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 
 	// Load DB tasks for enrichment.
 	type taskDBMeta struct {
-		id              string
-		lifecycleStatus string
+		id                  string
+		lifecycleStatus     string
+		status              string
+		dispatchedAt        *time.Time
+		execType            string
+		dependsOnComponents []string
+		componentName       string
+		errorMessage        string
 	}
 	issueURLToMeta := map[string]taskDBMeta{}
 	var allComponentTasks []models.ComponentTask
@@ -81,8 +121,14 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 			for _, ct := range componentTasks {
 				if ct.IssueURL != "" {
 					issueURLToMeta[ct.IssueURL] = taskDBMeta{
-						id:              ct.ID,
-						lifecycleStatus: ct.LifecycleStatus,
+						id:                  ct.ID,
+						lifecycleStatus:     ct.LifecycleStatus,
+						status:              ct.Status,
+						dispatchedAt:        ct.DispatchedAt,
+						execType:            ct.ExecType,
+						dependsOnComponents: []string(ct.DependsOnComponents),
+						componentName:       ct.ComponentName,
+						errorMessage:        ct.ErrorMessage,
 					}
 				} else {
 					unissuedTasks = append(unissuedTasks, ct)
@@ -104,6 +150,24 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 		if meta, ok := issueURLToMeta[item.URL]; ok {
 			task.ComponentTaskID = meta.id
 			task.LifecycleStatus = meta.lifecycleStatus
+			task.Status = meta.status
+			task.DispatchedAt = meta.dispatchedAt
+			task.ExecType = meta.execType
+			task.DependsOnComponents = meta.dependsOnComponents
+			task.ComponentName = meta.componentName
+			task.ErrorMessage = meta.errorMessage
+		}
+		// F4 — the BFF's ComponentTask.Status is authoritative for kanban
+		// routing of `pending_deps` (the GH Project board has no equivalent
+		// column). Same logic surfaces `verification_failed` next to the
+		// In Progress lane in the Failed column with an actionable error.
+		switch task.Status {
+		case string(models.TaskStatusPendingDeps):
+			board.PendingDeps = append(board.PendingDeps, task)
+			continue
+		case string(models.TaskStatusVerificationFailed):
+			board.Failed = append(board.Failed, task)
+			continue
 		}
 		switch normalizeStatus(item.Status) {
 		case "in progress":
@@ -136,20 +200,28 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 				lifecycleStatus = string(models.TaskLifecycleGhIssueSyncing)
 			}
 			task := BoardTask{
-				ID:              ct.ID,
-				Title:           ct.Title,
-				URL:             ct.IssueURL,
-				Description:     ct.Body,
-				ComponentTaskID: ct.ID,
-				Labels:          labels,
-				LifecycleStatus: lifecycleStatus,
+				ID:                  ct.ID,
+				Title:               ct.Title,
+				URL:                 ct.IssueURL,
+				Description:         ct.Body,
+				ComponentTaskID:     ct.ID,
+				Labels:              labels,
+				LifecycleStatus:     lifecycleStatus,
+				Status:              ct.Status,
+				DispatchedAt:        ct.DispatchedAt,
+				ExecType:            ct.ExecType,
+				DependsOnComponents: []string(ct.DependsOnComponents),
+				ComponentName:       ct.ComponentName,
+				ErrorMessage:        ct.ErrorMessage,
 			}
 			switch ct.Status {
+			case "pending_deps":
+				board.PendingDeps = append(board.PendingDeps, task)
 			case "in_progress":
 				board.InProgress = append(board.InProgress, task)
 			case "ready_for_review", "merged", "building", "deployed":
 				board.Done = append(board.Done, task)
-			case "failed", "rejected":
+			case "failed", "rejected", "verification_failed":
 				board.Failed = append(board.Failed, task)
 			default:
 				board.Todo = append(board.Todo, task)
@@ -163,10 +235,16 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 	// to the GitHub Project board.
 	for _, ct := range unissuedTasks {
 		task := BoardTask{
-			ID:              ct.ID,
-			Title:           ct.Title,
-			ComponentTaskID: ct.ID,
-			LifecycleStatus: ct.LifecycleStatus,
+			ID:                  ct.ID,
+			Title:               ct.Title,
+			ComponentTaskID:     ct.ID,
+			LifecycleStatus:     ct.LifecycleStatus,
+			Status:              ct.Status,
+			DispatchedAt:        ct.DispatchedAt,
+			ExecType:            ct.ExecType,
+			DependsOnComponents: []string(ct.DependsOnComponents),
+			ComponentName:       ct.ComponentName,
+			ErrorMessage:        ct.ErrorMessage,
 		}
 		if ct.LifecycleStatus == string(models.TaskLifecycleGhIssueFailed) {
 			board.Failed = append(board.Failed, task)

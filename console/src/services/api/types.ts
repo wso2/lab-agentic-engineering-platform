@@ -24,11 +24,11 @@ export interface Project {
   updatedAt: string;
 }
 
-export interface Spec {
+export interface RequirementsBundle {
   projectId: string;
-  content: string;
+  files: Record<string, string>;
   status: SpecStatus;
-  version: number;
+  version?: number;
   versions?: ArtifactVersion[];
   hasUnsavedChanges?: boolean;
 }
@@ -55,7 +55,6 @@ export interface DesignComponent {
   // BFF always has a non-empty string here.
   openAPISpec?: string;
   componentAgentInstructions: string;
-  wireframePath?: string;
 }
 
 export interface Design {
@@ -68,6 +67,17 @@ export interface Design {
   versions?: ArtifactVersion[];
   hasUnsavedChanges?: boolean;
   sourceSpec?: string;
+}
+
+// -- ComponentOpenAPI (drives the Test tab) ---------------------------------
+
+export interface ComponentOpenAPI {
+  componentName: string;
+  componentType: 'service' | 'web-app' | 'scheduled-task';
+  // Raw OpenAPI 3.0 YAML, canonicalised by the BFF. Always present on a 200
+  // response. On a 409 (non-service component) the BFF returns the same
+  // envelope without a spec — the UI can render a typed empty state.
+  spec: string;
 }
 
 // -- Legacy ComponentDefinition (from OC, used in component list/detail) -----
@@ -99,11 +109,6 @@ export interface Organization {
   description?: string;
   status?: string;
   createdAt: string;
-}
-
-export interface CreateOrganizationInput {
-  displayName: string;
-  description?: string;
 }
 
 // -- Build (WorkflowRun) ----------------------------------------------------
@@ -143,6 +148,7 @@ export type TaskStatus =
   | 'pending'
   | 'pending_deps'
   | 'in_progress'
+  | 'verification_failed'
   | 'ready_for_review'
   | 'merged'
   | 'building'
@@ -184,6 +190,7 @@ export interface ComponentTask {
   lastEventAt?: string;
   lastBuildRunName?: string;
   lastBuildSha?: string;
+  lastCodingAgentRunName?: string;
 
   // GitHub issue labels (for Kanban board)
   labels?: string[];
@@ -197,6 +204,67 @@ export interface ComponentTask {
   dispatchedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+// -- Task progress (live execution feed) -------------------------------------
+// Mirrors asdlc-service/clients/observer/schema.go and
+// remote-worker/src/lib/progress/schema.ts. Versioned NDJSON envelope —
+// see docs/design/task-execution-progress.md §5.1.
+
+export const TASK_PROGRESS_SCHEMA_VERSION = 1;
+
+export type TaskProgressKind =
+  | 'phase'
+  | 'tool_use'
+  | 'git_commit'
+  | 'git_push'
+  | 'gh_action'
+  | 'log'
+  | 'result'
+  | 'build_step';
+
+export interface TaskProgressEvent {
+  schemaVersion: number;
+  ts: string;
+  seq: number;
+  kind: TaskProgressKind;
+  // Discriminated payload — only the fields relevant to `kind` are set.
+  phase?: string;
+  tool?: string;
+  sha?: string;
+  branch?: string;
+  files?: number;
+  command?: string;
+  level?: 'info' | 'warn' | 'error';
+  status?: 'success' | 'failure';
+  summary?: string;
+  error?: string;
+  step?: string;
+  startedAt?: string;
+  completedAt?: string;
+  message?: string;
+}
+
+export interface TaskProgressResponse {
+  schemaVersion: number;
+  lines: TaskProgressEvent[];
+  cursorMillis: number;
+  phase?: string;
+  truncated?: boolean;
+  final: boolean;
+}
+
+export interface BuildStep {
+  name: string;
+  phase?: string;
+  message?: string;
+  startedAt?: string;
+  completedAt?: string;
+}
+
+export interface TaskStatusResponse {
+  task: ComponentTask;
+  buildSteps?: BuildStep[];
 }
 
 // -- Generated Tasks ----------------------------------------------------------
@@ -226,6 +294,29 @@ export interface Task {
   componentTaskId?: string;
   labels?: LabelInfo[];
   lifecycleStatus?: TaskLifecycleStatus;
+  // Execution status (mirrors ComponentTask.status). Empty/undefined for
+  // rows with no backing ComponentTask. Drives the inline status pill +
+  // Live progress button on TaskRow.
+  status?: TaskStatus;
+  // Time the task was dispatched, ISO-8601. Undefined for never-dispatched
+  // tasks; used for the "started Xm ago" caption.
+  dispatchedAt?: string;
+  // Execution model the task expects. "SYSTEM" tasks (DB provisioning,
+  // infra setup) are the only ones the per-task /tasks/{id}/exec endpoint
+  // can dispatch — "WORKER" (coding-agent) tasks must go through the batch
+  // dispatch path ("Execute all → Remote Agents"). Used by TaskDetailPanel
+  // to gate the "Execute Now" button.
+  execType?: 'SYSTEM' | 'WORKER';
+  // Component name this task targets — used by the Pending Deps column to
+  // map this task back to the dep graph.
+  componentName?: string;
+  // F4 — list of component names this task is waiting to be deployed.
+  // The Pending Deps column renders "Waiting for: …" from this. Empty
+  // for unblocked tasks.
+  dependsOnComponents?: string[];
+  // F3c — diagnostic surface for `verification_failed` tasks. Shown on
+  // the card so the operator can decide whether to retry.
+  errorMessage?: string;
 }
 
 export interface ProjectBoard {
@@ -235,6 +326,10 @@ export interface ProjectBoard {
   done: Task[];
   onHold: Task[];
   failed: Task[];
+  // F4 — tasks blocked on un-deployed dependencies. Distinct from
+  // `onHold` (user-managed) so the operator can see which tasks are
+  // waiting on the dep-graph and what they're waiting for.
+  pendingDeps: Task[];
 }
 
 // -- Component Config (Environment Variables) ---------------------------------

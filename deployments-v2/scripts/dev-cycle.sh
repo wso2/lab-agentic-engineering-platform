@@ -40,9 +40,10 @@ ensure_env_loaded
 ensure_cluster_reachable
 
 _dc_cycle() {
-  local total=0 rebuilt=0 name src dockerfile context src_dir hash image current_image current_hash dp_ns
+  local total=0 rebuilt=0 name src dockerfile context hash_paths src_dir hash image current_image current_hash dp_ns hash_dirs p
   for row in "${COMPONENTS[@]}"; do
-    IFS='|' read -r name src dockerfile context <<<"$row"
+    IFS='|' read -r name src dockerfile context hash_paths <<<"$row"
+    [ -z "$hash_paths" ] && hash_paths="$src"
 
     if [ -n "$FILTER" ] && [ "$name" != "$FILTER" ]; then
       continue
@@ -50,12 +51,14 @@ _dc_cycle() {
 
     total=$((total + 1))
     src_dir="$ROOT_DIR/$src"
-    hash=$(content_hash "$src_dir")
+    hash_dirs=()
+    for p in $hash_paths; do hash_dirs+=("$ROOT_DIR/$p"); done
+    hash=$(content_hash "${hash_dirs[@]}")
     image="asdlc.local/${name}:${hash}"
 
     log_step "$name"
 
-    current_image=$(kubectl get workload "$name" -n default -o jsonpath='{.spec.container.image}' 2>/dev/null || echo "")
+    current_image=$(kubectl get workload "$name" -n "${WORKLOAD_NAMESPACE:-wso2cloud}" -o jsonpath='{.spec.container.image}' 2>/dev/null || echo "")
     current_hash="${current_image##*:}"
 
     if [ "$current_hash" = "$hash" ] && [ -n "$current_image" ]; then
@@ -69,7 +72,7 @@ _dc_cycle() {
     build_image "$name" "$src_dir" "$dockerfile" "$context" "$image"
     import_image "$image"
 
-    if kubectl get workload "$name" -n default >/dev/null 2>&1; then
+    if kubectl get workload "$name" -n "${WORKLOAD_NAMESPACE:-wso2cloud}" >/dev/null 2>&1; then
       log_info "patching existing Workload"
       patch_workload_image "$name" "$image"
     else
@@ -92,4 +95,28 @@ _dc_cycle() {
   fi
 }
 
+# _dc_runner_images: build + import runner images that ClusterWorkflows reference.
+# These don't have a Workload; the image is consumed at WorkflowRun time. Tag is
+# always `:local` so the ClusterWorkflow YAML can pin a stable image ref.
+# Imports unconditionally; k3d image import is idempotent and the WorkflowRun
+# uses imagePullPolicy: Never so each new pod sees the latest local content.
+_dc_runner_images() {
+  local name src dockerfile context src_dir image
+  for row in "${RUNNER_IMAGES[@]}"; do
+    IFS='|' read -r name src dockerfile context <<<"$row"
+
+    if [ -n "$FILTER" ] && [ "$name" != "$FILTER" ]; then
+      continue
+    fi
+
+    src_dir="$ROOT_DIR/$src"
+    image="asdlc.local/${name}:local"
+    log_step "$name (runner image)"
+    build_image "$name" "$src_dir" "$dockerfile" "$context" "$image"
+    import_image "$image"
+    log_ok "$name imported"
+  done
+}
+
 _dc_cycle
+_dc_runner_images

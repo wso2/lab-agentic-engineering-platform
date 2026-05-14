@@ -12,5 +12,5 @@ func registerDesignRoutes(mux *http.ServeMux, c controllers.DesignController) {
 	mux.HandleFunc("POST /api/v1/organizations/{orgHandle}/projects/{projectName}/design/save", c.SaveAndProceed)
 	mux.HandleFunc("POST /api/v1/organizations/{orgHandle}/projects/{projectName}/design/discard", c.DiscardChanges)
 	mux.HandleFunc("GET /api/v1/organizations/{orgHandle}/projects/{projectName}/design/versions", c.ListDesignVersions)
-	mux.HandleFunc("GET /api/v1/organizations/{orgHandle}/projects/{projectName}/design/versions/{version}", c.GetDesignAtVersion)
+	mux.HandleFunc("GET /api/v1/organizations/{orgHandle}/projects/{projectName}/design/versions/{tag}", c.GetDesignAtTag)
 }

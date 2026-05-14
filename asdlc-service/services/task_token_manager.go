@@ -138,6 +138,48 @@ func (m *TaskTokenManager) Issue(taskID, ocOrgID, projectID string) (string, err
 	return signed, nil
 }
 
+// Verify parses + cryptographically validates a Task JWT minted by this
+// BFF (or a peer using the same signing key). Returns the claims on
+// success. Issuer + audience must match the manager's configuration.
+// The exp / nbf claims are honored by jwt.ParseWithClaims automatically.
+//
+// Used by the BFF's per-task endpoints (F3c: verification-failed, retry)
+// to authenticate the runner pod's callback. The runner pod was issued
+// this token at dispatch time and persists it to a file inside the pod's
+// emptyDir — see remote-worker/src/lib/runner.ts.
+func (m *TaskTokenManager) Verify(tokenString string) (*TaskClaims, error) {
+	if tokenString == "" {
+		return nil, fmt.Errorf("empty token")
+	}
+	tok, err := jwt.ParseWithClaims(tokenString, &TaskClaims{}, func(t *jwt.Token) (any, error) {
+		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
+		}
+		if kid, _ := t.Header["kid"].(string); kid != "" && kid != m.keyID {
+			return nil, fmt.Errorf("unknown kid %q (expected %q)", kid, m.keyID)
+		}
+		return m.publicKey, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("parse token: %w", err)
+	}
+	if !tok.Valid {
+		return nil, fmt.Errorf("token not valid")
+	}
+	claims, ok := tok.Claims.(*TaskClaims)
+	if !ok {
+		return nil, fmt.Errorf("claims not TaskClaims")
+	}
+	if claims.Issuer != m.issuer {
+		return nil, fmt.Errorf("unexpected issuer %q", claims.Issuer)
+	}
+	// Audience deliberately not enforced — the BFF is the issuer, and the
+	// same token may be presented to git-service (aud=git-service) or
+	// back to the BFF self-callback (F3c). Trust comes from issuer +
+	// signature; aud is the verifier's hint, not a BFF self-check.
+	return claims, nil
+}
+
 // JWKSResponse is the JSON shape served at /auth/external/jwks.json.
 type JWKSResponse struct {
 	Keys []JWK `json:"keys"`

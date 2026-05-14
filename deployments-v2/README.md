@@ -69,10 +69,10 @@ Brings up wso2cloud platform + asdlc on a local k3d cluster. Idempotent —
 re-run after any failure, it picks up where it left off.
 
 Phases:
-1. **Env + submodule** — loads `.env`, auto-generates webhook secret, OAUTH key, task-signing RSA key, smee.io channel; validates ANTHROPIC_API_KEY and GITHUB_PLATFORM_PAT are set
+1. **Env + submodule** — loads `.env`, auto-generates webhook secret, OAUTH key, task-signing RSA key, smee.io channel; validates ANTHROPIC_API_KEY is set
 2. **Cluster** — creates k3d cluster `openchoreo` using submodule's `k3d-config.yaml`
 3. **Platform** — `kubectl apply -k` against submodule layers (init/layer-0 → layer-1 → layer-2 → platform domain → release-bindings → app-factory project, which includes postgres)
-4. **ASDLC** — seeds OpenBao secrets, builds + imports + applies 5 workloads, registers Thunder OAuth/CORS/streaming
+4. **ASDLC** — seeds OpenBao secrets, builds + imports + applies 5 workloads, registers Thunder OAuth/CORS/streaming, runs `seed-admin-github` (only if `LOCAL_DEV_ADMIN_GITHUB_PAT` is set in `.env` — pre-connects the admin org via the same Connect API the console UI uses)
 
 ### `dev-cycle.sh [<component>] [--no-rollout-wait]`
 
@@ -94,9 +94,10 @@ and local state (`.env`, keys). The cluster and wso2cloud platform stay running.
 
 | Variable | Required | Auto | Description |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Prompted | No | Anthropic API key for AI agents + remote-worker. Skip to run without AI. |
-| `GITHUB_PLATFORM_PAT` | Prompted | No | GitHub PAT to auto-seed org credentials at startup (dev-tier). |
-| `GITHUB_REPO_OWNER` | Prompted | No | GitHub org/user where repos are created. Only prompted if PAT is set. |
+| `ANTHROPIC_API_KEY` | Prompted | No | Anthropic API key for the agents-service and the per-task coding-agent ClusterWorkflow pods. Skip to run without AI. |
+| `LOCAL_DEV_ADMIN_GITHUB_PAT` | Prompted | No | Local-dev shortcut: PAT for the admin org. Consumed only by `scripts/lib/seed-admin-github.sh`, which calls the public Connect API. Has no effect on hosted environments. |
+| `LOCAL_DEV_ADMIN_GITHUB_OWNER` | Prompted | No | GitHub org/user the admin PAT is scoped to. Only prompted when the PAT is set. |
+| `LOCAL_DEV_ADMIN_OUHANDLE` | No | No | Thunder-issued ouHandle for the local-dev admin user (default `default`, matching the Thunder seed's only OU). Pinned as a knob — the only place a tenant name appears in this repo's env / scripts. |
 | `GITHUB_WEBHOOK_SECRET` | No | Yes | 32-byte random hex for GitHub webhook HMAC |
 | `OAUTH_STATE_SIGNING_KEY` | No | Yes | 32-byte random hex for GitHub App connect CSRF |
 | `GITHUB_WEBHOOK_DELIVERY_URL` | No | Yes | URL we register on each GitHub repo. Local: smee.io channel (auto-provisioned). Cloud: public BFF ingress URL. |
@@ -125,15 +126,16 @@ deployments-v2/
 │       ├── app-factory-api.yaml
 │       ├── app-factory-console.yaml
 │       ├── app-factory-git-service.yaml
-│       ├── app-factory-agents-service.yaml
-│       └── app-factory-remote-worker.yaml
+│       └── app-factory-agents-service.yaml
 │       # postgres comes from the submodule's kustomize (app-factory project)
+│       # The coding-agent runner image (built from remote-worker/) has no
+│       # env-overlay — its env flows in via WorkflowRun parameters at dispatch.
 └── scripts/
     ├── setup.sh
     ├── dev-cycle.sh
     ├── teardown.sh
     ├── webhook-relay.sh               # host-side smee.io → cluster relay (local only)
-    ├── components.sh                  # registry of 5 components
+    ├── components.sh                  # registry of 4 long-lived components + 1 runner image
     └── lib/
         ├── ui.sh                      # colored logging
         ├── env.sh                     # .env load + validate + autogen

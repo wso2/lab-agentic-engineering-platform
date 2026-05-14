@@ -194,14 +194,8 @@ services:
       GITHUB_REPO_VISIBILITY: "${GITHUB_REPO_VISIBILITY:-private}"
       GIT_COMMITTER_NAME: "${GIT_COMMITTER_NAME:-ASDLC Bot}"
       GIT_COMMITTER_EMAIL: "${GIT_COMMITTER_EMAIL:-bot@asdlc.dev}"
-      # Trial-org dev-only PAT seed. When both are set in DeploymentTier=dev,
-      # git-service auto-connects the `demo-app-factory` trial org with PAT
-      # mode at startup. `admin`/`default` Platform IDP OUs are excluded —
-      # those orgs connect their own credentials via the console.
-      # Empty in production; per-org connect via the console is the only path.
-      GITHUB_PLATFORM_PAT: "${GITHUB_PLATFORM_PAT:-}"
-      GITHUB_REPO_OWNER: "${GITHUB_REPO_OWNER:-}"
-      GITHUB_PLATFORM_PAT_SEED_ORGS: "demo-app-factory"
+      # No platform-wide PAT, owner, or seed list — the binary is org-agnostic.
+      # Each org connects via the console (Settings → GitHub Integration).
       GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET}"
       GITHUB_WEBHOOK_PROXY_URL: "${GITHUB_WEBHOOK_PROXY_URL}"
       DEPLOYMENT_TIER: "${DEPLOYMENT_TIER:-dev}"

@@ -1,10 +1,13 @@
 package models
 
-type Spec struct {
+// RequirementsBundle describes the multi-document requirements set stored at
+// `.asdlc/requirements/*.md`. The bundle is versioned together as `v<N>`
+// tags; each save produces one new tag covering the whole directory.
+type RequirementsBundle struct {
 	ProjectID         string            `json:"projectId"`
-	Content           string            `json:"content"`
-	Status            string            `json:"status"`
-	Version           int               `json:"version"`
+	Files             map[string]string `json:"files"`
+	Status            string            `json:"status"` // "draft" | "approved"
+	Version           int               `json:"version,omitempty"`
 	Versions          []ArtifactVersion `json:"versions,omitempty"`
-	HasUnsavedChanges bool              `json:"hasUnsavedChanges"`
+	HasUnsavedChanges bool              `json:"hasUnsavedChanges,omitempty"`
 }

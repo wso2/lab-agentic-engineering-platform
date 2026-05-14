@@ -77,13 +77,19 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 		return fmt.Errorf("acquire lock: %w", lockErr)
 	}
 
-	// T2: load inputs.
-	specContent, err := s.store.ReadSpec(ctx, orgID, projectID)
+	// T2: load inputs. Requirements are now a multi-file bundle; concatenate
+	// every doc as one corpus so the tech-lead agent sees the same content
+	// regardless of how the project organised its requirement files.
+	reqFiles, err := s.store.ListRequirements(ctx, orgID, projectID)
 	if err != nil {
-		if IsNotFound(err) {
-			return ErrSpecNotFound
-		}
-		return fmt.Errorf("read spec: %w", err)
+		return fmt.Errorf("list requirements: %w", err)
+	}
+	if len(reqFiles) == 0 {
+		return ErrSpecNotFound
+	}
+	specContent := concatRequirementBundle(reqFiles)
+	if specContent == "" {
+		return ErrSpecNotFound
 	}
 	design, err := s.store.ReadDesign(ctx, orgID, projectID)
 	if err != nil {
@@ -104,11 +110,13 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 	}
 
 	// Idempotency guard: if non-rejected tasks already exist for the current
-	// (spec, design) version pair, generation is a no-op. The Tasks page
-	// auto-opens this stream on mount; this is what makes that safe — when
-	// nothing's changed, the stream returns data-finish immediately without
-	// touching the agent. When the design or spec has been re-tagged, no
-	// task will match, and full Phase 1 + Phase 2 runs.
+	// (spec, design) version pair, generation is a no-op. The console's
+	// "Generate Tasks" button is always visible (including after iteration
+	// 1) so the user may click it on a project that is already up to date;
+	// this is what makes that safe — when nothing's changed, the stream
+	// returns data-finish immediately without touching the agent. When the
+	// design or spec has been re-tagged, no task will match, and full
+	// Phase 1 + Phase 2 runs.
 	freshCount := 0
 	for _, t := range allTasks {
 		switch t.Status {
@@ -152,8 +160,10 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 			}
 		}
 		if s.gitClient != nil && baseline.SourceSpecVersion != "" {
-			if raw, err := s.gitClient.GetFileAtTag(ctx, orgID, projectID, baseline.SourceSpecVersion, ".asdlc/spec.md"); err == nil {
-				prevSpec = raw
+			// Pull every requirement file at the baseline tag and concatenate.
+			// The tag is a `v<N>` requirements tag; missing files are tolerated.
+			if files, err := s.gitClient.GetRequirementsAtTag(ctx, orgID, projectID, baseline.SourceSpecVersion); err == nil {
+				prevSpec = concatRequirementBundle(files)
 			}
 		}
 	}
@@ -167,7 +177,7 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 
 	// T3: open Phase 1.
 	planReq := buildPlanRequest(projectID, specContent, design.Components, designDiff, specDiff, existingForPrompt, mode)
-	planUpstream, err := s.agentsClient.StreamTechLeadPlan(ctx, planReq)
+	planUpstream, err := s.agentsClient.StreamTechLeadPlan(ctx, orgID, planReq)
 	if err != nil {
 		return fmt.Errorf("plan upstream: %w", err)
 	}
@@ -204,7 +214,7 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 	slog.InfoContext(ctx, "tech-lead T5: phase 2 trigger",
 		"persisted", len(persisted), "survived", len(survived))
 	if len(survived) > 0 {
-		s.runPhase2(ctx, w, projectID, specContent, survived, design, allTasks, repoURL, repoSlug)
+		s.runPhase2(ctx, w, orgID, projectID, specContent, survived, design, allTasks, repoURL, repoSlug)
 	}
 
 	// T6: reconciliation.
@@ -232,7 +242,7 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 func (s *taskService) runPhase2(
 	ctx context.Context,
 	w *sseWriter,
-	projectID, specContent string,
+	orgID, projectID, specContent string,
 	survived []persistedItem,
 	design *DesignFile,
 	allTasks []models.ComponentTask,
@@ -241,7 +251,7 @@ func (s *taskService) runPhase2(
 	detailReq := buildDetailRequest(projectID, specContent, survived, design, allTasks)
 	slog.InfoContext(ctx, "tech-lead phase 2: opening detail stream", "items", len(detailReq.Items))
 
-	detailUpstream, err := s.agentsClient.StreamTechLeadDetail(ctx, detailReq)
+	detailUpstream, err := s.agentsClient.StreamTechLeadDetail(ctx, orgID, detailReq)
 	if err != nil {
 		slog.ErrorContext(ctx, "tech-lead phase 2: detail upstream open failed", "error", err)
 		w.send("error", map[string]any{
@@ -401,22 +411,37 @@ func (s *taskService) persistAndIssue(
 	design *DesignFile,
 	repoURL, repoSlug string,
 ) ([]persistedItem, error) {
-	// Index design components for slice extraction.
+	// Index design components for slice extraction and DependsOn lookup.
 	byName := make(map[string]models.DesignComponent, len(design.Components))
+	componentNameSet := make(map[string]struct{}, len(design.Components))
 	for _, c := range design.Components {
 		byName[strings.ToLower(c.Name)] = c
+		componentNameSet[c.Name] = struct{}{}
 	}
 
 	// Persist rows up front, sequentially — ordering by plan index.
+	// F2: DependsOnComponents is pulled directly from the design (platform-
+	// authored, not LLM-authored) and validated against the component set
+	// at persist time. The LLM's `PlanItem.dependsOn` is now context-only.
 	rows := make([]persistedItem, len(plan))
 	for i, p := range plan {
+		comp := byName[strings.ToLower(p.ComponentName)]
+		deps := append([]string(nil), comp.DependsOn...)
+		for _, dep := range deps {
+			if _, ok := componentNameSet[dep]; !ok {
+				return nil, fmt.Errorf(
+					"design.Components[%s].dependsOn references unknown component %q (must match one of design.Components[*].name)",
+					p.ComponentName, dep,
+				)
+			}
+		}
 		task := &models.ComponentTask{
 			ProjectID:           projectID,
 			OrgID:               orgID,
 			ComponentName:       p.ComponentName,
 			Title:               p.Title,
 			Rationale:           p.Rationale,
-			TaskDependsOn:       models.StringSlice(p.DependsOn),
+			DependsOnComponents: models.StringSlice(deps),
 			BatchID:             ptrString(batchID),
 			SourceSpecVersion:   specVersion,
 			SourceDesignVersion: designVersion,
@@ -428,7 +453,6 @@ func (s *taskService) persistAndIssue(
 		if err := s.taskRepo.Create(ctx, task); err != nil {
 			return nil, fmt.Errorf("create task row %d: %w", i, err)
 		}
-		comp := byName[strings.ToLower(p.ComponentName)]
 		// Strip openAPISpec — the YAML can be huge and the prompt explicitly
 		// tells the model to reference `.asdlc/design.json` rather than inline
 		// it. Removing it from the slice saves tokens and removes temptation.
@@ -678,10 +702,11 @@ func (s *taskService) RegenerateTaskBody(ctx context.Context, taskID string, out
 	if task == nil {
 		return ErrTaskNotFound
 	}
-	specContent, err := s.store.ReadSpec(ctx, task.OrgID, task.ProjectID)
+	reqFiles, err := s.store.ListRequirements(ctx, task.OrgID, task.ProjectID)
 	if err != nil {
-		return fmt.Errorf("read spec: %w", err)
+		return fmt.Errorf("list requirements: %w", err)
 	}
+	specContent := concatRequirementBundle(reqFiles)
 	design, err := s.store.ReadDesign(ctx, task.OrgID, task.ProjectID)
 	if err != nil || design == nil {
 		return fmt.Errorf("read design: %w", err)
@@ -693,7 +718,7 @@ func (s *taskService) RegenerateTaskBody(ctx context.Context, taskID string, out
 		Task:   task,
 	}}
 	detailReq := buildDetailRequest(task.ProjectID, specContent, survived, design, allTasks)
-	upstream, err := s.agentsClient.StreamTechLeadDetail(ctx, detailReq)
+	upstream, err := s.agentsClient.StreamTechLeadDetail(ctx, task.OrgID, detailReq)
 	if err != nil {
 		return fmt.Errorf("detail upstream: %w", err)
 	}
@@ -725,7 +750,7 @@ func (s *taskService) currentArtifactVersions(ctx context.Context, orgID, projec
 	if s.gitClient == nil {
 		return "", ""
 	}
-	if vs, err := s.gitClient.ListSpecVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {
+	if vs, err := s.gitClient.ListRequirementsVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {
 		specV = vs[0].Tag
 	}
 	if vs, err := s.gitClient.ListDesignVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {

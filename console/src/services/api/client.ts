@@ -5,10 +5,11 @@
 export { restApi as api, ApiError } from './rest';
 export type {
   Project,
-  Spec,
+  RequirementsBundle,
   Design,
   DesignComponent,
   ComponentDefinition,
+  ComponentOpenAPI,
   ComponentTask,
   ComponentConfig,
   EnvVar,
@@ -23,8 +24,12 @@ export type {
   ComponentStatus,
   ArtifactVersion,
   Organization,
-  CreateOrganizationInput,
   Task,
   ProjectBoard,
   LabelInfo,
+  TaskProgressEvent,
+  TaskProgressResponse,
+  TaskProgressKind,
+  TaskStatusResponse,
+  BuildStep,
 } from './types';

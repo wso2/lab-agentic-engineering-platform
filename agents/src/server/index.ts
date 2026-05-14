@@ -1,13 +1,14 @@
 import express from "express";
 import { jwtAuthMiddleware } from "../middleware/jwt.js";
 import { correlationIdMiddleware } from "../middleware/correlation.js";
-import { registerBusinessAnalyst } from "./routes/business-analyst.js";
+import { requireOrgId } from "../middleware/org-id.js";
+import { invalidateAnthropicCache } from "../shared/anthropic-key-resolver.js";
+import { registerDocumentGeneration } from "./routes/document-generation.js";
 import { registerArchitect } from "./routes/architect.js";
 import {
   registerTechLeadPlan,
   registerTechLeadDetail,
 } from "./routes/tech-lead.js";
-import { registerWireframe } from "./routes/wireframe.js";
 
 const port = parseInt(process.env.PORT || "3400", 10);
 
@@ -47,11 +48,30 @@ if (!jwksUrl) {
   );
 }
 
-registerBusinessAnalyst(app);
+// Every /v1/agents/* route needs the org id for the Anthropic-key resolver.
+app.use("/v1/agents", requireOrgId());
+
+// Internal cache-invalidate endpoint — git-service POSTs here on
+// Connect/Disconnect so the resolver's 5-min LRU drops the orgId
+// immediately. Mounted under /v1/internal so the existing JWT middleware
+// (which gates /v1/agents) doesn't apply; in production an explicit
+// service-JWT gate should wrap this — deferred until the cloud-side env
+// brings up agents-service as a first-class Component.
+app.post("/v1/internal/cache/invalidate", (req, res) => {
+  const orgId = (req.body as { orgId?: unknown })?.orgId;
+  if (typeof orgId !== "string" || orgId.length === 0) {
+    res.status(400).json({ error: "orgId required" });
+    return;
+  }
+  invalidateAnthropicCache(orgId);
+  console.log(`[anthropic-key-resolver] cache invalidated orgId=${orgId}`);
+  res.status(204).end();
+});
+
+registerDocumentGeneration(app);
 registerArchitect(app);
 registerTechLeadPlan(app);
 registerTechLeadDetail(app);
-registerWireframe(app);
 
 app.listen(port, () => {
   console.log(`agents-service listening on :${port}`);

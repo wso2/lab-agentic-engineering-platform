@@ -7,8 +7,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
 )
 
 type configReader struct {
@@ -30,10 +28,8 @@ func Load() (Config, error) {
 		ServerPort: r.readOptionalInt("SERVER_PORT", 8080),
 		LogLevel:   r.readOptionalString("LOG_LEVEL", "info"),
 		PlatformAPI: PlatformAPIConfig{
-			BaseURL:              r.readRequiredString("PLATFORM_API_SERVICE_BASE_URL"),
-			HostHeader:           r.readOptionalString("PLATFORM_API_SERVICE_HOST", ""),
-			BuildRegistry:        r.readOptionalString("OPENCHOREO_BUILD_REGISTRY", openchoreo.DefaultBuildRegistry),
-			OrgNamespaceOverride: r.readOptionalString("PLATFORM_API_NAMESPACE_OVERRIDE", ""),
+			BaseURL:    r.readRequiredString("PLATFORM_API_SERVICE_BASE_URL"),
+			HostHeader: r.readOptionalString("PLATFORM_API_SERVICE_HOST", ""),
 		},
 		DatabaseURL:            r.databaseURL(),
 		TestMode:               r.readOptionalBool("TEST_MODE", false),
@@ -52,15 +48,17 @@ func Load() (Config, error) {
 		JWTAllowedAudience:     r.readOptionalString("JWT_AUDIENCE", "asdlc-bff"),
 		JWTResourceMetadataURL: r.readOptionalString("JWT_RESOURCE_METADATA_URL", ""),
 		Observability: ObservabilityConfig{
-			BaseURL: r.readOptionalString("OBSERVABILITY_SERVICE_BASE_URL", ""),
+			BaseURL:      r.readOptionalString("OBSERVER_URL", r.readOptionalString("OBSERVABILITY_SERVICE_BASE_URL", "")),
+			TokenURL:     r.readOptionalString("OBSERVER_OAUTH_TOKEN_URL", ""),
+			ClientID:     r.readOptionalString("OBSERVER_OAUTH_CLIENT_ID", ""),
+			ClientSecret: r.readOptionalString("OBSERVER_OAUTH_CLIENT_SECRET", ""),
+			HostHeader:   r.readOptionalString("OBSERVER_OAUTH_HOST_HEADER", ""),
 		},
 		AgentsService: AgentsServiceConfig{
 			BaseURL: r.readOptionalString("AGENTS_SERVICE_BASE_URL", ""),
 		},
-		RemoteWorker: RemoteWorkerConfig{
-			BaseURL:           r.readOptionalString("REMOTE_WORKER_BASE_URL", ""),
-			GitServiceHostURL: r.readOptionalString("GIT_SERVICE_HOST_URL", ""),
-		},
+		AgentGitServiceURL: r.readOptionalString("AGENT_GIT_SERVICE_URL", ""),
+		AgentPlatformURL:   r.readOptionalString("AGENT_PLATFORM_URL", ""),
 		ServiceAuth: ServiceAuthConfig{
 			TokenURL:     r.readOptionalString("SERVICE_AUTH_TOKEN_URL", ""),
 			ClientID:     r.readOptionalString("SERVICE_AUTH_CLIENT_ID", ""),
@@ -78,12 +76,6 @@ func Load() (Config, error) {
 			ClientID:     r.readOptionalString("SERVICE_AUTH_AGENTS_CLIENT_ID", ""),
 			ClientSecret: r.readOptionalString("SERVICE_AUTH_AGENTS_CLIENT_SECRET", ""),
 			HostHeader:   r.readOptionalString("SERVICE_AUTH_AGENTS_HOST_HEADER", ""),
-		},
-		ServiceAuthRemoteWorker: ServiceAuthConfig{
-			TokenURL:     r.readOptionalString("SERVICE_AUTH_RW_TOKEN_URL", ""),
-			ClientID:     r.readOptionalString("SERVICE_AUTH_RW_CLIENT_ID", ""),
-			ClientSecret: r.readOptionalString("SERVICE_AUTH_RW_CLIENT_SECRET", ""),
-			HostHeader:   r.readOptionalString("SERVICE_AUTH_RW_HOST_HEADER", ""),
 		},
 		GitService: GitServiceConfig{
 			BaseURL: r.readOptionalString("GIT_SERVICE_BASE_URL", ""),

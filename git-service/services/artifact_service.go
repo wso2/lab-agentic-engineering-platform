@@ -11,7 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/wso2/asdlc/git-service/models"
@@ -31,126 +31,125 @@ var (
 	// does not equal the current working-tree blob sha. Maps to 412.
 	ErrIfMatchFailed = errors.New("if-match precondition failed")
 	// ErrNoVersionToDiscard is returned by Discard when no tag exists for the
-	// artifact type. Maps to 404 (matches BFF's prior "no saved version to
-	// revert to" semantics).
+	// artifact type. Maps to 404.
 	ErrNoVersionToDiscard = errors.New("no saved version to revert to")
 	// ErrConcurrentTagWrite is returned when `git tag -a` fails because the
-	// tag already exists locally with a different commit (some other actor
-	// wrote it between step 0 self-heal and step 6 create). Maps to 409.
+	// tag already exists locally with a different commit. Maps to 409.
 	ErrConcurrentTagWrite = errors.New("tag created concurrently by another writer")
+	// ErrNoRequirementsBaseline is returned by SaveDesign when no `v<N>` tag
+	// exists yet — design tags must reference an existing requirements
+	// version. Maps to 409.
+	ErrNoRequirementsBaseline = errors.New("no requirements baseline — save requirements first")
+	// ErrInvalidVersionTag is returned when a tag string in a path/query does
+	// not parse as `v<N>` or `v<N>-<M>`. Maps to 400.
+	ErrInvalidVersionTag = errors.New("invalid version tag")
 )
 
-// ----- Artifact types -----
-
-// ArtifactType selects the artifact + its tag prefix + its commit-staging
-// rules. The wire string (used in the URL path) is the same as the constant
-// value.
-type ArtifactType string
+// ----- Path constants -----
 
 const (
-	ArtifactSpec       ArtifactType = "spec"
-	ArtifactDesign     ArtifactType = "design"
-	ArtifactWireframes ArtifactType = "wireframes"
+	// RequirementsDir is the working-tree directory holding all requirement
+	// markdown documents. Each file is one document; the bundle is versioned
+	// together as a single artifact.
+	RequirementsDir = ".asdlc/requirements"
+	// DesignFilePath is the working-tree path of the architecture artifact.
+	DesignFilePath = ".asdlc/design.json"
+	// requirementsMainFile is the canonical "main" requirements document.
+	// Cannot be deleted/renamed at the BFF layer.
+	requirementsMainFile = "requirements.md"
 )
-
-// artifactDef bundles the per-type settings: where the file lives in the
-// working tree, what tag prefix tracks its versions, and (for spec) which
-// extra paths are staged on save.
-type artifactDef struct {
-	relPath      string   // working-tree file path, e.g. ".asdlc/spec.md"
-	tagPrefix    string   // "spec-v" / "design-v"
-	commitMsg    string   // tag annotation description
-	extraStage   []string // extra paths to `git add` alongside the primary file (spec save → wireframes dir)
-}
-
-func defFor(t ArtifactType) (artifactDef, bool) {
-	switch t {
-	case ArtifactSpec:
-		return artifactDef{
-			relPath:    ".asdlc/spec.md",
-			tagPrefix:  specTagPrefix,
-			commitMsg:  "Specification",
-			extraStage: []string{".asdlc/wireframes"}, // pre-PR-0 bug: stage wireframes alongside spec
-		}, true
-	case ArtifactDesign:
-		return artifactDef{
-			relPath:   ".asdlc/design.json",
-			tagPrefix: designTagPrefix,
-			commitMsg: "Architecture design",
-		}, true
-	}
-	return artifactDef{}, false
-}
 
 // ----- Wire shapes -----
 
-// SaveRequest is the body of POST /artifacts/{type}/save.
-type SaveRequest struct {
-	Content string  `json:"content"` // required — caller must be the writer of the bytes
-	Message string  `json:"message,omitempty"`
-	Lineage Lineage `json:"lineage,omitempty"`
-}
-
-// SaveResult is the response body of POST /artifacts/{type}/save.
-type SaveResult struct {
-	Status     string  `json:"status"` // "approved" | "unchanged"
-	Version    int     `json:"version"`
-	Tag        string  `json:"tag"`
-	CommitHash string  `json:"commitHash,omitempty"`
-	Lineage    Lineage `json:"lineage"`
-}
-
-// FileResult is the response shape for GET /artifacts/{type} and friends.
+// FileResult is the response shape for single-file reads.
 type FileResult struct {
 	Content string `json:"content"`
 	SHA     string `json:"sha"`
 }
 
-// PutResult is the response shape for PUT /artifacts/{type}.
+// PutResult is the response shape for PutFile.
 type PutResult struct {
 	SHA string `json:"sha"`
 }
 
-// VersionFileResult is GET /artifacts/{type}/versions/{tag}.
-type VersionFileResult struct {
-	Content string  `json:"content"`
-	Lineage Lineage `json:"lineage"`
+// SaveRequest is the body of POST /artifacts/{kind}/save.
+type SaveRequest struct {
+	Message string `json:"message,omitempty"`
 }
 
-// WireframeEntry is one row of the wireframes listing.
-type WireframeEntry struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+// RequirementsSaveResult is the response of POST /artifacts/requirements/save.
+type RequirementsSaveResult struct {
+	Status     string `json:"status"` // "approved" | "unchanged"
+	Tag        string `json:"tag"`    // e.g. "v3"
+	Version    int    `json:"version"`
+	CommitHash string `json:"commitHash,omitempty"`
+}
+
+// DesignSaveResult is the response of POST /artifacts/design/save.
+type DesignSaveResult struct {
+	Status              string `json:"status"` // "approved" | "unchanged"
+	Tag                 string `json:"tag"`    // e.g. "v1-2"
+	RequirementsVersion int    `json:"requirementsVersion"`
+	DesignRevision      int    `json:"designRevision"`
+	CommitHash          string `json:"commitHash,omitempty"`
+}
+
+// RequirementsListResult is the response of GET /artifacts/requirements: a
+// snapshot of every file under `.asdlc/requirements/` keyed by basename.
+type RequirementsListResult struct {
+	Files map[string]string `json:"files"`
+}
+
+// VersionFileResult wraps content read at a specific tag.
+type VersionFileResult struct {
+	Content string `json:"content"`
+}
+
+// VersionRequirementsResult is the response of
+// GET /artifacts/requirements/versions/{tag}: the file map captured at that
+// `v<N>` tag.
+type VersionRequirementsResult struct {
+	Tag     string            `json:"tag"`
+	Version int               `json:"version"`
+	Files   map[string]string `json:"files"`
 }
 
 // ----- Service -----
 
-// ArtifactService is the new typed entry-point for the artifact endpoints
-// added in PR 1. It composes with gitOpsService so they share the
-// per-project mutex + clone-readiness machinery (both live in the same
-// package, so unexported helpers are reachable).
+// ArtifactService is the typed entry-point for the artifact endpoints. It
+// composes with gitOpsService so they share the per-project mutex +
+// clone-readiness machinery.
 type ArtifactService interface {
+	// Generic file I/O — used for design (single file) and any one-off reads
+	// that don't fall under requirements/ multi-file semantics.
 	GetFile(ctx context.Context, projectID, relPath string) (*FileResult, error)
 	PutFile(ctx context.Context, projectID, relPath, content, ifMatch string) (*PutResult, error)
-	ListWireframes(ctx context.Context, projectID string) ([]WireframeEntry, error)
 
-	Save(ctx context.Context, projectID string, t ArtifactType, req SaveRequest) (*SaveResult, error)
-	Discard(ctx context.Context, projectID string, t ArtifactType) (*FileResult, error)
+	// Requirements multi-file ops.
+	ListRequirementFiles(ctx context.Context, projectID string) (map[string]string, error)
+	DeleteRequirementFile(ctx context.Context, projectID, name string) error
 
-	ListVersions(ctx context.Context, projectID string, t ArtifactType) ([]VersionInfo, error)
-	GetVersion(ctx context.Context, projectID string, t ArtifactType, version int) (*VersionFileResult, error)
+	// Save / Discard.
+	SaveRequirements(ctx context.Context, projectID string, req SaveRequest) (*RequirementsSaveResult, error)
+	SaveDesign(ctx context.Context, projectID string, req SaveRequest) (*DesignSaveResult, error)
+	DiscardRequirements(ctx context.Context, projectID string) (map[string]string, error)
+	DiscardDesign(ctx context.Context, projectID string) (*FileResult, error)
+
+	// Versions.
+	ListRequirementsVersions(ctx context.Context, projectID string) ([]RequirementsVersionInfo, error)
+	ListDesignVersions(ctx context.Context, projectID string) ([]DesignVersionInfo, error)
+	GetRequirementsAtTag(ctx context.Context, projectID, tag string) (map[string]string, error)
+	GetDesignAtTag(ctx context.Context, projectID, tag string) (*FileResult, error)
 }
 
 type artifactService struct {
 	repo   repositories.RepoRepository
-	gitOps *gitOpsService // shared lock map, ensureCloneReady, resolveToken
+	gitOps *gitOpsService
 }
 
 // NewArtifactService builds an ArtifactService that piggy-backs on the
 // existing GitOpsService for shared infrastructure (locks, clone readiness,
-// credential resolution). The concrete *gitOpsService is required because
-// the artifact flow needs lock-acquisition and clone-management primitives
-// that aren't on the GitOpsService interface — they're package-private.
+// credential resolution).
 func NewArtifactService(repo repositories.RepoRepository, gitOps GitOpsService) ArtifactService {
 	concrete, ok := gitOps.(*gitOpsService)
 	if !ok {
@@ -161,24 +160,16 @@ func NewArtifactService(repo repositories.RepoRepository, gitOps GitOpsService) 
 
 // ----- Path validation -----
 
-// wireframeNameRE bounds wireframe filenames to a safe charset — no path
-// separators, no `..`, no leading dot. Spec/design have fixed paths so this
-// only matters for wireframes.
-var wireframeNameRE = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$`)
-
-const maxArtifactBytes = 5 << 20 // 5 MiB cap, matches design
+const maxArtifactBytes = 5 << 20 // 5 MiB cap
 
 // validateRelPath ensures relPath is under .asdlc/, has no .. segments, and
-// after Clean still starts with .asdlc/. The caller has already validated
-// the {orgId}/{projectId} portion via the org-scope middleware, so this is
-// the last line of defense before disk I/O.
+// after Clean still starts with .asdlc/.
 func validateRelPath(relPath string) error {
 	if relPath == "" {
 		return fmt.Errorf("%w: empty path", ErrArtifactPathInvalid)
 	}
 	clean := filepath.Clean(relPath)
 	if clean != relPath {
-		// Reject any input whose canonical form differs (catches ".//x", "x/", etc.)
 		return fmt.Errorf("%w: non-canonical path %q", ErrArtifactPathInvalid, relPath)
 	}
 	if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "..") {
@@ -196,14 +187,50 @@ func validateRelPath(relPath string) error {
 	return nil
 }
 
-func validateWireframeName(name string) error {
-	if !wireframeNameRE.MatchString(name) {
-		return fmt.Errorf("%w: wireframe name %q", ErrArtifactPathInvalid, name)
+// allowedRequirementExts is the set of file extensions recognised inside
+// `.asdlc/requirements/`. Markdown holds prose; `.excalidraw` holds
+// Excalidraw scene JSON for wireframes / domain models.
+var allowedRequirementExts = []string{".md", ".excalidraw"}
+
+func hasAllowedRequirementExt(name string) bool {
+	lower := strings.ToLower(name)
+	for _, ext := range allowedRequirementExts {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// validateRequirementFilename ensures `name` is a single basename ending in
+// one of the allowed requirement extensions (no path separators, no traversal).
+func validateRequirementFilename(name string) error {
+	if name == "" {
+		return fmt.Errorf("%w: empty filename", ErrArtifactPathInvalid)
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return fmt.Errorf("%w: filename must not contain path separators", ErrArtifactPathInvalid)
+	}
+	if name == "." || name == ".." {
+		return fmt.Errorf("%w: invalid filename", ErrArtifactPathInvalid)
+	}
+	if !hasAllowedRequirementExt(name) {
+		return fmt.Errorf("%w: requirement files must end with %s", ErrArtifactPathInvalid, strings.Join(allowedRequirementExts, " or "))
 	}
 	return nil
 }
 
-// ----- File ops -----
+// RequirementFilePath returns the repo-relative path for a requirement file
+// after validating its name. Exported so HTTP handlers can validate without
+// duplicating the rules.
+func RequirementFilePath(name string) (string, error) {
+	if err := validateRequirementFilename(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(RequirementsDir, name), nil
+}
+
+// ----- Generic file ops -----
 
 func (s *artifactService) GetFile(ctx context.Context, projectID, relPath string) (*FileResult, error) {
 	if err := validateRelPath(relPath); err != nil {
@@ -233,7 +260,6 @@ func (s *artifactService) GetFile(ctx context.Context, projectID, relPath string
 
 	sha, err := blobSHAFor(ctx, repoRecord.ClonePath, data)
 	if err != nil {
-		// SHA is informational; surface the read but with empty sha.
 		slog.WarnContext(ctx, "hash-object failed", "path", relPath, "error", err)
 	}
 	return &FileResult{Content: string(data), SHA: sha}, nil
@@ -286,7 +312,9 @@ func (s *artifactService) PutFile(ctx context.Context, projectID, relPath, conte
 	return &PutResult{SHA: sha}, nil
 }
 
-func (s *artifactService) ListWireframes(ctx context.Context, projectID string) ([]WireframeEntry, error) {
+// ----- Requirements multi-file ops -----
+
+func (s *artifactService) ListRequirementFiles(ctx context.Context, projectID string) (map[string]string, error) {
 	mu := s.gitOps.getRepoLock(projectID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -299,57 +327,82 @@ func (s *artifactService) ListWireframes(ctx context.Context, projectID string) 
 		return nil, fmt.Errorf("ensure clone: %w", err)
 	}
 
-	dir := filepath.Join(repoRecord.ClonePath, ".asdlc", "wireframes")
+	dir := filepath.Join(repoRecord.ClonePath, RequirementsDir)
+	return readMarkdownDir(dir)
+}
+
+// readMarkdownDir reads all *.md files at the top level of `dir`. A missing
+// directory yields an empty map (not an error) so first-time projects
+// surface as "no documents yet".
+func readMarkdownDir(dir string) (map[string]string, error) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return []WireframeEntry{}, nil
+			return map[string]string{}, nil
 		}
-		return nil, fmt.Errorf("readdir wireframes: %w", err)
+		return nil, fmt.Errorf("read dir %s: %w", dir, err)
 	}
-	out := make([]WireframeEntry, 0, len(entries))
+	out := make(map[string]string, len(entries))
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
 		}
-		info, err := e.Info()
-		if err != nil {
+		name := e.Name()
+		if !hasAllowedRequirementExt(name) {
 			continue
 		}
-		out = append(out, WireframeEntry{Name: e.Name(), Size: info.Size()})
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, fmt.Errorf("read %s/%s: %w", dir, name, err)
+		}
+		out[name] = string(data)
 	}
 	return out, nil
 }
 
+func (s *artifactService) DeleteRequirementFile(ctx context.Context, projectID, name string) error {
+	relPath, err := RequirementFilePath(name)
+	if err != nil {
+		return err
+	}
+	if name == requirementsMainFile {
+		return fmt.Errorf("%w: %s cannot be deleted", ErrArtifactPathInvalid, requirementsMainFile)
+	}
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return fmt.Errorf("ensure clone: %w", err)
+	}
+
+	abs := filepath.Join(repoRecord.ClonePath, relPath)
+	if err := os.Remove(abs); err != nil {
+		if os.IsNotExist(err) {
+			return ErrArtifactNotFound
+		}
+		return fmt.Errorf("remove %s: %w", relPath, err)
+	}
+	return nil
+}
+
 // ----- Save -----
 
-// Save runs the full atomic save flow under a single mutex hold:
+// SaveRequirements persists the working-tree `.asdlc/requirements/` snapshot
+// as a new commit on remote main and creates the next `v<N>` annotated tag.
+// Replaces the legacy `git commit + push + tag` flow with GitHub API calls
+// (Git Data API path) per docs/design/artifact-store-v2.md V1.
 //
-//   - Step 0: self-heal — push --tags so any local-only tag from a previous
-//     run (commit landed remote, tag-push failed) lands on remote.
-//   - Step 1: tmpfile + rename `content` into the typed file path.
-//   - Step 2: stage the file plus any extras (spec also stages
-//     `.asdlc/wireframes/`).
-//   - Step 3: commit with author identity from the org's credential.
-//   - Step 4: push commit to default branch.
-//   - Step 5: fetch tags, list this artifact's prefix, decide if HEAD differs
-//     from the latest tagged content. If unchanged → return status=unchanged.
-//   - Step 6: create + push the next tag with structured lineage in the
-//     annotation. On `tag already exists` → 409. On tag-push fail → delete
-//     the local tag (so step 0 of the next save doesn't silently absorb it
-//     into a no-op) and surface the error.
-func (s *artifactService) Save(ctx context.Context, projectID string, t ArtifactType, req SaveRequest) (*SaveResult, error) {
-	def, ok := defFor(t)
-	if !ok {
-		return nil, fmt.Errorf("%w: artifact type %q", ErrArtifactPathInvalid, t)
-	}
-	if req.Content == "" {
-		return nil, fmt.Errorf("%w: content is required on save", ErrArtifactPathInvalid)
-	}
-	if len(req.Content) > maxArtifactBytes {
-		return nil, fmt.Errorf("%w: content exceeds %d bytes", ErrArtifactPathInvalid, maxArtifactBytes)
-	}
-
+// The local clone's HEAD provides the "what we last saved" baseline for
+// computing the changeset (adds / modifies / deletes), so users' explicit
+// deletions still land as tombstones. Unrelated files on remote main are
+// preserved by `base_tree=current main tree`.
+func (s *artifactService) SaveRequirements(ctx context.Context, projectID string, req SaveRequest) (*RequirementsSaveResult, error) {
 	mu := s.gitOps.getRepoLock(projectID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -361,184 +414,47 @@ func (s *artifactService) Save(ctx context.Context, projectID string, t Artifact
 	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
 		return nil, fmt.Errorf("ensure clone: %w", err)
 	}
-	clonePath := repoRecord.ClonePath
 
-	token, identity, err := s.gitOps.resolveToken(ctx, repoRecord)
+	commitMsg := req.Message
+	if commitMsg == "" {
+		commitMsg = "Update requirements"
+	}
+	return s.saveRequirementsViaAPI(ctx, repoRecord, repoRecord.ClonePath, commitMsg)
+}
+
+// SaveDesign persists the working-tree `.asdlc/design.json` as a new commit
+// on remote main, then creates the next `v<N>-<M>` annotated tag. Replaces
+// the legacy `git commit + push + tag` flow with GitHub API calls
+// (Contents API path) per docs/design/artifact-store-v2.md V1.
+//
+// Returns ErrNoRequirementsBaseline (409) if no `v<N>` tag exists yet.
+func (s *artifactService) SaveDesign(ctx context.Context, projectID string, req SaveRequest) (*DesignSaveResult, error) {
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	askPass, err := createAskPassScript(token)
-	if err != nil {
-		return nil, fmt.Errorf("askpass: %w", err)
-	}
-	defer os.Remove(askPass)
-
-	authedEnv := append(os.Environ(),
-		"GIT_ASKPASS="+askPass,
-		"GIT_TERMINAL_PROMPT=0",
-	)
-
-	// Step 0: self-heal previous tag-push failures. Best-effort — a network
-	// blip here shouldn't block a fresh save.
-	if err := pushAllTags(ctx, clonePath, authedEnv); err != nil {
-		slog.WarnContext(ctx, "self-heal push --tags failed (continuing)",
-			"project", projectID, "error", err)
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("ensure clone: %w", err)
 	}
 
-	// Step 1: write content atomically.
-	abs := filepath.Join(clonePath, def.relPath)
-	if err := atomicWrite(abs, []byte(req.Content)); err != nil {
-		return nil, fmt.Errorf("write %s: %w", def.relPath, err)
+	commitMsg := req.Message
+	if commitMsg == "" {
+		commitMsg = "Update design"
 	}
-
-	// Step 2: stage primary file + extras.
-	if err := runGit(ctx, clonePath, "add", def.relPath); err != nil {
-		return nil, fmt.Errorf("git add %s: %w", def.relPath, err)
-	}
-	for _, extra := range def.extraStage {
-		extraAbs := filepath.Join(clonePath, extra)
-		if _, statErr := os.Stat(extraAbs); statErr == nil {
-			if err := runGit(ctx, clonePath, "add", extra); err != nil {
-				return nil, fmt.Errorf("git add %s: %w", extra, err)
-			}
-		}
-	}
-
-	// Step 3: commit (skip cleanly if nothing-to-commit).
-	authorName := identity.Name
-	authorEmail := identity.Email
-	commitArgs := []string{"commit", "-m", req.Message}
-	if req.Message == "" {
-		commitArgs[2] = fmt.Sprintf("Update %s", def.commitMsg)
-	}
-	if authorName != "" && authorEmail != "" {
-		commitArgs = append(commitArgs, fmt.Sprintf("--author=%s <%s>", authorName, authorEmail))
-	}
-	commitCmd := exec.CommandContext(ctx, "git", commitArgs...)
-	commitCmd.Dir = clonePath
-	commitCmd.Env = append(os.Environ(),
-		"GIT_COMMITTER_NAME="+authorName,
-		"GIT_COMMITTER_EMAIL="+authorEmail,
-	)
-	var commitStderr bytes.Buffer
-	commitCmd.Stderr = &commitStderr
-	commitErr := commitCmd.Run()
-	if commitErr != nil {
-		errMsg := commitStderr.String()
-		if !strings.Contains(errMsg, "nothing to commit") {
-			return nil, fmt.Errorf("git commit: %s: %w", errMsg, commitErr)
-		}
-		// Nothing-to-commit is OK — fall through to step 5 to figure out
-		// whether the *current* HEAD is already tagged, in which case we
-		// short-circuit unchanged.
-	}
-
-	// Step 4: push the commit (only if a new commit was created).
-	if commitErr == nil {
-		if err := runGitWithEnv(ctx, clonePath, authedEnv, "push", "origin", repoRecord.DefaultBranch); err != nil {
-			return nil, fmt.Errorf("git push: %w", err)
-		}
-	}
-
-	// Step 5: list tags + decide whether to bump version.
-	if err := bestEffortFetchTags(ctx, clonePath, authedEnv); err != nil {
-		slog.WarnContext(ctx, "fetch --tags failed (continuing with local view)",
-			"project", projectID, "error", err)
-	}
-	tags, err := listTagsForPrefix(ctx, clonePath, def.tagPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("list %s tags: %w", def.tagPrefix, err)
-	}
-
-	headHash, err := runGitOutput(ctx, clonePath, "rev-parse", "HEAD")
-	if err != nil {
-		return nil, fmt.Errorf("rev-parse HEAD: %w", err)
-	}
-	headHash = strings.TrimSpace(headHash)
-
-	if existing := latestTagName(tags, def.tagPrefix); existing != "" {
-		// If working-tree (now == HEAD after step 3) matches the latest
-		// tagged content, return unchanged. Use git show to compare against
-		// the tag's blob — same shape as the BFF used to do via GetFileAtTag.
-		taggedContent, err := runGitOutput(ctx, clonePath, "show", existing+":"+def.relPath)
-		if err == nil && strings.TrimSpace(taggedContent) == strings.TrimSpace(req.Content) {
-			latestVer := latestTagVersion(tags, def.tagPrefix)
-			var lineage Lineage
-			for _, t := range tags {
-				if t.Name == existing {
-					lineage = parseLineage(t.Message)
-					break
-				}
-			}
-			return &SaveResult{
-				Status:  "unchanged",
-				Version: latestVer,
-				Tag:     existing,
-				Lineage: lineage,
-			}, nil
-		}
-	}
-
-	// Step 6: create + push next tag.
-	nextVer, tagName := nextVersion(tags, def.tagPrefix)
-	tagDesc := fmt.Sprintf("%s v%d", def.commitMsg, nextVer)
-	tagBody := buildLineageMessage(tagDesc, req.Lineage)
-
-	tagCmd := exec.CommandContext(ctx, "git", "tag", "-a", tagName, "-m", tagBody)
-	tagCmd.Dir = clonePath
-	tagCmd.Env = append(os.Environ(),
-		"GIT_COMMITTER_NAME="+authorName,
-		"GIT_COMMITTER_EMAIL="+authorEmail,
-	)
-	var tagStderr bytes.Buffer
-	tagCmd.Stderr = &tagStderr
-	if err := tagCmd.Run(); err != nil {
-		errMsg := tagStderr.String()
-		if strings.Contains(errMsg, "already exists") {
-			// Concurrent write by another actor (manual ops or, in the
-			// future, a multi-replica sibling). Don't delete — the tag
-			// isn't ours.
-			return nil, fmt.Errorf("%w: %s", ErrConcurrentTagWrite, tagName)
-		}
-		return nil, fmt.Errorf("git tag -a %s: %s: %w", tagName, errMsg, err)
-	}
-
-	if err := runGitWithEnv(ctx, clonePath, authedEnv, "push", "origin", tagName); err != nil {
-		// Push failed. Delete the local tag so the next save's step 0
-		// self-heal doesn't silently absorb the missing remote tag, and so
-		// step 5's `latestTagName` lookup recomputes against the actual
-		// shared state.
-		if delErr := runGit(ctx, clonePath, "tag", "-d", tagName); delErr != nil {
-			slog.ErrorContext(ctx, "failed to delete local tag after push failure",
-				"project", projectID, "tag", tagName, "error", delErr)
-		}
-		return nil, fmt.Errorf("push tag %s: %w", tagName, err)
-	}
-
-	slog.InfoContext(ctx, "artifact saved + tagged",
-		"project", projectID, "type", t, "tag", tagName, "head", headHash)
-
-	return &SaveResult{
-		Status:     "approved",
-		Version:    nextVer,
-		Tag:        tagName,
-		CommitHash: headHash,
-		Lineage:    req.Lineage,
-	}, nil
+	return s.saveDesignViaAPI(ctx, repoRecord, repoRecord.ClonePath, commitMsg)
 }
 
 // ----- Discard -----
 
-// Discard reverts the working-tree file to its content at the latest tag.
-// Returns ErrNoVersionToDiscard if no tag exists yet for this artifact type
-// — the design pins this to 404 to match BFF's prior "no saved version to
-// revert to" wording.
-func (s *artifactService) Discard(ctx context.Context, projectID string, t ArtifactType) (*FileResult, error) {
-	def, ok := defFor(t)
-	if !ok {
-		return nil, fmt.Errorf("%w: artifact type %q", ErrArtifactPathInvalid, t)
-	}
-
+// DiscardRequirements reverts the working-tree `.asdlc/requirements/`
+// directory to its content at the latest `v<N>` tag. Files added since that
+// tag are removed; deletions are restored. Returns ErrNoVersionToDiscard if
+// no `v<N>` tag exists.
+func (s *artifactService) DiscardRequirements(ctx context.Context, projectID string) (map[string]string, error) {
 	mu := s.gitOps.getRepoLock(projectID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -552,41 +468,76 @@ func (s *artifactService) Discard(ctx context.Context, projectID string, t Artif
 	}
 	clonePath := repoRecord.ClonePath
 
-	token, _, err := s.gitOps.resolveToken(ctx, repoRecord)
+	authedEnv, _, cleanup, err := s.gitOps.prepareAuthedEnv(ctx, repoRecord)
 	if err != nil {
 		return nil, err
 	}
-	askPass, err := createAskPassScript(token)
-	if err != nil {
-		return nil, fmt.Errorf("askpass: %w", err)
-	}
-	defer os.Remove(askPass)
-	authedEnv := append(os.Environ(),
-		"GIT_ASKPASS="+askPass,
-		"GIT_TERMINAL_PROMPT=0",
-	)
+	defer cleanup()
 
 	if err := bestEffortFetchTags(ctx, clonePath, authedEnv); err != nil {
 		slog.WarnContext(ctx, "discard: fetch --tags failed (continuing)",
 			"project", projectID, "error", err)
 	}
-	tags, err := listTagsForPrefix(ctx, clonePath, def.tagPrefix)
+
+	tags, err := listAllTags(ctx, clonePath)
 	if err != nil {
-		return nil, fmt.Errorf("list %s tags: %w", def.tagPrefix, err)
+		return nil, fmt.Errorf("list tags: %w", err)
 	}
-	tagName := latestTagName(tags, def.tagPrefix)
+	tagName := latestRequirementsTag(tags)
 	if tagName == "" {
 		return nil, ErrNoVersionToDiscard
 	}
 
-	taggedContent, err := runGitOutput(ctx, clonePath, "show", tagName+":"+def.relPath)
+	if err := restoreDirAtTag(ctx, clonePath, tagName, RequirementsDir); err != nil {
+		return nil, err
+	}
+	return readMarkdownDir(filepath.Join(clonePath, RequirementsDir))
+}
+
+// DiscardDesign reverts `.asdlc/design.json` to the content at the latest
+// `v<N>-<M>` tag. Returns ErrNoVersionToDiscard if no design tag exists.
+func (s *artifactService) DiscardDesign(ctx context.Context, projectID string) (*FileResult, error) {
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("git show %s:%s: %w", tagName, def.relPath, err)
+		return nil, err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("ensure clone: %w", err)
+	}
+	clonePath := repoRecord.ClonePath
+
+	authedEnv, _, cleanup, err := s.gitOps.prepareAuthedEnv(ctx, repoRecord)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	if err := bestEffortFetchTags(ctx, clonePath, authedEnv); err != nil {
+		slog.WarnContext(ctx, "discard: fetch --tags failed (continuing)",
+			"project", projectID, "error", err)
 	}
 
-	abs := filepath.Join(clonePath, def.relPath)
+	tags, err := listAllTags(ctx, clonePath)
+	if err != nil {
+		return nil, fmt.Errorf("list tags: %w", err)
+	}
+	tagName := latestDesignTag(tags)
+	if tagName == "" {
+		return nil, ErrNoVersionToDiscard
+	}
+
+	taggedContent, err := runGitOutput(ctx, clonePath, "show", tagName+":"+DesignFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("git show %s:%s: %w", tagName, DesignFilePath, err)
+	}
+
+	abs := filepath.Join(clonePath, DesignFilePath)
 	if err := atomicWrite(abs, []byte(taggedContent)); err != nil {
-		return nil, fmt.Errorf("write %s: %w", def.relPath, err)
+		return nil, fmt.Errorf("write %s: %w", DesignFilePath, err)
 	}
 
 	sha, _ := blobSHAFor(ctx, clonePath, []byte(taggedContent))
@@ -595,54 +546,55 @@ func (s *artifactService) Discard(ctx context.Context, projectID string, t Artif
 
 // ----- Versions -----
 
-func (s *artifactService) ListVersions(ctx context.Context, projectID string, t ArtifactType) ([]VersionInfo, error) {
-	def, ok := defFor(t)
-	if !ok {
-		return nil, fmt.Errorf("%w: artifact type %q", ErrArtifactPathInvalid, t)
-	}
-
-	mu := s.gitOps.getRepoLock(projectID)
-	mu.Lock()
-	defer mu.Unlock()
-
-	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+func (s *artifactService) ListRequirementsVersions(ctx context.Context, projectID string) ([]RequirementsVersionInfo, error) {
+	tags, err := s.fetchAndListAllTags(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
-		return nil, fmt.Errorf("ensure clone: %w", err)
-	}
-	clonePath := repoRecord.ClonePath
-
-	token, _, err := s.gitOps.resolveToken(ctx, repoRecord)
-	if err != nil {
-		return nil, err
-	}
-	askPass, err := createAskPassScript(token)
-	if err != nil {
-		return nil, fmt.Errorf("askpass: %w", err)
-	}
-	defer os.Remove(askPass)
-	authedEnv := append(os.Environ(),
-		"GIT_ASKPASS="+askPass,
-		"GIT_TERMINAL_PROMPT=0",
-	)
-	_ = bestEffortFetchTags(ctx, clonePath, authedEnv)
-
-	tags, err := listTagsForPrefix(ctx, clonePath, def.tagPrefix)
-	if err != nil {
-		return nil, fmt.Errorf("list %s tags: %w", def.tagPrefix, err)
-	}
-	return tagsToVersions(tags, def.tagPrefix), nil
+	return tagsToRequirementsVersions(tags), nil
 }
 
-func (s *artifactService) GetVersion(ctx context.Context, projectID string, t ArtifactType, version int) (*VersionFileResult, error) {
-	def, ok := defFor(t)
-	if !ok {
-		return nil, fmt.Errorf("%w: artifact type %q", ErrArtifactPathInvalid, t)
+func (s *artifactService) ListDesignVersions(ctx context.Context, projectID string) ([]DesignVersionInfo, error) {
+	tags, err := s.fetchAndListAllTags(ctx, projectID)
+	if err != nil {
+		return nil, err
 	}
-	if version < 1 {
-		return nil, fmt.Errorf("%w: version must be >= 1", ErrArtifactPathInvalid)
+	return tagsToDesignVersions(tags), nil
+}
+
+func (s *artifactService) GetRequirementsAtTag(ctx context.Context, projectID, tag string) (map[string]string, error) {
+	n, ok := parseRequirementsTag(tag)
+	if !ok {
+		return nil, fmt.Errorf("%w: %q is not a v<N> tag", ErrInvalidVersionTag, tag)
+	}
+	_ = n // version is implicit in tag
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("ensure clone: %w", err)
+	}
+	clonePath := repoRecord.ClonePath
+
+	out, err := readMarkdownDirAtTag(ctx, clonePath, tag, RequirementsDir)
+	if err != nil {
+		if errors.Is(err, ErrArtifactNotFound) {
+			return nil, ErrArtifactNotFound
+		}
+		return nil, fmt.Errorf("read %s at %s: %w", RequirementsDir, tag, err)
+	}
+	return out, nil
+}
+
+func (s *artifactService) GetDesignAtTag(ctx context.Context, projectID, tag string) (*FileResult, error) {
+	if _, _, ok := parseDesignTag(tag); !ok {
+		return nil, fmt.Errorf("%w: %q is not a v<N>-<M> tag", ErrInvalidVersionTag, tag)
 	}
 
 	mu := s.gitOps.getRepoLock(projectID)
@@ -658,26 +610,18 @@ func (s *artifactService) GetVersion(ctx context.Context, projectID string, t Ar
 	}
 	clonePath := repoRecord.ClonePath
 
-	tagName := fmt.Sprintf("%s%d", def.tagPrefix, version)
-	content, err := runGitOutput(ctx, clonePath, "show", tagName+":"+def.relPath)
+	content, err := runGitOutput(ctx, clonePath, "show", tag+":"+DesignFilePath)
 	if err != nil {
 		errMsg := err.Error()
 		if strings.Contains(errMsg, "not a valid object") || strings.Contains(errMsg, "does not exist") {
 			return nil, ErrArtifactNotFound
 		}
-		return nil, fmt.Errorf("git show %s:%s: %w", tagName, def.relPath, err)
+		return nil, fmt.Errorf("git show %s:%s: %w", tag, DesignFilePath, err)
 	}
-
-	// Lineage from tag annotation. Best-effort: missing message → empty
-	// lineage rather than an error.
-	msg, _ := runGitOutput(ctx, clonePath, "tag", "-l", tagName, "--format=%(contents)")
-	return &VersionFileResult{
-		Content: content,
-		Lineage: parseLineage(strings.TrimSpace(msg)),
-	}, nil
+	return &FileResult{Content: content}, nil
 }
 
-// ----- Helpers -----
+// ----- Internal helpers -----
 
 func (s *artifactService) requireReadyRepo(ctx context.Context, projectID string) (*models.GitRepository, error) {
 	repoRecord, err := s.repo.GetByProjectID(ctx, projectID)
@@ -693,83 +637,184 @@ func (s *artifactService) requireReadyRepo(ctx context.Context, projectID string
 	return repoRecord, nil
 }
 
-// atomicWrite writes data via a sibling temp file + rename so a partial
-// write never leaves the target file truncated. Creates parent dirs as
-// needed (e.g. .asdlc/wireframes/ before the first wireframe lands).
-func atomicWrite(absPath string, data []byte) error {
-	dir := filepath.Dir(absPath)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("mkdir %s: %w", dir, err)
-	}
-	suffix := make([]byte, 8)
-	if _, err := rand.Read(suffix); err != nil {
-		return err
-	}
-	tmp := filepath.Join(dir, ".tmp-"+filepath.Base(absPath)+"-"+hex.EncodeToString(suffix))
-	if err := os.WriteFile(tmp, data, 0o644); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	if err := os.Rename(tmp, absPath); err != nil {
-		_ = os.Remove(tmp)
-		return err
-	}
-	return nil
-}
+// fetchAndListAllTags acquires the repo lock, ensures the clone is ready,
+// best-effort fetches remote tags, and returns the full local tag list.
+func (s *artifactService) fetchAndListAllTags(ctx context.Context, projectID string) ([]TagInfo, error) {
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
 
-// blobSHAFor computes `git hash-object` for the given content. Stable
-// across replica restarts (no mtime dependence) and independent of whether
-// the file is currently staged or committed.
-func blobSHAFor(ctx context.Context, clonePath string, data []byte) (string, error) {
-	cmd := exec.CommandContext(ctx, "git", "hash-object", "--stdin")
-	cmd.Dir = clonePath
-	cmd.Stdin = bytes.NewReader(data)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	out, err := cmd.Output()
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
 	if err != nil {
-		return "", fmt.Errorf("hash-object: %s: %w", stderr.String(), err)
+		return nil, err
 	}
-	return strings.TrimSpace(string(out)), nil
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("ensure clone: %w", err)
+	}
+	clonePath := repoRecord.ClonePath
+
+	authedEnv, _, cleanup, err := s.gitOps.prepareAuthedEnv(ctx, repoRecord)
+	if err != nil {
+		return nil, err
+	}
+	defer cleanup()
+
+	_ = bestEffortFetchTags(ctx, clonePath, authedEnv)
+	return listAllTags(ctx, clonePath)
 }
 
-// pushAllTags is the step-0 self-heal: a previous save may have created and
-// pushed a commit but failed to push its annotated tag. `git push --tags`
-// uploads any local-only refs/tags. Best-effort — the caller logs a warning
-// rather than failing the new save.
-func pushAllTags(ctx context.Context, clonePath string, authedEnv []string) error {
-	cmd := exec.CommandContext(ctx, "git", "push", "--tags", "origin")
+// prepareAuthedEnv resolves the org's GitHub token + identity and returns
+// an env slice configured with GIT_ASKPASS, plus a cleanup func that removes
+// the temp askpass script.
+func (s *gitOpsService) prepareAuthedEnv(ctx context.Context, repoRecord *models.GitRepository) ([]string, identityT, func(), error) {
+	token, identity, err := s.resolveToken(ctx, repoRecord)
+	if err != nil {
+		return nil, identityT{}, func() {}, err
+	}
+	askPass, err := createAskPassScript(token)
+	if err != nil {
+		return nil, identityT{}, func() {}, fmt.Errorf("askpass: %w", err)
+	}
+	cleanup := func() { _ = os.Remove(askPass) }
+	env := append(os.Environ(),
+		"GIT_ASKPASS="+askPass,
+		"GIT_TERMINAL_PROMPT=0",
+	)
+	return env, identityT{Name: identity.Name, Email: identity.Email}, cleanup, nil
+}
+
+// identityT is a local mirror of credentials.Identity to avoid a cross-package
+// import for Save's commit/tag identity plumbing.
+type identityT struct {
+	Name  string
+	Email string
+}
+
+// runCommit runs `git commit -m <msg>` with the supplied identity. Returns
+// nil on success, an error containing "nothing to commit" when the index is
+// clean, or another error otherwise.
+func runCommit(ctx context.Context, clonePath, msg string, identity identityT) error {
+	args := []string{"commit", "-m", msg}
+	if identity.Name != "" && identity.Email != "" {
+		args = append(args, fmt.Sprintf("--author=%s <%s>", identity.Name, identity.Email))
+	}
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = clonePath
-	cmd.Env = authedEnv
+	cmd.Env = append(os.Environ(),
+		"GIT_COMMITTER_NAME="+identity.Name,
+		"GIT_COMMITTER_EMAIL="+identity.Email,
+	)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("push --tags: %s: %w", stderr.String(), err)
+		return fmt.Errorf("git commit: %s: %w", strings.TrimSpace(stderr.String()), err)
 	}
 	return nil
 }
 
-// bestEffortFetchTags refreshes our local view of remote tags. The caller
-// logs a warning on failure rather than aborting — listing local-only tags
-// is still useful, just possibly out of date.
-func bestEffortFetchTags(ctx context.Context, clonePath string, authedEnv []string) error {
-	cmd := exec.CommandContext(ctx, "git", "fetch", "--tags", "origin")
-	cmd.Dir = clonePath
-	cmd.Env = authedEnv
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("fetch --tags: %s", stderr.String())
+// isNothingToCommit returns true if the underlying `git commit` failed only
+// because the index was clean (i.e. no changes were staged).
+func isNothingToCommit(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "nothing to commit")
+}
+
+// createAndPushTag annotates + pushes a tag. On push failure the local tag
+// is deleted so a future save's self-heal sees the actual remote state.
+func createAndPushTag(ctx context.Context, clonePath string, authedEnv []string, identity identityT, tagName, tagBody string) error {
+	tagCmd := exec.CommandContext(ctx, "git", "tag", "-a", tagName, "-m", tagBody)
+	tagCmd.Dir = clonePath
+	tagCmd.Env = append(os.Environ(),
+		"GIT_COMMITTER_NAME="+identity.Name,
+		"GIT_COMMITTER_EMAIL="+identity.Email,
+	)
+	var tagStderr bytes.Buffer
+	tagCmd.Stderr = &tagStderr
+	if err := tagCmd.Run(); err != nil {
+		errMsg := tagStderr.String()
+		if strings.Contains(errMsg, "already exists") {
+			return fmt.Errorf("%w: %s", ErrConcurrentTagWrite, tagName)
+		}
+		return fmt.Errorf("git tag -a %s: %s: %w", tagName, errMsg, err)
+	}
+	if err := runGitWithEnv(ctx, clonePath, authedEnv, "push", "origin", tagName); err != nil {
+		if delErr := runGit(ctx, clonePath, "tag", "-d", tagName); delErr != nil {
+			slog.ErrorContext(ctx, "failed to delete local tag after push failure",
+				"tag", tagName, "error", delErr)
+		}
+		return fmt.Errorf("push tag %s: %w", tagName, err)
 	}
 	return nil
 }
 
-// listTagsForPrefix shells `git tag -l <prefix>*` plus per-tag rev-list +
-// annotation lookups. Mirrors the existing gitOpsService.ListTags shape so
-// callers get the same TagInfo struct back.
-func listTagsForPrefix(ctx context.Context, clonePath, prefix string) ([]TagInfo, error) {
-	pattern := prefix + "*"
-	output, err := runGitOutput(ctx, clonePath, "tag", "-l", pattern, "--sort=-version:refname")
+// treesEqualAtPath returns true iff `git diff --quiet revA revB -- path`
+// reports no differences. Used to short-circuit "unchanged" saves.
+func treesEqualAtPath(ctx context.Context, clonePath, revA, revB, path string) (bool, error) {
+	cmd := exec.CommandContext(ctx, "git", "diff", "--quiet", revA, revB, "--", path)
+	cmd.Dir = clonePath
+	if err := cmd.Run(); err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			if exitErr.ExitCode() == 1 {
+				return false, nil // diff found
+			}
+		}
+		return false, fmt.Errorf("git diff: %w", err)
+	}
+	return true, nil
+}
+
+// restoreDirAtTag rewrites the working-tree directory at `relPath` to match
+// the tagged version: removes the current contents (to handle files added
+// since the tag) and runs `git checkout <tag> -- <relPath>` to restore the
+// snapshot.
+func restoreDirAtTag(ctx context.Context, clonePath, tag, relPath string) error {
+	abs := filepath.Join(clonePath, relPath)
+	if err := os.RemoveAll(abs); err != nil {
+		return fmt.Errorf("clear %s: %w", relPath, err)
+	}
+	if err := runGit(ctx, clonePath, "checkout", tag, "--", relPath); err != nil {
+		return fmt.Errorf("git checkout %s -- %s: %w", tag, relPath, err)
+	}
+	return nil
+}
+
+// readMarkdownDirAtTag reads every *.md file under `relPath` at `tag` from
+// the git object store (no working-tree side-effects). Returns
+// ErrArtifactNotFound when the directory entry doesn't exist at that tag.
+func readMarkdownDirAtTag(ctx context.Context, clonePath, tag, relPath string) (map[string]string, error) {
+	out, err := runGitOutput(ctx, clonePath, "ls-tree", "--name-only", tag+":"+relPath)
+	if err != nil {
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "Not a valid object name") || strings.Contains(errMsg, "does not exist") {
+			return nil, ErrArtifactNotFound
+		}
+		return nil, fmt.Errorf("ls-tree: %w", err)
+	}
+	files := make(map[string]string)
+	for _, name := range strings.Split(strings.TrimSpace(out), "\n") {
+		name = strings.TrimSpace(name)
+		if name == "" || !hasAllowedRequirementExt(name) {
+			continue
+		}
+		content, err := runGitOutput(ctx, clonePath, "show", tag+":"+filepath.Join(relPath, name))
+		if err != nil {
+			return nil, fmt.Errorf("show %s/%s: %w", relPath, name, err)
+		}
+		files[name] = content
+	}
+	// Stable iteration for tests (callers shouldn't rely on order in a map,
+	// but keep determinism for snapshot diffs).
+	keys := make([]string, 0, len(files))
+	for k := range files {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return files, nil
+}
+
+// listAllTags lists every tag in the local clone (used by callers that want
+// to filter by regex rather than by glob prefix).
+func listAllTags(ctx context.Context, clonePath string) ([]TagInfo, error) {
+	output, err := runGitOutput(ctx, clonePath, "tag", "-l", "--sort=-version:refname")
 	if err != nil {
 		return nil, fmt.Errorf("git tag -l: %w", err)
 	}
@@ -798,10 +843,75 @@ func listTagsForPrefix(ctx context.Context, clonePath, prefix string) ([]TagInfo
 	return tags, nil
 }
 
+// atomicWrite writes data via a sibling temp file + rename so a partial
+// write never leaves the target file truncated. Creates parent dirs as
+// needed.
+func atomicWrite(absPath string, data []byte) error {
+	dir := filepath.Dir(absPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("mkdir %s: %w", dir, err)
+	}
+	suffix := make([]byte, 8)
+	if _, err := rand.Read(suffix); err != nil {
+		return err
+	}
+	tmp := filepath.Join(dir, ".tmp-"+filepath.Base(absPath)+"-"+hex.EncodeToString(suffix))
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, absPath); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+// blobSHAFor computes `git hash-object` for the given content.
+func blobSHAFor(ctx context.Context, clonePath string, data []byte) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "hash-object", "--stdin")
+	cmd.Dir = clonePath
+	cmd.Stdin = bytes.NewReader(data)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("hash-object: %s: %w", stderr.String(), err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// pushAllTags is the step-0 self-heal: a previous save may have created and
+// pushed a commit but failed to push its annotated tag. `git push --tags`
+// uploads any local-only refs/tags. Best-effort.
+func pushAllTags(ctx context.Context, clonePath string, authedEnv []string) error {
+	cmd := exec.CommandContext(ctx, "git", "push", "--tags", "origin")
+	cmd.Dir = clonePath
+	cmd.Env = authedEnv
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("push --tags: %s: %w", stderr.String(), err)
+	}
+	return nil
+}
+
+// bestEffortFetchTags refreshes our local view of remote tags. The caller
+// logs a warning on failure rather than aborting.
+func bestEffortFetchTags(ctx context.Context, clonePath string, authedEnv []string) error {
+	cmd := exec.CommandContext(ctx, "git", "fetch", "--tags", "origin")
+	cmd.Dir = clonePath
+	cmd.Env = authedEnv
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("fetch --tags: %s", stderr.String())
+	}
+	return nil
+}
+
 // runGitWithEnv is the explicit-env variant of runGit used when we need to
-// pass GIT_ASKPASS for an authed remote operation. The default runGit uses
-// the inherited environment, which doesn't include the ephemeral askpass
-// path.
+// pass GIT_ASKPASS for an authed remote operation.
 func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir

@@ -6,11 +6,12 @@
 
 import type {
   Project,
-  Spec,
+  RequirementsBundle,
   CollabSession,
   Design,
   DesignComponent,
   ComponentDefinition,
+  ComponentOpenAPI,
   CreateProjectInput,
   Build,
   BuildLogs,
@@ -22,8 +23,9 @@ import type {
   ArtifactVersion,
   Tasks,
   Organization,
-  CreateOrganizationInput,
   ProjectBoard,
+  TaskStatusResponse,
+  TaskProgressResponse,
 } from './types';
 
 import { env } from '../../config/env';
@@ -125,6 +127,11 @@ function slugify(input: string): string {
 
 export const restApi = {
   // -- Organizations (real backend) ------------------------------------------
+  //
+  // The BFF is read-only over OC namespaces. Org creation is an out-of-band
+  // onboarding flow (Thunder signup → platform-api-service in hosted;
+  // seed-admin-org.sh in local). See
+  // asdlc-service/controllers/organization_controller.go.
 
   async listOrganizations(): Promise<Organization[]> {
     try {
@@ -133,17 +140,6 @@ export const restApi = {
     } catch {
       return [];
     }
-  },
-
-  async createOrganization(input: CreateOrganizationInput): Promise<Organization> {
-    return fetchJSON<Organization>(`/api/v1/organizations`, {
-      method: 'POST',
-      body: JSON.stringify({
-        name: slugify(input.displayName),
-        displayName: input.displayName,
-        description: input.description || '',
-      }),
-    });
   },
 
   // -- Projects (real backend) -----------------------------------------------
@@ -211,18 +207,112 @@ export const restApi = {
     }
   },
 
-  // -- Specs (real backend) --------------------------------------------------
+  // -- Requirements (multi-file directory under .asdlc/requirements/) -------
 
-  /**
-   * Stream spec generation from the BFF. The response is an AI SDK v6
-   * UI Message Stream (SSE); we forward text-delta chunks to `onDelta` as
-   * they arrive. Resolves to true when the stream completes successfully.
-   */
-  async generateSpec(
+  async getRequirements(orgHandle: string, projectId: string): Promise<RequirementsBundle | undefined> {
+    try {
+      const data = await fetchJSON<RequirementsBundle | null>(
+        `${projectPrefix(orgHandle, projectId)}/requirements`,
+      );
+      return data ?? undefined;
+    } catch {
+      return undefined;
+    }
+  },
+
+  async updateRequirementFile(
     orgHandle: string,
     projectId: string,
-    prompt: string,
-    onDelta: (delta: string) => void,
+    filename: string,
+    content: string,
+  ): Promise<RequirementsBundle | undefined> {
+    try {
+      return await fetchJSON<RequirementsBundle>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/files/${encodeURIComponent(filename)}`,
+        { method: 'PUT', body: JSON.stringify({ content }) },
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async deleteRequirementFile(
+    orgHandle: string,
+    projectId: string,
+    filename: string,
+  ): Promise<RequirementsBundle | undefined> {
+    try {
+      return await fetchJSON<RequirementsBundle>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/files/${encodeURIComponent(filename)}`,
+        { method: 'DELETE' },
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async saveRequirements(orgHandle: string, projectId: string): Promise<RequirementsBundle | undefined> {
+    try {
+      return await fetchJSON<RequirementsBundle>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/save`,
+        { method: 'POST' },
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async discardRequirements(orgHandle: string, projectId: string): Promise<RequirementsBundle | undefined> {
+    try {
+      return await fetchJSON<RequirementsBundle>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/discard`,
+        { method: 'POST' },
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  async listRequirementsVersions(orgHandle: string, projectId: string): Promise<ArtifactVersion[]> {
+    try {
+      return await fetchJSON<ArtifactVersion[]>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/versions`,
+      );
+    } catch {
+      return [];
+    }
+  },
+
+  async getRequirementsAtVersion(
+    orgHandle: string,
+    projectId: string,
+    tag: string,
+  ): Promise<RequirementsBundle | undefined> {
+    try {
+      return await fetchJSON<RequirementsBundle>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/versions/${encodeURIComponent(tag)}`,
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  /**
+   * Stream document generation for a specific requirement file via the
+   * skill-routed endpoint. The skill ID, source filenames, and optional
+   * user prompt are looked up by the caller from the document-types registry.
+   *
+   * `onDelta` receives each text-delta as it arrives. Skills with a
+   * post-processor (wireframes / domain-model) emit a final delta with
+   * `opts.replace = true` carrying the persisted payload — callers should
+   * reset their accumulator and use the delta verbatim.
+   */
+  async generateRequirementFile(
+    orgHandle: string,
+    projectId: string,
+    filename: string,
+    body: { skillId: string; sources?: string[]; prompt?: string },
+    onDelta: (delta: string, opts?: { replace?: boolean }) => void,
     signal?: AbortSignal,
   ): Promise<boolean> {
     const headers: Record<string, string> = {
@@ -235,13 +325,8 @@ export const restApi = {
     }
 
     const res = await fetch(
-      `${BASE}${projectPrefix(orgHandle, projectId)}/spec/generate`,
-      {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ prompt }),
-        signal,
-      },
+      `${BASE}${projectPrefix(orgHandle, projectId)}/requirements/files/${encodeURIComponent(filename)}/generate`,
+      { method: 'POST', headers, body: JSON.stringify(body), signal },
     );
     if (!res.ok || !res.body) return false;
 
@@ -255,7 +340,6 @@ export const restApi = {
       if (done) break;
       buffer += decoder.decode(value, { stream: true });
 
-      // SSE frames are separated by a blank line; keep any trailing partial in buffer.
       let idx: number;
       while ((idx = buffer.indexOf('\n\n')) !== -1) {
         const frame = buffer.slice(0, idx);
@@ -268,12 +352,12 @@ export const restApi = {
           try {
             const chunk = JSON.parse(payload);
             if (chunk.type === 'text-delta' && typeof chunk.delta === 'string') {
-              onDelta(chunk.delta);
+              onDelta(chunk.delta, chunk.replace ? { replace: true } : undefined);
             } else if (chunk.type === 'error') {
               errored = true;
             }
           } catch {
-            // ignore non-JSON data line
+            /* ignore non-JSON */
           }
         }
       }
@@ -282,76 +366,12 @@ export const restApi = {
     return !errored;
   },
 
-  async getSpec(orgHandle: string, projectId: string): Promise<Spec | undefined> {
-    try {
-      const data = await fetchJSON<Spec | null>(`${projectPrefix(orgHandle, projectId)}/spec`);
-      return data ?? undefined;
-    } catch {
-      return undefined;
-    }
-  },
-
-  async updateSpec(orgHandle: string, projectId: string, content: string): Promise<Spec | undefined> {
-    try {
-      return await fetchJSON<Spec>(`${projectPrefix(orgHandle, projectId)}/spec`, {
-        method: 'PUT',
-        body: JSON.stringify({ content }),
-      });
-    } catch {
-      return undefined;
-    }
-  },
-
-  async approveSpec(orgHandle: string, projectId: string): Promise<Spec | undefined> {
-    try {
-      return await fetchJSON<Spec>(`${projectPrefix(orgHandle, projectId)}/spec/save`, {
-        method: 'POST',
-      });
-    } catch {
-      return undefined;
-    }
-  },
-
-  async saveAndProceedSpec(orgHandle: string, projectId: string): Promise<Spec | undefined> {
-    try {
-      return await fetchJSON<Spec>(`${projectPrefix(orgHandle, projectId)}/spec/save`, {
-        method: 'POST',
-      });
-    } catch {
-      return undefined;
-    }
-  },
-
-  async listSpecVersions(orgHandle: string, projectId: string): Promise<ArtifactVersion[]> {
-    try {
-      return await fetchJSON<ArtifactVersion[]>(`${projectPrefix(orgHandle, projectId)}/spec/versions`);
-    } catch {
-      return [];
-    }
-  },
-
-  async getSpecAtVersion(orgHandle: string, projectId: string, version: number): Promise<Spec | undefined> {
-    try {
-      return await fetchJSON<Spec>(`${projectPrefix(orgHandle, projectId)}/spec/versions/${version}`);
-    } catch {
-      return undefined;
-    }
-  },
-
-  async discardSpecChanges(orgHandle: string, projectId: string): Promise<Spec | undefined> {
-    try {
-      return await fetchJSON<Spec>(`${projectPrefix(orgHandle, projectId)}/spec/discard`, {
-        method: 'POST',
-      });
-    } catch {
-      return undefined;
-    }
-  },
-
-  // -- Collaboration (real backend) ------------------------------------------------
+  // -- Collaboration (still scoped to the requirements editor session) ------
   async getCollabSession(orgHandle: string, projectId: string): Promise<CollabSession | undefined> {
     try {
-      return await fetchJSON<CollabSession>(`${projectPrefix(orgHandle, projectId)}/spec/collab-session`);
+      return await fetchJSON<CollabSession>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/collab-session`,
+      );
     } catch {
       return undefined;
     }
@@ -541,59 +561,14 @@ export const restApi = {
     }
   },
 
-  async getDesignAtVersion(orgHandle: string, projectId: string, version: number): Promise<Design | undefined> {
+  async getDesignAtVersion(orgHandle: string, projectId: string, tag: string): Promise<Design | undefined> {
     try {
-      return await fetchJSON<Design>(`${projectPrefix(orgHandle, projectId)}/design/versions/${version}`);
+      return await fetchJSON<Design>(
+        `${projectPrefix(orgHandle, projectId)}/design/versions/${encodeURIComponent(tag)}`,
+      );
     } catch {
       return undefined;
     }
-  },
-
-  async getSpecWireframe(
-    orgHandle: string,
-    projectId: string,
-  ): Promise<
-    | { status: 'ready'; content: string }
-    | { status: 'generating' }
-    | { status: 'not_generated' }
-    | { status: 'error'; error: string }
-  > {
-    const headers: Record<string, string> = {};
-    if (_getAccessToken) {
-      const token = await _getAccessToken();
-      if (token) headers.Authorization = `Bearer ${token}`;
-    }
-    try {
-      const res = await fetch(
-        `${BASE}${projectPrefix(orgHandle, projectId)}/spec/wireframe`,
-        { headers },
-      );
-      if (res.status === 200) return { status: 'ready', content: await res.text() };
-      if (res.status === 202) return { status: 'generating' };
-      if (res.status === 404) return { status: 'not_generated' };
-      let errorMsg = 'Wireframe generation failed';
-      try {
-        const body = await res.json();
-        if (body.message) errorMsg = body.message;
-      } catch { /* use default */ }
-      return { status: 'error', error: errorMsg };
-    } catch {
-      return { status: 'error', error: 'Failed to fetch wireframe' };
-    }
-  },
-
-  async generateSpecWireframe(orgHandle: string, projectId: string): Promise<void> {
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (_getAccessToken) {
-      const token = await _getAccessToken();
-      if (token) headers.Authorization = `Bearer ${token}`;
-    }
-    const res = await fetch(
-      `${BASE}${projectPrefix(orgHandle, projectId)}/spec/wireframe/generate`,
-      { method: 'POST', headers, body: '{}' },
-    );
-    if (!res.ok) throw new Error(`Failed to start wireframe generation (${res.status})`);
-    // 202 received — generation running in BFF background goroutine
   },
 
   async discardDesignChanges(orgHandle: string, projectId: string): Promise<Design | undefined> {
@@ -646,17 +621,9 @@ export const restApi = {
   },
 
   // -- Deployments (ReleaseBindings) ------------------------------------------
-
-  async deploy(orgHandle: string, projectId: string, componentId: string, environment: string): Promise<Deployment | undefined> {
-    try {
-      return await fetchJSON<Deployment>(`${projectPrefix(orgHandle, projectId)}/components/${componentId}/deployments`, {
-        method: 'POST',
-        body: JSON.stringify({ environment }),
-      });
-    } catch {
-      return undefined;
-    }
-  },
+  // No POST: deploys are driven entirely by OC's Component controller
+  // (AutoDeploy=true) once the build's generate-workload-cr step posts the
+  // Workload CR. The deploy page only reads.
 
   async listDeployments(orgHandle: string, projectId: string, componentId: string): Promise<Deployment[]> {
     try {
@@ -664,6 +631,38 @@ export const restApi = {
       return data.items || [];
     } catch {
       return [];
+    }
+  },
+
+  // -- OpenAPI (Test tab) -----------------------------------------------------
+  // 200  → ComponentOpenAPI (spec is a YAML string)
+  // 409  → { error: 'not-service', componentType }  — exists but isn't a service
+  // 404  → { error: 'not-found' }                   — design.json missing or no match
+
+  async getComponentOpenAPI(
+    orgHandle: string,
+    projectId: string,
+    componentId: string,
+  ): Promise<
+    | ComponentOpenAPI
+    | { error: 'not-service'; componentType: string }
+    | { error: 'not-found' }
+  > {
+    try {
+      return await fetchJSON<ComponentOpenAPI>(
+        `${projectPrefix(orgHandle, projectId)}/components/${componentId}/openapi`,
+      );
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 409) {
+        // The 409 body is the same envelope, just without a spec.
+        try {
+          const parsed = JSON.parse(e.message) as Partial<ComponentOpenAPI>;
+          return { error: 'not-service', componentType: parsed.componentType || 'unknown' };
+        } catch {
+          return { error: 'not-service', componentType: 'unknown' };
+        }
+      }
+      return { error: 'not-found' };
     }
   },
 
@@ -884,7 +883,7 @@ export const restApi = {
   },
 
   async getProjectBoard(orgHandle: string, projectId: string): Promise<ProjectBoard> {
-    const empty: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], url: '' };
+    const empty: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], pendingDeps: [], url: '' };
     try {
       const data = await fetchJSON<ProjectBoard>(`${projectPrefix(orgHandle, projectId)}/board`);
       return data ?? empty;
@@ -905,6 +904,44 @@ export const restApi = {
     await fetchJSON<void>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/exec`, {
       method: 'POST',
     });
+  },
+
+  // F3c — operator-driven retry for a task in `verification_failed`.
+  // Re-dispatches a fresh WorkflowRun against the same component / issue /
+  // branch with a newly minted per-task bearer.
+  async retryTask(orgHandle: string, projectId: string, taskId: string): Promise<void> {
+    await fetchJSON<void>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/retry`, {
+      method: 'POST',
+    });
+  },
+
+  async getTask(orgHandle: string, projectId: string, taskId: string): Promise<ComponentTask> {
+    return fetchJSON<ComponentTask>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}`);
+  },
+
+  async getTaskStatus(orgHandle: string, projectId: string, taskId: string): Promise<TaskStatusResponse> {
+    return fetchJSON<TaskStatusResponse>(`${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/status`);
+  },
+
+  async getTaskAgentProgress(
+    orgHandle: string, projectId: string, taskId: string,
+    sinceMillis: number, limit?: number,
+  ): Promise<TaskProgressResponse> {
+    const q = new URLSearchParams({ sinceMillis: String(sinceMillis) });
+    if (limit) q.set('limit', String(limit));
+    return fetchJSON<TaskProgressResponse>(
+      `${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/progress/agent?${q.toString()}`,
+    );
+  },
+
+  async getTaskBuildProgress(
+    orgHandle: string, projectId: string, taskId: string,
+    sinceMillis: number,
+  ): Promise<TaskProgressResponse> {
+    const q = new URLSearchParams({ sinceMillis: String(sinceMillis) });
+    return fetchJSON<TaskProgressResponse>(
+      `${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/progress/build?${q.toString()}`,
+    );
   },
 
   // -- Component Configs (Environment Variables) --------------------------------

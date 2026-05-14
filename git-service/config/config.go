@@ -13,24 +13,12 @@ type Config struct {
 
 	// GitHub — platform repo provisioning. Each org connects via the
 	// settings page (App or PAT mode); every code path resolves the
-	// per-org credential through the resolver. No platform-wide PAT.
+	// per-org credential through the resolver. No platform-wide PAT,
+	// no platform-wide repo owner — those come from the per-org
+	// credential surface (Credential.Token + Credential.RepoOwner).
 	GitHubRepoVisibility string
 	GitHubCommitterName  string // committer attribution on platform-driven commits/tags
 	GitHubCommitterEmail string
-
-	// Optional dev-only seed inputs for the "default" org. When set in
-	// DeploymentTier="dev", git-service auto-seeds the configured orgs with
-	// a PAT-mode credential at startup so a fresh deploy is usable
-	// without manual Settings clicks. Empty in production; per-org
-	// connect via the console is the only path.
-	GitHubPlatformPAT string
-	GitHubRepoOwner   string
-
-	// Comma-separated list of OC org handles to auto-seed in dev tier.
-	// Defaults to "default". Set to e.g. "default,admin" to bootstrap
-	// multi-org dev clusters where the IDP returns orgs other than
-	// "default" in the JWT subject claim.
-	GitHubPlatformPATSeedOrgs string
 
 	// Webhook delivery URL the platform registers on each repo. The single
 	// piece of config shared by local and cloud — local points at a smee.io
@@ -110,4 +98,19 @@ type Config struct {
 	// Task JWTs (issuer = "asdlc-bff", audience = "git-service").
 	TaskJWTAllowedIssuer   string
 	TaskJWTAllowedAudience string
+
+	// AnthropicPlatformKey is the platform-wide fallback Anthropic API key
+	// used by AnthropicCredentialService.EffectiveKey when an org has not
+	// configured its own. Empty string disables the fallback — agents-service
+	// then surfaces 503 no_anthropic_key_configured. Local-k3d sources this
+	// from deployments-v2/.env via envsubst into the env-overlay; cloud
+	// deployment will use a SecretReference + ESO (see
+	// docs/design/anthropic-key-dual-token.md §10 non-goals).
+	AnthropicPlatformKey string
+
+	// AgentsServiceURL is the in-cluster base URL of app-factory-agents-service
+	// (e.g. "http://app-factory-agents-service:3400"). Optional — empty
+	// disables the cache-invalidate broadcast on Connect/Disconnect. The
+	// 5-min LRU TTL on the resolver side bounds staleness regardless.
+	AgentsServiceURL string
 }

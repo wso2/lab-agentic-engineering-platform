@@ -23,6 +23,7 @@ type TokenClaims struct {
 	Sub      string `json:"sub"`
 	Scope    string `json:"scope"`
 	OuId     string `json:"ouId"`
+	OuName   string `json:"ouName"`
 	OuHandle string `json:"ouHandle"`
 	ClientID string `json:"client_id"`
 	// Task JWT–specific custom claims. Empty for User and Service JWTs.

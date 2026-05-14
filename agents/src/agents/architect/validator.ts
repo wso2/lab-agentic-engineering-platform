@@ -68,6 +68,28 @@ function validatePerComponent(doc: DesignDoc, issues: ValidationIssue[]): void {
     }
 
     if (slim.appPath) {
+      // appPath is a folder relative to repo root — not an HTTP route. The
+      // BFF feeds it through a HasPrefix check against GitHub push file
+      // paths (which never have a leading slash), and the coding agent
+      // uses it as the on-disk directory name. A leading slash, ".." or
+      // absolute path makes none of those consumers happy. We flag rather
+      // than silently normalise so the architect emits canonical form.
+      if (slim.appPath.startsWith("/")) {
+        issues.push({
+          component: name,
+          code: "app-path-leading-slash",
+          appPath: slim.appPath,
+          hint: "appPath is a folder (e.g. 'user-api'), not an HTTP route. Drop the leading slash.",
+        });
+      } else if (slim.appPath.includes("..") || slim.appPath.startsWith("./")) {
+        issues.push({
+          component: name,
+          code: "app-path-not-relative",
+          appPath: slim.appPath,
+          hint: "appPath must be a plain relative folder under repo root.",
+        });
+      }
+
       const prior = seenAppPaths.get(slim.appPath);
       if (prior !== undefined) {
         issues.push({

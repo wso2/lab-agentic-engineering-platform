@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"time"
 
+	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
+	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/utils"
@@ -17,20 +20,48 @@ type TaskController interface {
 	ListTasks(w http.ResponseWriter, r *http.Request)
 	ListOrgTasks(w http.ResponseWriter, r *http.Request)
 	GetTask(w http.ResponseWriter, r *http.Request)
+	GetTaskStatus(w http.ResponseWriter, r *http.Request)
 	GetTasks(w http.ResponseWriter, r *http.Request)
 	DispatchTasks(w http.ResponseWriter, r *http.Request)
 	GenerateTasks(w http.ResponseWriter, r *http.Request)
 	RegenerateTaskBody(w http.ResponseWriter, r *http.Request)
 	ExecTask(w http.ResponseWriter, r *http.Request)
+
+	// F3c — agent-driven verification failure + operator retry.
+	// VerificationFailed authenticates the caller with the per-task JWT
+	// minted at dispatch (verified locally by TaskTokenManager.Verify
+	// against the BFF's own signing key). Retry is operator-only and
+	// uses the standard auth middleware.
+	VerificationFailed(w http.ResponseWriter, r *http.Request)
+	Retry(w http.ResponseWriter, r *http.Request)
+
+	// Progress endpoints — task-execution-progress.md §5.2.
+	GetTaskAgentProgress(w http.ResponseWriter, r *http.Request)
+	GetTaskBuildProgress(w http.ResponseWriter, r *http.Request)
 }
 
 type taskController struct {
-	service      services.TaskService
-	workerSvc    services.RemoteWorkerService
+	service     services.TaskService
+	dispatchSvc services.DispatchService
+	progressSvc services.ProgressService
+	ocClient    openchoreo.ComponentClient
+	taskTokens  *services.TaskTokenManager
 }
 
-func NewTaskController(service services.TaskService, workerSvc services.RemoteWorkerService) TaskController {
-	return &taskController{service: service, workerSvc: workerSvc}
+func NewTaskController(
+	service services.TaskService,
+	dispatchSvc services.DispatchService,
+	progressSvc services.ProgressService,
+	ocClient openchoreo.ComponentClient,
+	taskTokens *services.TaskTokenManager,
+) TaskController {
+	return &taskController{
+		service:     service,
+		dispatchSvc: dispatchSvc,
+		progressSvc: progressSvc,
+		ocClient:    ocClient,
+		taskTokens:  taskTokens,
+	}
 }
 
 func (c *taskController) ListTasks(w http.ResponseWriter, r *http.Request) {
@@ -125,8 +156,8 @@ func (c *taskController) GetTasks(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *taskController) DispatchTasks(w http.ResponseWriter, r *http.Request) {
-	if c.workerSvc == nil {
-		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "remote-worker not configured")
+	if c.dispatchSvc == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "dispatch service not configured")
 		return
 	}
 
@@ -136,7 +167,7 @@ func (c *taskController) DispatchTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	results, err := c.workerSvc.DispatchTasks(r.Context(), org, project)
+	results, err := c.dispatchSvc.DispatchTasks(r.Context(), org, project)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "dispatch tasks failed", "error", err, "org", org, "project", project)
 		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to dispatch tasks")
@@ -208,6 +239,184 @@ func (c *taskController) RegenerateTaskBody(w http.ResponseWriter, r *http.Reque
 		fmt.Fprintf(w, "data: %s\n\n", errFrame)
 		flusher.Flush()
 	}
+}
+
+// TaskStatusResponse extends the per-task GET payload with the build
+// run's per-step task list, so the console's pipeline strip can render
+// without an extra round-trip. The task fields are inlined alongside a
+// separate buildSteps slice — design §5.2.
+type TaskStatusResponse struct {
+	Task       *models.ComponentTask    `json:"task"`
+	BuildSteps []models.WorkflowRunTask `json:"buildSteps,omitempty"`
+}
+
+// GetTaskStatus combines ComponentTask + WorkflowRun.Status.Tasks[] for
+// the build run (when present). No new persisted state.
+func (c *taskController) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+
+	task, err := c.service.GetTask(r.Context(), taskID)
+	if err != nil {
+		if errors.Is(err, services.ErrTaskNotFound) {
+			utils.WriteErrorResponse(w, http.StatusNotFound, "task not found")
+			return
+		}
+		slog.ErrorContext(r.Context(), "get task status: load task failed", "error", err, "taskId", taskID)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to get task")
+		return
+	}
+
+	resp := TaskStatusResponse{Task: task}
+	// Only fetch build steps while the task is actively building. Once the
+	// run is terminal the steps are frozen — fetching on every poll for a
+	// `deployed`/`failed` task is wasted OC calls.
+	if task.Status == string(models.TaskStatusBuilding) && task.LastBuildRunName != "" && c.ocClient != nil {
+		run, err := c.ocClient.GetWorkflowRun(r.Context(), task.OrgID, task.LastBuildRunName)
+		if err != nil {
+			slog.WarnContext(r.Context(), "get task status: load build run failed",
+				"error", err, "run", task.LastBuildRunName)
+		} else if run != nil {
+			resp.BuildSteps = run.Tasks
+		}
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, resp)
+}
+
+// GetTaskAgentProgress returns coding-agent NDJSON lines pulled from
+// Observer for the per-task WorkflowRun's pod stdout. Cursor-driven —
+// pass ?sinceMillis=N (0 ⇒ initial load anchored to task.DispatchedAt).
+func (c *taskController) GetTaskAgentProgress(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.progressSvc == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "progress_unavailable")
+		return
+	}
+	sinceMillis, _ := strconv.ParseInt(r.URL.Query().Get("sinceMillis"), 10, 64)
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+
+	resp, err := c.progressSvc.GetAgentProgress(r.Context(), taskID, sinceMillis, limit)
+	if err != nil {
+		writeProgressError(w, r, err, "get agent progress")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, resp)
+}
+
+// GetTaskBuildProgress returns synthetic build_step lines derived from
+// the build WorkflowRun's per-step Phase/Message/timestamps. Cursor
+// driven — same shape as /progress/agent.
+func (c *taskController) GetTaskBuildProgress(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.progressSvc == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "progress_unavailable")
+		return
+	}
+	sinceMillis, _ := strconv.ParseInt(r.URL.Query().Get("sinceMillis"), 10, 64)
+
+	resp, err := c.progressSvc.GetBuildProgress(r.Context(), taskID, sinceMillis)
+	if err != nil {
+		writeProgressError(w, r, err, "get build progress")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, resp)
+}
+
+func writeProgressError(w http.ResponseWriter, r *http.Request, err error, op string) {
+	if errors.Is(err, services.ErrTaskNotFound) {
+		utils.WriteErrorResponse(w, http.StatusNotFound, "task not found")
+		return
+	}
+	if errors.Is(err, services.ErrProgressUnavailable) {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "progress_unavailable")
+		return
+	}
+	slog.ErrorContext(r.Context(), op+" failed", "error", err)
+	utils.WriteErrorResponse(w, http.StatusInternalServerError, op+" failed")
+}
+
+// verificationFailedRequest is the per-task-bearer-authed JSON body for
+// POST /api/v1/tasks/{taskId}/verification-failed. The diagnostic field
+// is optional but strongly encouraged so the operator can see what the
+// agent observed.
+type verificationFailedRequest struct {
+	Diagnostic string `json:"diagnostic"`
+}
+
+// VerificationFailed (F3c) is called by the dispatched agent inside the
+// runner pod when it detects that a dependency endpoint is not behaving
+// as the spec describes. Authenticated via the per-task JWT the runner
+// already holds. The handler verifies the JWT, asserts the subject
+// matches the URL's taskId, then drives in_progress → verification_failed.
+func (c *taskController) VerificationFailed(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.dispatchSvc == nil || c.taskTokens == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "verification-failed not configured")
+		return
+	}
+
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "bearer token required")
+		return
+	}
+	claims, err := c.taskTokens.Verify(authz[len(prefix):])
+	if err != nil {
+		slog.WarnContext(r.Context(), "verification-failed: invalid bearer", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid task bearer")
+		return
+	}
+	if claims.TaskID != taskID {
+		slog.WarnContext(r.Context(), "verification-failed: bearer subject mismatch",
+			"task", taskID, "claimTaskId", claims.TaskID)
+		utils.WriteErrorResponse(w, http.StatusForbidden, "task bearer does not match path")
+		return
+	}
+
+	var req verificationFailedRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req) // diagnostic is optional
+	}
+	if err := c.dispatchSvc.MarkVerificationFailed(r.Context(), taskID, req.Diagnostic); err != nil {
+		slog.ErrorContext(r.Context(), "verification-failed: apply transition failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to apply verification_failed")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusAccepted, map[string]string{"status": "verification_failed"})
+}
+
+// Retry (F3c) is the operator-driven retry path: transitions
+// verification_failed → in_progress and re-dispatches with a fresh
+// WorkflowRun + freshly minted per-task bearer. Standard user auth
+// applies (mounted on the org/project-scoped task path).
+func (c *taskController) Retry(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.dispatchSvc == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "dispatch service not configured")
+		return
+	}
+	res, err := c.dispatchSvc.RetryTask(r.Context(), taskID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "retry: failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to retry task")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
 func (c *taskController) ExecTask(w http.ResponseWriter, r *http.Request) {

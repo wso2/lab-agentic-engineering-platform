@@ -3,7 +3,7 @@ import { api, ApiError } from '../services/api';
 import type { ProjectBoard } from '../services/api';
 import { projectRequirementsPath, projectArchitecturePath } from '../lib/paths';
 
-const EMPTY_BOARD: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], url: '' };
+const EMPTY_BOARD: ProjectBoard = { todo: [], inProgress: [], done: [], onHold: [], failed: [], pendingDeps: [], url: '' };
 
 export type GenerateBannerVariant = 'info' | 'warning' | 'error' | 'success';
 
@@ -147,7 +147,8 @@ export function useProjectBoard(orgId: string | undefined, projectId: string | u
   };
 
   const totalTasks =
-    board.todo.length + board.inProgress.length + board.done.length + board.onHold.length + board.failed.length;
+    board.todo.length + board.inProgress.length + board.done.length + board.onHold.length +
+    board.failed.length + (board.pendingDeps?.length ?? 0);
 
   return {
     board,

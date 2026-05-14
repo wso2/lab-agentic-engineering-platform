@@ -17,8 +17,8 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
 	"github.com/wso2/asdlc/asdlc-service/clients/observability"
+	"github.com/wso2/asdlc/asdlc-service/clients/observer"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
-	remoteworkerclient "github.com/wso2/asdlc/asdlc-service/clients/remoteworker"
 	"github.com/wso2/asdlc/asdlc-service/config"
 	"github.com/wso2/asdlc/asdlc-service/controllers"
 	"github.com/wso2/asdlc/asdlc-service/database"
@@ -87,6 +87,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Phase 4 — coding-agent ClusterWorkflow refactor. Adds
+	// last_coding_agent_run_name to component_tasks. Idempotent.
+	if err := migrations.RunPhase4CodingAgent(db); err != nil {
+		slog.Error("phase4_coding_agent migration failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Phase 5 — F2 deploy-gating: renames task_depends_on → depends_on_components.
+	// See docs/design/cross-component-wiring-gaps.md. Idempotent.
+	if err := migrations.RunPhase5DeployGating(db); err != nil {
+		slog.Error("phase5_deploy_gating migration failed", "error", err)
+		os.Exit(1)
+	}
+
 	// Repositories — only task and config remain
 	taskRepo := repositories.NewTaskRepository(db)
 	configRepo := repositories.NewConfigRepository(db)
@@ -105,11 +119,19 @@ func main() {
 		slog.Info("Service auth configured", "tokenURL", cfg.ServiceAuth.TokenURL, "clientID", cfg.ServiceAuth.ClientID)
 	}
 
-	// OpenChoreo clients
-	projectClient := openchoreo.NewProjectClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider, cfg.PlatformAPI.OrgNamespaceOverride)
-	componentClient := openchoreo.NewComponentClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider, cfg.PlatformAPI.OrgNamespaceOverride)
-	secretRefClient := openchoreo.NewSecretRefClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider, cfg.PlatformAPI.OrgNamespaceOverride)
-	namespaceClient := openchoreo.NewNamespaceClient(cfg.PlatformAPI.BaseURL, cfg.PlatformAPI.HostHeader, tokenProvider)
+	// OpenChoreo clients. Each one resolves the OC namespace as the OC
+	// org handle directly (== ouHandle); there is no override map. Migrated
+	// clients (namespace, project) take an openchoreo.Config; the still-hand-
+	// rolled clients (component, secretref) keep the legacy positional args
+	// until they migrate too.
+	ocConfig := openchoreo.Config{
+		BaseURL:      cfg.PlatformAPI.BaseURL,
+		HostHeader:   cfg.PlatformAPI.HostHeader,
+		AuthProvider: tokenProvider,
+	}
+	projectClient := openchoreo.NewProjectClient(ocConfig)
+	namespaceClient := openchoreo.NewNamespaceClient(ocConfig)
+	componentClient := openchoreo.NewComponentClient(ocConfig)
 
 	// Observability client (optional — build logs disabled when URL not set)
 	var observClient observability.Client
@@ -118,15 +140,40 @@ func main() {
 		slog.Info("Observability API", "baseURL", cfg.Observability.BaseURL)
 	}
 
+	// Observer client for /progress/* — Thunder client_credentials against
+	// the platform-default reader app. Falls back to nil (and 503 on the
+	// route) if any of the OAuth params are missing.
+	var observerTokenProvider *oauth.TokenProvider
+	var observerClient observer.Client
+	if cfg.Observability.BaseURL != "" && cfg.Observability.TokenURL != "" && cfg.Observability.ClientID != "" {
+		observerTokenProvider = oauth.NewTokenProvider(
+			cfg.Observability.TokenURL,
+			cfg.Observability.ClientID,
+			cfg.Observability.ClientSecret,
+			cfg.Observability.HostHeader,
+		)
+		var err error
+		observerClient, err = observer.NewClient(observer.Config{
+			BaseURL:       cfg.Observability.BaseURL,
+			TokenProvider: observerTokenProvider,
+		})
+		if err != nil {
+			slog.Error("Observer client init failed", "error", err)
+		} else if observerClient != nil {
+			slog.Info("Observer client configured", "baseURL", cfg.Observability.BaseURL, "clientID", cfg.Observability.ClientID)
+		}
+	} else {
+		slog.Warn("Observer client not configured — /progress/* will return 503 progress_unavailable")
+	}
+
 	// Per-target Service JWT providers. Each one is a Thunder client_credentials
 	// flow with the audience pinned to the target service. nil providers fall
 	// back to no-auth which only makes sense in dev/tests where the target
 	// service is configured with IS_LOCAL_DEV_ENV.
 	gitAuth := buildAuthProvider("git-service", cfg.ServiceAuthGitService)
 	agentsAuth := buildAuthProvider("agents-service", cfg.ServiceAuthAgentsService)
-	rwAuth := buildAuthProvider("remote-worker", cfg.ServiceAuthRemoteWorker)
 
-	// Agents service client (AI SDK v6 — BA, architect, task-generator, wireframe)
+	// Agents service client (AI SDK v6 — BA, architect, tech-lead)
 	agentsClient := agents.NewClient(cfg.AgentsService.BaseURL, agentsAuth)
 	slog.Info("Agents service", "baseURL", cfg.AgentsService.BaseURL)
 
@@ -148,12 +195,14 @@ func main() {
 	// git-service. The BFF no longer mounts /data/repos.
 	artifactStore := services.NewArtifactStore(gitClient)
 
-	// Services
-	configService := services.NewConfigService(configRepo)
-	projectService := services.NewProjectService(projectClient, gitClient, secretRefClient, artifactStore, taskRepo)
+	// Services. componentService is constructed before configService so
+	// configService can call back into it to mirror env-var edits onto
+	// the OC Component's workflow params.
+	projectService := services.NewProjectService(projectClient, gitClient, artifactStore, taskRepo)
 	organizationService := services.NewOrganizationService(db, namespaceClient)
-	componentService := services.NewComponentService(componentClient, observClient, configService, cfg.PlatformAPI.BuildRegistry)
-	specService := services.NewSpecService(artifactStore, agentsClient, gitClient)
+	componentService := services.NewComponentService(componentClient, observClient, artifactStore)
+	configService := services.NewConfigService(configRepo, componentService)
+	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
 
 	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, gitClient, agentsClient, dbClient)
@@ -206,17 +255,9 @@ func main() {
 		return middleware.WithAuthToken(ctx, token)
 	}
 
-	// Remote-worker (optional — disabled when REMOTE_WORKER_BASE_URL not set)
-	var remoteWorkerSvc services.RemoteWorkerService
-	if cfg.RemoteWorker.BaseURL != "" {
-		workerClient := remoteworkerclient.NewClient(cfg.RemoteWorker.BaseURL, rwAuth)
-		gitServiceHostURL := cfg.RemoteWorker.GitServiceHostURL
-		if gitServiceHostURL == "" {
-			gitServiceHostURL = cfg.GitService.BaseURL
-		}
-		remoteWorkerSvc = services.NewRemoteWorkerService(taskRepo, workerClient, gitClient, componentService, artifactStore, taskTokens, tokenInject, gitServiceHostURL)
-		slog.Info("Remote-worker", "baseURL", cfg.RemoteWorker.BaseURL, "gitServiceHostURL", gitServiceHostURL)
-	}
+	// Dispatch service drives the per-task Issue/branch/PR/Component
+	// pipeline and creates a coding-agent WorkflowRun. wfRunService is
+	// constructed below; we wire DispatchService after it.
 
 	// Webhook receiver wiring. PR B swaps EnvSecretProvider for
 	// GitServiceSecretProvider — secrets now come from the per-org
@@ -242,7 +283,27 @@ func main() {
 	webhookRouter := webhook.NewRouter()
 	projector := webhook.NewProjector(db)
 
-	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, tokenInject)
+	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, projector, tokenInject)
+
+	// Dispatch service — replaces the legacy RemoteWorkerService. Routes to
+	// WorkflowRunService.TriggerCodingAgent (ClusterWorkflow `app-factory-coding-agent`)
+	// for the per-task agent pod. AGENT_GIT_SERVICE_URL must be reachable from
+	// the WorkflowPlane namespace (cross-namespace FQDN — see env-overlay).
+	agentGitServiceURL := cfg.AgentGitServiceURL
+	if agentGitServiceURL == "" {
+		agentGitServiceURL = cfg.GitService.BaseURL
+	}
+	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, agentGitServiceURL, cfg.AgentPlatformURL)
+	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
+
+	// F1 — wire the post-deploy dispatch cascade. The projector fires
+	// OnTaskDeployed whenever ApplyBuildResult lands a task in `deployed`;
+	// the cascade takes a per-project lock and calls DispatchTasks to
+	// re-evaluate `pending_deps` siblings and auto-dispatch the ones
+	// whose deps are now satisfied. See docs/design/cross-component-
+	// wiring-gaps.md §3 F1.
+	projector.SetDispatchHook(services.NewDispatchCascadeHook(db, dispatchSvc))
+
 	webhook.Register(webhookRouter, db, projector, wfRunService)
 	if gitClient != nil {
 		webhook.RegisterInstallationHandlers(webhookRouter, db, gitClient, taskRepo, projector)
@@ -254,6 +315,11 @@ func main() {
 	// Phase 2 PR D — wfRunService.RetryAuthFailedBuild backs the auth
 	// retry path. authBudget is configurable for tests via env.
 	buildWatcher := webhook.NewBuildWatcher(db, componentClient, projector, tokenInject, wfRunService, cfg.BuildAuthRetryBudget)
+
+	// Coding-agent watcher — same cadence, complementary to the GitHub
+	// webhook path. Only acts on terminal-failed coding-agent WorkflowRuns;
+	// success transitions ride the pull_request:ready_for_review webhook.
+	codingAgentWatcher := webhook.NewCodingAgentWatcher(db, componentClient, projector, tokenInject)
 
 	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
 	var orgGitHubCtrl controllers.OrgGitHubController
@@ -267,6 +333,13 @@ func main() {
 			cfg.BFFPublicURL,
 			cfg.GithubAppClientID,
 		)
+	}
+
+	// Per-org Anthropic settings surface. Proxies to git-service's internal
+	// credential routes; same JWT gating as GitHub Integration.
+	var orgAnthropicCtrl controllers.OrgAnthropicController
+	if gitClient != nil {
+		orgAnthropicCtrl = controllers.NewOrgAnthropicController(gitClient)
 	}
 
 	// Inbound JWT verifier — Thunder publishes the User JWT and Service JWT
@@ -286,9 +359,15 @@ func main() {
 		ProjectController:      controllers.NewProjectController(projectService),
 		OrganizationController: controllers.NewOrganizationController(organizationService),
 		ComponentController:    controllers.NewComponentController(componentService, taskService),
-		SpecController:         controllers.NewSpecController(specService),
+		RequirementsController: controllers.NewRequirementsController(requirementsService),
 		DesignController:       controllers.NewDesignController(designService),
-		TaskController:         controllers.NewTaskController(taskService, remoteWorkerSvc),
+		TaskController: controllers.NewTaskController(
+			taskService,
+			dispatchSvc,
+			services.NewProgressService(taskService, componentClient, observerClient),
+			componentClient,
+			taskTokens,
+		),
 		BoardController:        controllers.NewBoardController(boardService),
 		ConfigController:       controllers.NewConfigController(configService),
 		CollabController:       controllers.NewCollabController(projectService),
@@ -296,8 +375,10 @@ func main() {
 		TaskRepo:               taskRepo,
 		ConfigRepo:             configRepo,
 		OrgGitHubController:    orgGitHubCtrl,
+		OrgAnthropicController: orgAnthropicCtrl,
 		JWKSController:         controllers.NewJWKSController(taskTokens),
 		ThunderJWKS:            thunderJWKS,
+		OrganizationService:    organizationService,
 	}
 
 	slog.Info("OpenChoreo API", "baseURL", cfg.PlatformAPI.BaseURL)
@@ -308,7 +389,7 @@ func main() {
 		Addr:              fmt.Sprintf("%s:%d", cfg.ServerHost, cfg.ServerPort),
 		Handler:           handler,
 		ReadHeaderTimeout: 15 * time.Second,
-		WriteTimeout:      15 * time.Minute, // AI design + wireframe generation can take up to 10 min
+		WriteTimeout:      15 * time.Minute, // AI design generation can take up to 10 min
 		IdleTimeout:       60 * time.Second,
 	}
 
@@ -326,6 +407,7 @@ func main() {
 	watcherCtx, cancelWatcher := context.WithCancel(context.Background())
 	defer cancelWatcher()
 	go buildWatcher.Run(watcherCtx)
+	go codingAgentWatcher.Run(watcherCtx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

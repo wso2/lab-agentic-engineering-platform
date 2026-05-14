@@ -33,9 +33,6 @@ func Load() (Config, error) {
 		GitHubRepoVisibility: r.readOptionalString("GITHUB_REPO_VISIBILITY", "private"),
 		GitHubCommitterName:  r.readOptionalString("GIT_COMMITTER_NAME", "ASDLC Bot"),
 		GitHubCommitterEmail: r.readOptionalString("GIT_COMMITTER_EMAIL", "bot@asdlc.dev"),
-		GitHubPlatformPAT:         r.readOptionalString("GITHUB_PLATFORM_PAT", ""),
-		GitHubRepoOwner:           r.readOptionalString("GITHUB_REPO_OWNER", ""),
-		GitHubPlatformPATSeedOrgs: r.readOptionalString("GITHUB_PLATFORM_PAT_SEED_ORGS", "default"),
 		WebhookDeliveryURL:   r.readOptionalString("GITHUB_WEBHOOK_DELIVERY_URL", ""),
 		WebhookHMACSecret:    r.readOptionalString("GITHUB_WEBHOOK_SECRET", ""),
 		TestMode:             r.readOptionalBool("TEST_MODE", false),
@@ -62,6 +59,8 @@ func Load() (Config, error) {
 		JWTResourceMetadataURL:      r.readOptionalString("JWT_RESOURCE_METADATA_URL", ""),
 		TaskJWTAllowedIssuer:        r.readOptionalString("TASK_JWT_ISSUER", "asdlc-bff"),
 		TaskJWTAllowedAudience:      r.readOptionalString("TASK_JWT_AUDIENCE", "git-service"),
+		AnthropicPlatformKey:        r.readOptionalString("ANTHROPIC_PLATFORM_KEY", ""),
+		AgentsServiceURL:            r.readOptionalString("AGENTS_SERVICE_URL", ""),
 	}
 
 	if len(r.errors) > 0 {

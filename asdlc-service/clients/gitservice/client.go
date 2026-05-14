@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
@@ -83,28 +82,39 @@ type Client interface {
 	// Phase 2 PR C — build credentials (mint-build).
 	MintBuildToken(ctx context.Context, ocOrgID, repoSlug string) (*MintResult, error)
 
-	// ----- Artifact endpoints (PR 1 of repo-storage-ownership refactor) -----
+	// Anthropic credentials — see docs/design/anthropic-key-dual-token.md.
+	// Connect/Status/Disconnect mirror the GitHub-credentials surface;
+	// ApplyAnthropicWPSecret is the per-dispatch SSA refresh.
+	CreateOrReplaceAnthropic(ctx context.Context, ocOrgID string, req AnthropicConnectRequest) (*AnthropicProjection, error)
+	GetAnthropicProjection(ctx context.Context, ocOrgID string) (*AnthropicProjection, error)
+	DisconnectAnthropic(ctx context.Context, ocOrgID string) error
+	ApplyAnthropicWPSecret(ctx context.Context, ocOrgID string) (*ApplyAnthropicWPSecretResult, error)
 
-	// Spec
-	GetSpec(ctx context.Context, orgID, projectID string) (*ArtifactFile, error)
-	PutSpec(ctx context.Context, orgID, projectID string, req PutFileRequest) (*PutResult, error)
-	SaveSpec(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*SaveArtifactResult, error)
-	DiscardSpec(ctx context.Context, orgID, projectID string) (*ArtifactFile, error)
-	ListSpecVersions(ctx context.Context, orgID, projectID string) ([]ArtifactVersionInfo, error)
-	GetSpecVersion(ctx context.Context, orgID, projectID string, version int) (*ArtifactVersionContent, error)
+	// ----- Artifact endpoints -----
+	//
+	// Requirements live as a multi-file directory (`.asdlc/requirements/*.md`)
+	// versioned together as `v<N>` tags. Design is a single file
+	// (`.asdlc/design.json`) versioned as `v<N>-<M>` where N is the source
+	// requirements version. The save endpoint takes no body — content is
+	// staged from the working tree, populated via per-file PUT/DELETE.
+
+	// Requirements
+	ListRequirements(ctx context.Context, orgID, projectID string) (map[string]string, error)
+	GetRequirementFile(ctx context.Context, orgID, projectID, name string) (*ArtifactFile, error)
+	PutRequirementFile(ctx context.Context, orgID, projectID, name string, req PutFileRequest) (*PutResult, error)
+	DeleteRequirementFile(ctx context.Context, orgID, projectID, name string) error
+	SaveRequirements(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*RequirementsSaveResult, error)
+	DiscardRequirements(ctx context.Context, orgID, projectID string) (map[string]string, error)
+	ListRequirementsVersions(ctx context.Context, orgID, projectID string) ([]RequirementsVersionInfo, error)
+	GetRequirementsAtTag(ctx context.Context, orgID, projectID, tag string) (map[string]string, error)
 
 	// Design
 	GetDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error)
 	PutDesign(ctx context.Context, orgID, projectID string, req PutFileRequest) (*PutResult, error)
-	SaveDesign(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*SaveArtifactResult, error)
+	SaveDesign(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*DesignSaveResult, error)
 	DiscardDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error)
-	ListDesignVersions(ctx context.Context, orgID, projectID string) ([]ArtifactVersionInfo, error)
-	GetDesignVersion(ctx context.Context, orgID, projectID string, version int) (*ArtifactVersionContent, error)
-
-	// Wireframes
-	ListWireframes(ctx context.Context, orgID, projectID string) ([]WireframeEntry, error)
-	GetWireframe(ctx context.Context, orgID, projectID, name string) (*ArtifactFile, error)
-	PutWireframe(ctx context.Context, orgID, projectID, name string, req PutFileRequest) (*PutResult, error)
+	ListDesignVersions(ctx context.Context, orgID, projectID string) ([]DesignVersionInfo, error)
+	GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*ArtifactFile, error)
 
 	// Board operations — GitHub Project v2.
 	GetBoard(ctx context.Context, projectID string) (*ProjectBoard, error)
@@ -127,41 +137,40 @@ type PutResult struct {
 	SHA string `json:"sha"`
 }
 
+// SaveArtifactRequest carries an optional commit message; the file content
+// is read from the working tree (populated via per-file PUTs / DELETEs).
 type SaveArtifactRequest struct {
-	Content string          `json:"content"`
-	Message string          `json:"message,omitempty"`
-	Lineage ArtifactLineage `json:"lineage,omitempty"`
+	Message string `json:"message,omitempty"`
 }
 
-type SaveArtifactResult struct {
-	Status     string          `json:"status"`
-	Version    int             `json:"version"`
-	Tag        string          `json:"tag"`
-	CommitHash string          `json:"commitHash,omitempty"`
-	Lineage    ArtifactLineage `json:"lineage"`
+type RequirementsSaveResult struct {
+	Status     string `json:"status"`
+	Tag        string `json:"tag"`
+	Version    int    `json:"version"`
+	CommitHash string `json:"commitHash,omitempty"`
 }
 
-type ArtifactLineage struct {
-	SourceSpec   string `json:"sourceSpec,omitempty"`
-	SourceDesign string `json:"sourceDesign,omitempty"`
+type DesignSaveResult struct {
+	Status              string `json:"status"`
+	Tag                 string `json:"tag"`
+	RequirementsVersion int    `json:"requirementsVersion"`
+	DesignRevision      int    `json:"designRevision"`
+	CommitHash          string `json:"commitHash,omitempty"`
 }
 
-type ArtifactVersionInfo struct {
-	Tag        string          `json:"tag"`
-	Version    int             `json:"version"`
-	CommitHash string          `json:"commitHash"`
-	Message    string          `json:"message"`
-	Lineage    ArtifactLineage `json:"lineage"`
+type RequirementsVersionInfo struct {
+	Tag        string `json:"tag"`
+	Version    int    `json:"version"`
+	CommitHash string `json:"commitHash"`
+	Message    string `json:"message"`
 }
 
-type ArtifactVersionContent struct {
-	Content string          `json:"content"`
-	Lineage ArtifactLineage `json:"lineage"`
-}
-
-type WireframeEntry struct {
-	Name string `json:"name"`
-	Size int64  `json:"size"`
+type DesignVersionInfo struct {
+	Tag                 string `json:"tag"`
+	RequirementsVersion int    `json:"requirementsVersion"`
+	DesignRevision      int    `json:"designRevision"`
+	CommitHash          string `json:"commitHash"`
+	Message             string `json:"message"`
 }
 
 // CreateDraftPRRequest is the request to open a draft pull request.
@@ -339,12 +348,22 @@ func (c *client) InitProjectComponents(ctx context.Context, req *CreateRepoReque
 		return nil, fmt.Errorf("git-service error (status %d): %s", resp.StatusCode, string(respBody))
 	}
 
-	var result RepoInfo
-	if err := json.Unmarshal(respBody, &result); err != nil {
+	// git-service wraps the repo row in {"projectId": "<gh project node id>",
+	// "repo": {<GitRepository>}} (org-neutrality refactor). Decode the
+	// wrapper, then take the nested repo as the canonical RepoInfo —
+	// otherwise OcSecretRefName / RepoSlug / RepoURL all end up empty and
+	// the downstream SecretReference creation silently no-ops.
+	var wrapper struct {
+		ProjectID string    `json:"projectId"`
+		Repo      *RepoInfo `json:"repo"`
+	}
+	if err := json.Unmarshal(respBody, &wrapper); err != nil {
 		return nil, fmt.Errorf("decode response: %w", err)
 	}
-
-	return &result, nil
+	if wrapper.Repo == nil {
+		return nil, fmt.Errorf("git-service init response missing 'repo' field; body=%s", string(respBody))
+	}
+	return wrapper.Repo, nil
 }
 
 // repoURL builds the orgId-scoped path that PR 0 introduced. All per-repo
@@ -932,79 +951,32 @@ func (c *client) doJSON(ctx context.Context, method, url string, body any, out a
 	return resp.StatusCode, nil
 }
 
-// Spec
+// Requirements (multi-file directory under .asdlc/requirements/, tagged v<N>)
 
-func (c *client) GetSpec(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
-	return c.getArtifactFile(ctx, c.artifactURL(orgID, projectID, "spec"))
+type requirementsListResp struct {
+	Files map[string]string `json:"files"`
 }
 
-func (c *client) PutSpec(ctx context.Context, orgID, projectID string, req PutFileRequest) (*PutResult, error) {
-	return c.putArtifactFile(ctx, c.artifactURL(orgID, projectID, "spec"), req)
+type requirementsVersionResp struct {
+	Tag     string            `json:"tag"`
+	Version int               `json:"version"`
+	Files   map[string]string `json:"files"`
 }
 
-func (c *client) SaveSpec(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*SaveArtifactResult, error) {
-	return c.saveArtifact(ctx, c.artifactURL(orgID, projectID, "spec"), req)
-}
-
-func (c *client) DiscardSpec(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
-	return c.discardArtifact(ctx, c.artifactURL(orgID, projectID, "spec"))
-}
-
-func (c *client) ListSpecVersions(ctx context.Context, orgID, projectID string) ([]ArtifactVersionInfo, error) {
-	return c.listVersions(ctx, c.artifactURL(orgID, projectID, "spec"))
-}
-
-func (c *client) GetSpecVersion(ctx context.Context, orgID, projectID string, version int) (*ArtifactVersionContent, error) {
-	return c.getVersion(ctx, c.artifactURL(orgID, projectID, "spec"), version)
-}
-
-// Design
-
-func (c *client) GetDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
-	return c.getArtifactFile(ctx, c.artifactURL(orgID, projectID, "design"))
-}
-
-func (c *client) PutDesign(ctx context.Context, orgID, projectID string, req PutFileRequest) (*PutResult, error) {
-	return c.putArtifactFile(ctx, c.artifactURL(orgID, projectID, "design"), req)
-}
-
-func (c *client) SaveDesign(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*SaveArtifactResult, error) {
-	return c.saveArtifact(ctx, c.artifactURL(orgID, projectID, "design"), req)
-}
-
-func (c *client) DiscardDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
-	return c.discardArtifact(ctx, c.artifactURL(orgID, projectID, "design"))
-}
-
-func (c *client) ListDesignVersions(ctx context.Context, orgID, projectID string) ([]ArtifactVersionInfo, error) {
-	return c.listVersions(ctx, c.artifactURL(orgID, projectID, "design"))
-}
-
-func (c *client) GetDesignVersion(ctx context.Context, orgID, projectID string, version int) (*ArtifactVersionContent, error) {
-	return c.getVersion(ctx, c.artifactURL(orgID, projectID, "design"), version)
-}
-
-// Wireframes
-
-func (c *client) ListWireframes(ctx context.Context, orgID, projectID string) ([]WireframeEntry, error) {
-	var out []WireframeEntry
-	if _, err := c.doJSON(ctx, http.MethodGet, c.artifactURL(orgID, projectID, "wireframes"), nil, &out, http.StatusOK); err != nil {
+func (c *client) ListRequirements(ctx context.Context, orgID, projectID string) (map[string]string, error) {
+	url := c.artifactURL(orgID, projectID, "requirements")
+	var out requirementsListResp
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
-	return out, nil
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
 }
 
-func (c *client) GetWireframe(ctx context.Context, orgID, projectID, name string) (*ArtifactFile, error) {
-	return c.getArtifactFile(ctx, c.artifactURL(orgID, projectID, "wireframes")+"/"+url.PathEscape(name))
-}
-
-func (c *client) PutWireframe(ctx context.Context, orgID, projectID, name string, req PutFileRequest) (*PutResult, error) {
-	return c.putArtifactFile(ctx, c.artifactURL(orgID, projectID, "wireframes")+"/"+url.PathEscape(name), req)
-}
-
-// Shared HTTP helpers
-
-func (c *client) getArtifactFile(ctx context.Context, url string) (*ArtifactFile, error) {
+func (c *client) GetRequirementFile(ctx context.Context, orgID, projectID, name string) (*ArtifactFile, error) {
+	url := fmt.Sprintf("%s/files/%s", c.artifactURL(orgID, projectID, "requirements"), name)
 	var out ArtifactFile
 	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
@@ -1012,7 +984,8 @@ func (c *client) getArtifactFile(ctx context.Context, url string) (*ArtifactFile
 	return &out, nil
 }
 
-func (c *client) putArtifactFile(ctx context.Context, url string, req PutFileRequest) (*PutResult, error) {
+func (c *client) PutRequirementFile(ctx context.Context, orgID, projectID, name string, req PutFileRequest) (*PutResult, error) {
+	url := fmt.Sprintf("%s/files/%s", c.artifactURL(orgID, projectID, "requirements"), name)
 	var out PutResult
 	if _, err := c.doJSON(ctx, http.MethodPut, url, req, &out, http.StatusOK); err != nil {
 		return nil, err
@@ -1020,33 +993,105 @@ func (c *client) putArtifactFile(ctx context.Context, url string, req PutFileReq
 	return &out, nil
 }
 
-func (c *client) saveArtifact(ctx context.Context, baseURL string, req SaveArtifactRequest) (*SaveArtifactResult, error) {
-	var out SaveArtifactResult
-	if _, err := c.doJSON(ctx, http.MethodPost, baseURL+"/save", req, &out, http.StatusOK); err != nil {
+func (c *client) DeleteRequirementFile(ctx context.Context, orgID, projectID, name string) error {
+	url := fmt.Sprintf("%s/files/%s", c.artifactURL(orgID, projectID, "requirements"), name)
+	if _, err := c.doJSON(ctx, http.MethodDelete, url, nil, nil, http.StatusNoContent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *client) SaveRequirements(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*RequirementsSaveResult, error) {
+	url := c.artifactURL(orgID, projectID, "requirements") + "/save"
+	var out RequirementsSaveResult
+	if _, err := c.doJSON(ctx, http.MethodPost, url, req, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-func (c *client) discardArtifact(ctx context.Context, baseURL string) (*ArtifactFile, error) {
-	var out ArtifactFile
-	if _, err := c.doJSON(ctx, http.MethodPost, baseURL+"/discard", nil, &out, http.StatusOK); err != nil {
+func (c *client) DiscardRequirements(ctx context.Context, orgID, projectID string) (map[string]string, error) {
+	url := c.artifactURL(orgID, projectID, "requirements") + "/discard"
+	var out requirementsListResp
+	if _, err := c.doJSON(ctx, http.MethodPost, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
-	return &out, nil
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
 }
 
-func (c *client) listVersions(ctx context.Context, baseURL string) ([]ArtifactVersionInfo, error) {
-	var out []ArtifactVersionInfo
-	if _, err := c.doJSON(ctx, http.MethodGet, baseURL+"/versions", nil, &out, http.StatusOK); err != nil {
+func (c *client) ListRequirementsVersions(ctx context.Context, orgID, projectID string) ([]RequirementsVersionInfo, error) {
+	url := c.artifactURL(orgID, projectID, "requirements") + "/versions"
+	var out []RequirementsVersionInfo
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *client) getVersion(ctx context.Context, baseURL string, version int) (*ArtifactVersionContent, error) {
-	var out ArtifactVersionContent
-	if _, err := c.doJSON(ctx, http.MethodGet, fmt.Sprintf("%s/versions/%d", baseURL, version), nil, &out, http.StatusOK); err != nil {
+func (c *client) GetRequirementsAtTag(ctx context.Context, orgID, projectID, tag string) (map[string]string, error) {
+	url := fmt.Sprintf("%s/versions/%s", c.artifactURL(orgID, projectID, "requirements"), tag)
+	var out requirementsVersionResp
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
+}
+
+// Design (single file at .asdlc/design.json, tagged v<N>-<M>)
+
+func (c *client) GetDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
+	var out ArtifactFile
+	if _, err := c.doJSON(ctx, http.MethodGet, c.artifactURL(orgID, projectID, "design"), nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *client) PutDesign(ctx context.Context, orgID, projectID string, req PutFileRequest) (*PutResult, error) {
+	var out PutResult
+	if _, err := c.doJSON(ctx, http.MethodPut, c.artifactURL(orgID, projectID, "design"), req, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *client) SaveDesign(ctx context.Context, orgID, projectID string, req SaveArtifactRequest) (*DesignSaveResult, error) {
+	url := c.artifactURL(orgID, projectID, "design") + "/save"
+	var out DesignSaveResult
+	if _, err := c.doJSON(ctx, http.MethodPost, url, req, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *client) DiscardDesign(ctx context.Context, orgID, projectID string) (*ArtifactFile, error) {
+	url := c.artifactURL(orgID, projectID, "design") + "/discard"
+	var out ArtifactFile
+	if _, err := c.doJSON(ctx, http.MethodPost, url, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *client) ListDesignVersions(ctx context.Context, orgID, projectID string) ([]DesignVersionInfo, error) {
+	url := c.artifactURL(orgID, projectID, "design") + "/versions"
+	var out []DesignVersionInfo
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *client) GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*ArtifactFile, error) {
+	url := fmt.Sprintf("%s/versions/%s", c.artifactURL(orgID, projectID, "design"), tag)
+	var out ArtifactFile
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
 		return nil, err
 	}
 	return &out, nil

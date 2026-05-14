@@ -5,34 +5,34 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	"github.com/wso2/asdlc/git-service/services"
 	"github.com/wso2/asdlc/git-service/utils"
 )
 
-// ArtifactController handles HTTP for the typed artifact endpoints introduced
-// in PR 1 of the repo-storage-ownership refactor: read/write working-tree
-// content for spec/design/wireframes, atomic save (commit+push+tag under one
-// mutex), discard, and version listing.
+// ArtifactController serves the typed artifact endpoints:
+//   - Requirements: multi-file directory at .asdlc/requirements/, tagged
+//     `v<N>` per save.
+//   - Design: single file .asdlc/design.json, tagged `v<N>-<M>` per save
+//     (where N is the source requirements version).
 type ArtifactController interface {
-	GetSpec(w http.ResponseWriter, r *http.Request)
-	PutSpec(w http.ResponseWriter, r *http.Request)
-	SaveSpec(w http.ResponseWriter, r *http.Request)
-	DiscardSpec(w http.ResponseWriter, r *http.Request)
-	ListSpecVersions(w http.ResponseWriter, r *http.Request)
-	GetSpecVersion(w http.ResponseWriter, r *http.Request)
+	// Requirements
+	ListRequirements(w http.ResponseWriter, r *http.Request)
+	GetRequirementFile(w http.ResponseWriter, r *http.Request)
+	PutRequirementFile(w http.ResponseWriter, r *http.Request)
+	DeleteRequirementFile(w http.ResponseWriter, r *http.Request)
+	SaveRequirements(w http.ResponseWriter, r *http.Request)
+	DiscardRequirements(w http.ResponseWriter, r *http.Request)
+	ListRequirementsVersions(w http.ResponseWriter, r *http.Request)
+	GetRequirementsVersion(w http.ResponseWriter, r *http.Request)
 
+	// Design
 	GetDesign(w http.ResponseWriter, r *http.Request)
 	PutDesign(w http.ResponseWriter, r *http.Request)
 	SaveDesign(w http.ResponseWriter, r *http.Request)
 	DiscardDesign(w http.ResponseWriter, r *http.Request)
 	ListDesignVersions(w http.ResponseWriter, r *http.Request)
 	GetDesignVersion(w http.ResponseWriter, r *http.Request)
-
-	ListWireframes(w http.ResponseWriter, r *http.Request)
-	GetWireframe(w http.ResponseWriter, r *http.Request)
-	PutWireframe(w http.ResponseWriter, r *http.Request)
 }
 
 type artifactController struct {
@@ -45,31 +45,26 @@ func NewArtifactController(svc services.ArtifactService) ArtifactController {
 
 // ----- Common helpers -----
 
-const (
-	specRelPath   = ".asdlc/spec.md"
-	designRelPath = ".asdlc/design.json"
-)
-
-func wireframeRelPath(name string) string { return ".asdlc/wireframes/" + name }
-
-type putRequest struct {
+type putBody struct {
 	Content string `json:"content"`
 	IfMatch string `json:"ifMatch,omitempty"`
 }
 
-// writeArtifactError maps service-layer error sentinels to HTTP statuses.
-// Centralised so spec/design/wireframe handlers all behave the same way.
 func writeArtifactError(w http.ResponseWriter, r *http.Request, err error, op string) {
 	switch {
 	case errors.Is(err, services.ErrArtifactNotFound):
 		utils.WriteErrorResponse(w, http.StatusNotFound, "artifact not found")
 	case errors.Is(err, services.ErrArtifactPathInvalid):
 		utils.WriteErrorResponse(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, services.ErrInvalidVersionTag):
+		utils.WriteErrorResponse(w, http.StatusBadRequest, err.Error())
 	case errors.Is(err, services.ErrIfMatchFailed):
 		utils.WriteErrorResponse(w, http.StatusPreconditionFailed, "if-match precondition failed")
 	case errors.Is(err, services.ErrNoVersionToDiscard):
 		utils.WriteErrorResponse(w, http.StatusNotFound, "no saved version to revert to")
 	case errors.Is(err, services.ErrConcurrentTagWrite):
+		utils.WriteErrorResponse(w, http.StatusConflict, err.Error())
+	case errors.Is(err, services.ErrNoRequirementsBaseline):
 		utils.WriteErrorResponse(w, http.StatusConflict, err.Error())
 	case errors.Is(err, services.ErrRepoNotFound):
 		utils.WriteErrorResponse(w, http.StatusNotFound, "repository not found")
@@ -81,63 +76,129 @@ func writeArtifactError(w http.ResponseWriter, r *http.Request, err error, op st
 	}
 }
 
-// readPutBody decodes a `{content, ifMatch?}` body. Centralised so the size
-// cap + content-required check happens once.
-func readPutBody(r *http.Request) (putRequest, error) {
-	var body putRequest
+func projectIDFrom(r *http.Request) string { return r.PathValue("projectId") }
+
+func decodePutBody(r *http.Request) (putBody, error) {
+	var body putBody
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		return body, err
 	}
 	return body, nil
 }
 
-func projectIDFrom(r *http.Request) string { return r.PathValue("projectId") }
+// ----- Requirements handlers -----
 
-// ----- Spec handlers -----
-
-func (c *artifactController) GetSpec(w http.ResponseWriter, r *http.Request) {
-	res, err := c.svc.GetFile(r.Context(), projectIDFrom(r), specRelPath)
+func (c *artifactController) ListRequirements(w http.ResponseWriter, r *http.Request) {
+	files, err := c.svc.ListRequirementFiles(r.Context(), projectIDFrom(r))
 	if err != nil {
-		writeArtifactError(w, r, err, "get spec")
+		writeArtifactError(w, r, err, "list requirements")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, services.RequirementsListResult{Files: files})
+}
+
+func (c *artifactController) GetRequirementFile(w http.ResponseWriter, r *http.Request) {
+	relPath, err := requirementsRelPath(r.PathValue("name"))
+	if err != nil {
+		writeArtifactError(w, r, err, "get requirement file")
+		return
+	}
+	res, err := c.svc.GetFile(r.Context(), projectIDFrom(r), relPath)
+	if err != nil {
+		writeArtifactError(w, r, err, "get requirement file")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
-func (c *artifactController) PutSpec(w http.ResponseWriter, r *http.Request) {
-	body, err := readPutBody(r)
+func (c *artifactController) PutRequirementFile(w http.ResponseWriter, r *http.Request) {
+	relPath, err := requirementsRelPath(r.PathValue("name"))
+	if err != nil {
+		writeArtifactError(w, r, err, "put requirement file")
+		return
+	}
+	body, err := decodePutBody(r)
 	if err != nil {
 		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	res, err := c.svc.PutFile(r.Context(), projectIDFrom(r), specRelPath, body.Content, body.IfMatch)
+	res, err := c.svc.PutFile(r.Context(), projectIDFrom(r), relPath, body.Content, body.IfMatch)
 	if err != nil {
-		writeArtifactError(w, r, err, "put spec")
+		writeArtifactError(w, r, err, "put requirement file")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
-func (c *artifactController) SaveSpec(w http.ResponseWriter, r *http.Request) {
-	c.handleSave(w, r, services.ArtifactSpec)
+func (c *artifactController) DeleteRequirementFile(w http.ResponseWriter, r *http.Request) {
+	if err := c.svc.DeleteRequirementFile(r.Context(), projectIDFrom(r), r.PathValue("name")); err != nil {
+		writeArtifactError(w, r, err, "delete requirement file")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
-func (c *artifactController) DiscardSpec(w http.ResponseWriter, r *http.Request) {
-	c.handleDiscard(w, r, services.ArtifactSpec)
+func (c *artifactController) SaveRequirements(w http.ResponseWriter, r *http.Request) {
+	var body services.SaveRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		// Empty body is allowed — message is optional.
+		body = services.SaveRequest{}
+	}
+	res, err := c.svc.SaveRequirements(r.Context(), projectIDFrom(r), body)
+	if err != nil {
+		writeArtifactError(w, r, err, "save requirements")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
-func (c *artifactController) ListSpecVersions(w http.ResponseWriter, r *http.Request) {
-	c.handleListVersions(w, r, services.ArtifactSpec)
+func (c *artifactController) DiscardRequirements(w http.ResponseWriter, r *http.Request) {
+	files, err := c.svc.DiscardRequirements(r.Context(), projectIDFrom(r))
+	if err != nil {
+		writeArtifactError(w, r, err, "discard requirements")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, services.RequirementsListResult{Files: files})
 }
 
-func (c *artifactController) GetSpecVersion(w http.ResponseWriter, r *http.Request) {
-	c.handleGetVersion(w, r, services.ArtifactSpec)
+func (c *artifactController) ListRequirementsVersions(w http.ResponseWriter, r *http.Request) {
+	versions, err := c.svc.ListRequirementsVersions(r.Context(), projectIDFrom(r))
+	if err != nil {
+		writeArtifactError(w, r, err, "list requirements versions")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, versions)
+}
+
+func (c *artifactController) GetRequirementsVersion(w http.ResponseWriter, r *http.Request) {
+	tag := r.PathValue("tag")
+	files, err := c.svc.GetRequirementsAtTag(r.Context(), projectIDFrom(r), tag)
+	if err != nil {
+		writeArtifactError(w, r, err, "get requirements version")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, services.VersionRequirementsResult{
+		Tag:   tag,
+		Files: files,
+	})
+}
+
+// requirementsRelPath validates a requirement file basename and returns its
+// repo-relative path. Wrapped here so the controller doesn't import the
+// service-internal helper directly.
+func requirementsRelPath(name string) (string, error) {
+	if name == "" {
+		return "", services.ErrArtifactPathInvalid
+	}
+	// Lean on the service's path validator — it'll catch path separators,
+	// traversal, and the .md suffix requirement.
+	return services.RequirementFilePath(name)
 }
 
 // ----- Design handlers -----
 
 func (c *artifactController) GetDesign(w http.ResponseWriter, r *http.Request) {
-	res, err := c.svc.GetFile(r.Context(), projectIDFrom(r), designRelPath)
+	res, err := c.svc.GetFile(r.Context(), projectIDFrom(r), services.DesignFilePath)
 	if err != nil {
 		writeArtifactError(w, r, err, "get design")
 		return
@@ -146,12 +207,12 @@ func (c *artifactController) GetDesign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *artifactController) PutDesign(w http.ResponseWriter, r *http.Request) {
-	body, err := readPutBody(r)
+	body, err := decodePutBody(r)
 	if err != nil {
 		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	res, err := c.svc.PutFile(r.Context(), projectIDFrom(r), designRelPath, body.Content, body.IfMatch)
+	res, err := c.svc.PutFile(r.Context(), projectIDFrom(r), services.DesignFilePath, body.Content, body.IfMatch)
 	if err != nil {
 		writeArtifactError(w, r, err, "put design")
 		return
@@ -160,101 +221,41 @@ func (c *artifactController) PutDesign(w http.ResponseWriter, r *http.Request) {
 }
 
 func (c *artifactController) SaveDesign(w http.ResponseWriter, r *http.Request) {
-	c.handleSave(w, r, services.ArtifactDesign)
+	var body services.SaveRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		body = services.SaveRequest{}
+	}
+	res, err := c.svc.SaveDesign(r.Context(), projectIDFrom(r), body)
+	if err != nil {
+		writeArtifactError(w, r, err, "save design")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
 func (c *artifactController) DiscardDesign(w http.ResponseWriter, r *http.Request) {
-	c.handleDiscard(w, r, services.ArtifactDesign)
+	res, err := c.svc.DiscardDesign(r.Context(), projectIDFrom(r))
+	if err != nil {
+		writeArtifactError(w, r, err, "discard design")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, res)
 }
 
 func (c *artifactController) ListDesignVersions(w http.ResponseWriter, r *http.Request) {
-	c.handleListVersions(w, r, services.ArtifactDesign)
+	versions, err := c.svc.ListDesignVersions(r.Context(), projectIDFrom(r))
+	if err != nil {
+		writeArtifactError(w, r, err, "list design versions")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, versions)
 }
 
 func (c *artifactController) GetDesignVersion(w http.ResponseWriter, r *http.Request) {
-	c.handleGetVersion(w, r, services.ArtifactDesign)
-}
-
-// ----- Wireframe handlers -----
-
-func (c *artifactController) ListWireframes(w http.ResponseWriter, r *http.Request) {
-	res, err := c.svc.ListWireframes(r.Context(), projectIDFrom(r))
+	tag := r.PathValue("tag")
+	res, err := c.svc.GetDesignAtTag(r.Context(), projectIDFrom(r), tag)
 	if err != nil {
-		writeArtifactError(w, r, err, "list wireframes")
-		return
-	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
-}
-
-func (c *artifactController) GetWireframe(w http.ResponseWriter, r *http.Request) {
-	name := r.PathValue("name")
-	res, err := c.svc.GetFile(r.Context(), projectIDFrom(r), wireframeRelPath(name))
-	if err != nil {
-		writeArtifactError(w, r, err, "get wireframe")
-		return
-	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
-}
-
-func (c *artifactController) PutWireframe(w http.ResponseWriter, r *http.Request) {
-	body, err := readPutBody(r)
-	if err != nil {
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	name := r.PathValue("name")
-	res, err := c.svc.PutFile(r.Context(), projectIDFrom(r), wireframeRelPath(name), body.Content, body.IfMatch)
-	if err != nil {
-		writeArtifactError(w, r, err, "put wireframe")
-		return
-	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
-}
-
-// ----- Shared spec/design plumbing -----
-
-func (c *artifactController) handleSave(w http.ResponseWriter, r *http.Request, t services.ArtifactType) {
-	var body services.SaveRequest
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	res, err := c.svc.Save(r.Context(), projectIDFrom(r), t, body)
-	if err != nil {
-		writeArtifactError(w, r, err, "save "+string(t))
-		return
-	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
-}
-
-func (c *artifactController) handleDiscard(w http.ResponseWriter, r *http.Request, t services.ArtifactType) {
-	res, err := c.svc.Discard(r.Context(), projectIDFrom(r), t)
-	if err != nil {
-		writeArtifactError(w, r, err, "discard "+string(t))
-		return
-	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
-}
-
-func (c *artifactController) handleListVersions(w http.ResponseWriter, r *http.Request, t services.ArtifactType) {
-	res, err := c.svc.ListVersions(r.Context(), projectIDFrom(r), t)
-	if err != nil {
-		writeArtifactError(w, r, err, "list "+string(t)+" versions")
-		return
-	}
-	utils.WriteSuccessResponse(w, http.StatusOK, res)
-}
-
-func (c *artifactController) handleGetVersion(w http.ResponseWriter, r *http.Request, t services.ArtifactType) {
-	versionStr := r.PathValue("version")
-	version, err := strconv.Atoi(versionStr)
-	if err != nil || version < 1 {
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "version: must be a positive integer")
-		return
-	}
-	res, err := c.svc.GetVersion(r.Context(), projectIDFrom(r), t, version)
-	if err != nil {
-		writeArtifactError(w, r, err, "get "+string(t)+" version")
+		writeArtifactError(w, r, err, "get design version")
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, res)

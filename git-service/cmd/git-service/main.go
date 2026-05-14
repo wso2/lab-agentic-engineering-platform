@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/wso2/asdlc/git-service/api"
+	k8sclient "github.com/wso2/asdlc/git-service/clients/k8s"
 	"github.com/wso2/asdlc/git-service/config"
 	"github.com/wso2/asdlc/git-service/controllers"
 	"github.com/wso2/asdlc/git-service/database"
@@ -80,6 +81,32 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Post-2f26614 — collapse git_repositories.oc_secret_ref_name from the
+	// legacy per-repo `git-<org>-<slug>` shape to the per-org `git-<org>`
+	// shape. Idempotent. See docs/design/cross-component-wiring-gaps.md.
+	perOrgSecret := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return migrations.RunPerOrgSecretName(ctx, db)
+	}
+	if err := perOrgSecret(); err != nil {
+		slog.Error("per_org_secret_name migration failed", "error", err)
+		os.Exit(1)
+	}
+
+	// org_anthropic_credentials table — per-org Anthropic key projection
+	// (encrypted bytes live in org_secrets). See
+	// docs/design/anthropic-key-dual-token.md §4.2. Idempotent.
+	anthropicCreds := func() error {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return migrations.RunOrgAnthropicCredentialsMigration(ctx, db)
+	}
+	if err := anthropicCreds(); err != nil {
+		slog.Error("org_anthropic_credentials migration failed", "error", err)
+		os.Exit(1)
+	}
+
 	// AutoMigrate after — only for GORM-shaped tables. AutoMigrate is
 	// additive (won't drop columns) so re-running with the raw migration
 	// already applied is a no-op for org_credentials.
@@ -105,6 +132,20 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("credential store: postgres (aes-256-gcm)")
+
+	// Workflow-plane k8s client — used by BuildCredentialsService.MintBuildToken
+	// to SSA the per-org git-credentials Secret straight into workflows-<orgID>.
+	// nil when running outside a cluster (local dev without KUBECONFIG); the
+	// service degrades to "credential persisted but not delivered" with a
+	// loud warning per mint call. See clients/k8s/client.go.
+	wpClient, err := k8sclient.NewInClusterClient()
+	if err != nil {
+		slog.Warn("k8s client init failed — mint-build will skip Secret writes; builds will fail at clone",
+			"error", err)
+		wpClient = nil
+	} else {
+		slog.Info("k8s client: in-cluster (workflow-plane Secret writes enabled)")
+	}
 
 	// Repositories
 	repoRepo := repositories.NewRepoRepository(db)
@@ -207,10 +248,10 @@ func main() {
 		cfg.GitHubRepoVisibility,
 		cfg.RepoBasePath,
 	)
-	gitOpsService := services.NewGitOpsService(repoRepo, resolver, cfg.RepoBasePath)
+	gitOpsService := services.NewGitOpsService(repoRepo, resolver, cfg.RepoBasePath, githubClient)
 	artifactService := services.NewArtifactService(repoRepo, gitOpsService)
 	githubV2Client := services.NewGitHubV2Client()
-	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, resolver, cfg.GitHubPlatformPAT)
+	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, resolver)
 
 	gitOpsService.CleanupOrphanTmpClones()
 	go func() {
@@ -235,23 +276,40 @@ func main() {
 	// lookups. Mounted under shared-secret middleware.
 	credService := services.NewCredentialService(db, store, minter, cfg.WebhookHMACSecret, cfg.GitHubAppClientID, appClientSecret, githubClient)
 
-	// Default-org PAT seed — dev-only convenience so a fresh deploy lands
-	// with the default org pre-connected from env vars. Skips silently if
-	// tier is not dev, env vars are empty, or any row already exists for
-	// default. Bad PATs log a warning and continue; they don't crash the
-	// service. Routes through credService.Connect — the same code path
-	// the console UI uses — so there is no parallel PAT-validation logic.
-	defaultSeedCtx, cancelDefaultSeed := context.WithTimeout(context.Background(), 30*time.Second)
-	if err := seed.DefaultOrgPATFromEnv(defaultSeedCtx, db, cfg, credService); err != nil {
-		slog.Warn("default-org seed unexpected error", "error", err)
-	}
-	cancelDefaultSeed()
+	// No default-org PAT seed: the binary is org-agnostic. The local-dev
+	// admin org is pre-connected by deployments-v2/scripts/lib/seed-admin-github.sh,
+	// which calls the same /credentials/connect endpoint the console uses.
+	// Hosted environments connect via the console UI per GUIDELINES.md §9.
 
 	// Build credentials service. The mint-build endpoint validates
 	// (ocOrgId, repoSlug) ownership, mints a fresh GitHub token via the
-	// resolver, writes it to OpenBao at secret/asdlc/{ocOrgId}/git/{repoSlug},
-	// and returns only the SecretReference name. The BFF never sees the token.
-	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, store)
+	// resolver, persists it to the credential store, AND SSAs the per-org
+	// `kubernetes.io/basic-auth` Secret into workflows-<ocOrgID>. The BFF
+	// never sees the token.
+	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, store, wpClient)
+
+	// Wire the post-disconnect WP-secret cleanup hook so disconnecting an
+	// org wipes its build credential from the WP namespace too.
+	credService.WithBuildSecretCleaner(buildCredService)
+
+	// Anthropic credential service — per-org Anthropic API key surface.
+	// Reads/writes encrypted bytes via `store` (Postgres org_secrets), maintains
+	// the org_anthropic_credentials projection table, SSAs a per-org K8s Secret
+	// into workflows-<orgID> on dispatch, and broadcasts a best-effort cache
+	// invalidate to agents-service on Connect/Disconnect.
+	//
+	// Service-JWT-authed Bearer is omitted in dev; the agents-service
+	// /v1/internal/cache/invalidate endpoint is reachable cluster-internally on
+	// the in-cluster service URL.
+	anthropicInvalidator := services.HTTPAgentsCacheInvalidator(cfg.AgentsServiceURL, "")
+	anthropicCredService := services.NewAnthropicCredentialService(
+		db, store, wpClient, cfg.AnthropicPlatformKey, anthropicInvalidator,
+	)
+	if cfg.AnthropicPlatformKey == "" {
+		slog.Warn("ANTHROPIC_PLATFORM_KEY is empty — platform fallback disabled; orgs without their own key will see 503 from agents-service")
+	} else {
+		slog.Info("anthropic credential service: platform fallback configured", "agentsServiceURL", cfg.AgentsServiceURL)
+	}
 
 	// Periodic credential validator. Walks every active org_credentials row
 	// once per cfg.CredentialValidatorInterval (default 24h), probes GitHub,
@@ -261,7 +319,7 @@ func main() {
 	// the validator only flags stale identity in the DB.
 	validatorProbes := services.NewValidatorProbes(credService, githubClient, resolver, minter)
 	validator := credentials.NewValidator(db, validatorProbes, nil, cfg.CredentialValidatorInterval)
-	boardService := services.NewBoardService(repoRepo, githubV2Client, cfg.GitHubPlatformPAT)
+	boardService := services.NewBoardService(repoRepo, githubV2Client, resolver)
 
 	// Controllers
 	repoCtrl := controllers.NewRepoController(repoService)
@@ -301,7 +359,7 @@ func main() {
 	} else {
 		slog.Warn("BFF_JWKS_URL not set — Task JWT verification disabled (dev/test only)")
 	}
-	projectCtrl := controllers.NewProjectController(githubV2Client, cfg.GitHubPlatformPAT, cfg.GitHubRepoOwner, repoService)
+	projectCtrl := controllers.NewProjectController(githubV2Client, resolver, repoService)
 	boardCtrl := controllers.NewBoardController(boardService)
 
 	// Handler
@@ -319,9 +377,10 @@ func main() {
 		BoardCtrl:        boardCtrl,
 		RepoService:      repoService,
 		RepoRepo:         repoRepo,
-		CredService:      credService,
-		BuildCredService: buildCredService,
-		Validator:        validator,
+		CredService:          credService,
+		BuildCredService:     buildCredService,
+		AnthropicCredService: anthropicCredService,
+		Validator:            validator,
 		ServiceJWT:       serviceJWT,
 		TaskJWT:          taskJWT,
 		ProjectCtrl:      projectCtrl,

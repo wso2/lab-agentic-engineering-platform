@@ -5,11 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
-	"github.com/wso2/asdlc/asdlc-service/clients/requests"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 )
@@ -25,26 +23,23 @@ type ProjectService interface {
 }
 
 type projectService struct {
-	client       openchoreo.ProjectClient
-	gitClient    gitservice.Client
-	secretRefCli openchoreo.SecretRefClient
-	store        *ArtifactStore
-	taskRepo     repositories.TaskRepository
+	client    openchoreo.ProjectClient
+	gitClient gitservice.Client
+	store     *ArtifactStore
+	taskRepo  repositories.TaskRepository
 }
 
 func NewProjectService(
 	client openchoreo.ProjectClient,
 	gitClient gitservice.Client,
-	secretRefCli openchoreo.SecretRefClient,
 	store *ArtifactStore,
 	taskRepo repositories.TaskRepository,
 ) ProjectService {
 	return &projectService{
-		client:       client,
-		gitClient:    gitClient,
-		secretRefCli: secretRefCli,
-		store:        store,
-		taskRepo:     taskRepo,
+		client:    client,
+		gitClient: gitClient,
+		store:     store,
+		taskRepo:  taskRepo,
 	}
 }
 
@@ -81,26 +76,20 @@ func (s *projectService) CreateProject(ctx context.Context, orgName string, req 
 			slog.ErrorContext(ctx, "failed to provision repo", "project", project.Name, "error", createErr)
 			// Don't fail project creation — clone happens async and can be retried.
 		} else {
-			// Phase 2 PR C — create the OC SecretReference CR for this repo.
-			// The CR points at OpenBao at secret/asdlc/{ocOrgId}/git/{repoSlug};
-			// MintBuildToken writes the per-build token into that path
-			// immediately before each WorkflowRun. The CR is idempotent on
-			// (namespace, name) so re-creates are safe.
-			if s.secretRefCli != nil && repoInfo != nil && repoInfo.OcSecretRefName != nil && *repoInfo.OcSecretRefName != "" && repoInfo.RepoSlug != "" {
-				// Path is relative to the OpenBao KV v2 mount (`secret`); the
-				// ClusterSecretStore's path/version=v2 config adds `data/` at
-				// read time. The OC API normalises the apiVersion v1alpha1 →
-				// v1 internally; we POST to /api/v1/.../secretreferences.
-				vaultPath := fmt.Sprintf("asdlc/%s/git/%s", orgName, repoInfo.RepoSlug)
-				if err := s.secretRefCli.EnsureSecretReference(ctx, orgName, *repoInfo.OcSecretRefName, vaultPath); err != nil {
-					slog.ErrorContext(ctx, "failed to create OC SecretReference",
-						"project", project.Name, "name", *repoInfo.OcSecretRefName, "error", err)
-					// Best-effort: build path will surface a real failure
-					// when the WorkflowRun fires; admins can re-run.
-				} else {
-					slog.InfoContext(ctx, "secretref ensure",
-						"name", *repoInfo.OcSecretRefName, "ns", orgName, "vaultPath", vaultPath)
-				}
+			// Post-2f26614: the OC SecretReference creation step is gone.
+			// git-service.MintBuildToken now writes the per-org build
+			// credential as a `kubernetes.io/basic-auth` Secret straight
+			// into `workflows-<orgID>` on every dispatch, and the build's
+			// checkout step mounts it directly. The asdlc-service no
+			// longer participates in secret provisioning. See
+			// docs/design/cross-component-wiring-gaps.md.
+			if repoInfo == nil {
+				slog.ErrorContext(ctx, "git-service returned nil repoInfo on InitProjectComponents",
+					"project", project.Name)
+			} else if repoInfo.OcSecretRefName == nil || *repoInfo.OcSecretRefName == "" {
+				slog.ErrorContext(ctx, "BUG: git-service init response missing OcSecretRefName — first build will fail because the dispatcher passes empty secretRef to the workflow",
+					"project", project.Name, "orgId", orgName,
+					"repoUrl", repoInfo.RepoURL)
 			}
 			// Register the per-repo webhook so the BFF starts receiving events
 			// (pull_request, push, issue_comment) on this repo. Best-effort:
@@ -181,21 +170,18 @@ func (s *projectService) GetProjectStatus(ctx context.Context, orgName, projectN
 		return status, nil
 	}
 
-	// Check spec
-	specContent, err := s.store.ReadSpec(ctx, orgName, projectName)
+	// Check requirements (any markdown doc under .asdlc/requirements/ counts).
+	files, err := s.store.ListRequirements(ctx, orgName, projectName)
 	if err != nil && !IsNotFound(err) {
-		return nil, fmt.Errorf("read spec: %w", err)
+		return nil, fmt.Errorf("list requirements: %w", err)
 	}
-	status.HasSpec = specContent != ""
+	status.HasSpec = len(files) > 0
 
-	// Derive artifact statuses from typed version listings (PR 2: BFF no
-	// longer constructs tag-prefix strings; the artifact endpoints filter
-	// by type server-side).
 	if s.gitClient != nil {
-		specVersions, _ := s.gitClient.ListSpecVersions(ctx, orgName, projectName)
+		reqVersions, _ := s.gitClient.ListRequirementsVersions(ctx, orgName, projectName)
 		designVersions, _ := s.gitClient.ListDesignVersions(ctx, orgName, projectName)
 
-		if len(specVersions) > 0 {
+		if len(reqVersions) > 0 {
 			status.SpecStatus = "approved"
 		} else if status.HasSpec {
 			status.SpecStatus = "draft"
@@ -238,20 +224,21 @@ func (s *projectService) GetProjectStatus(ctx context.Context, orgName, projectN
 	return status, nil
 }
 
+// translateHTTPError lifts OC-level sentinel errors (openchoreo.ErrNotFound
+// etc.) into the project-service vocabulary the controllers branch on. The
+// underlying err is preserved in the chain so deeper layers can still
+// errors.Is against openchoreo.* if they want richer context.
 func translateHTTPError(err error) error {
 	if err == nil {
 		return nil
 	}
-	var httpErr *requests.HttpError
-	if errors.As(err, &httpErr) {
-		switch httpErr.StatusCode {
-		case http.StatusNotFound:
-			return fmt.Errorf("%w: %s", ErrProjectNotFound, httpErr.Body)
-		case http.StatusUnauthorized:
-			return ErrUnauthorized
-		case http.StatusForbidden:
-			return ErrForbidden
-		}
+	switch {
+	case errors.Is(err, openchoreo.ErrNotFound):
+		return fmt.Errorf("%w: %v", ErrProjectNotFound, err)
+	case errors.Is(err, openchoreo.ErrUnauthorized):
+		return ErrUnauthorized
+	case errors.Is(err, openchoreo.ErrForbidden):
+		return ErrForbidden
 	}
 	return err
 }

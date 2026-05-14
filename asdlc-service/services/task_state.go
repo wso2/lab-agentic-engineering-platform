@@ -26,6 +26,26 @@ const (
 	// Phase 2 PR D — git-clone auth-failure retry budget exhausted (§9.3).
 	// Drives building → failed; cause column gets "build.auth_retry_exceeded".
 	TaskEventBuildAuthRetryExhausted TaskEvent = "build.auth_retry_exceeded"
+	// Coding-agent WorkflowRun terminated Failed/Error. Drives in_progress → failed.
+	// Emitted by services/webhook/coding_agent_watcher.go on terminal failure
+	// of the per-task `app-factory-coding-agent` WorkflowRun.
+	TaskEventCodingAgentFailed TaskEvent = "coding_agent.failed"
+	// Build dispatch was skipped because the task's own merge push contained
+	// no file under its design.json appPath. This is a configuration/contract
+	// violation (architect emitted a path that doesn't match what the
+	// coding-agent committed) — failing loudly is better than orphaning the
+	// task in `building` with no WorkflowRun behind it. Drives merged → failed.
+	TaskEventBuildPathMismatch TaskEvent = "build.path_mismatch"
+	// TaskEventVerificationFailed (F3c) — the dispatched agent could not
+	// verify the live api dependency before opening its PR. Drives
+	// in_progress → verification_failed. The agent has kept the PR a
+	// draft and posted a diagnostic comment on the issue.
+	TaskEventVerificationFailed TaskEvent = "agent.verification_failed"
+	// TaskEventRetry (F3c) — operator clicked "Retry" on a
+	// verification_failed task. Drives verification_failed → in_progress
+	// and the BFF re-dispatches with a fresh prompt + freshly minted
+	// per-task bearer (DispatchedAt + LastCodingAgentRunName cleared).
+	TaskEventRetry TaskEvent = "operator.retry"
 )
 
 // EventCause maps a TaskEvent to the value written into ComponentTask.Cause
@@ -40,6 +60,8 @@ func EventCause(event TaskEvent) string {
 		return "build.failed"
 	case TaskEventBuildAuthRetryExhausted:
 		return "build.auth_retry_exceeded"
+	case TaskEventCodingAgentFailed:
+		return "coding_agent.failed"
 	case TaskEventPRRejected:
 		return "pr.rejected"
 	case TaskEventOrgDisconnected:
@@ -49,6 +71,13 @@ func EventCause(event TaskEvent) string {
 		return "org.disconnected"
 	case TaskEventRepoUnselected:
 		return "repo.unselected"
+	case TaskEventBuildPathMismatch:
+		return "build.component_path_mismatch"
+	case TaskEventVerificationFailed:
+		// verification_failed is not terminal (retry transitions back to
+		// in_progress) so this cause is recorded for audit but cleared
+		// when the next dispatch lands.
+		return "agent.verification_failed"
 	default:
 		return ""
 	}
@@ -95,6 +124,25 @@ var allowedTransitions = []stateTransition{
 	// Stays in the building → failed lane (the auth-retry events that did
 	// not exhaust the budget loop the watcher without changing status).
 	{models.TaskStatusBuilding, models.TaskStatusFailed, TaskEventBuildAuthRetryExhausted},
+	// Coding-agent WorkflowRun terminated Failed/Error. Drives the task to
+	// terminal `failed` so the operator sees the dispatch never produced a
+	// PR-ready state. The webhook path (pr.ready_for_review) is preferred
+	// when both fire — first-write-wins on the projector.
+	{models.TaskStatusInProgress, models.TaskStatusFailed, TaskEventCodingAgentFailed},
+	// Push containing this task's own merge SHA arrived, but the task's
+	// design.json appPath matched no file in the push — build was never
+	// dispatched. Drives merged → failed so the orphan is visible rather
+	// than silently stuck in `building`.
+	{models.TaskStatusMerged, models.TaskStatusFailed, TaskEventBuildPathMismatch},
+	// F3c — agent's pre-PR integration verification failed. The agent has
+	// kept the PR a draft + posted a diagnostic comment on the issue. The
+	// task lands in verification_failed; operator decides whether to retry.
+	{models.TaskStatusInProgress, models.TaskStatusVerificationFailed, TaskEventVerificationFailed},
+	// F3c — operator retry. Re-dispatch logic in DispatchService clears
+	// DispatchedAt + LastCodingAgentRunName so a fresh WorkflowRun is
+	// created. The PR (if any) remains a draft — the agent will push
+	// new commits to the same branch.
+	{models.TaskStatusVerificationFailed, models.TaskStatusInProgress, TaskEventRetry},
 }
 
 // ErrInvalidTransition is returned by Apply when the current status doesn't

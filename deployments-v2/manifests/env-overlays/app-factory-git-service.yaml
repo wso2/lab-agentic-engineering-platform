@@ -31,15 +31,21 @@ env:
     value: "ASDLC Bot"
   - key: GIT_COMMITTER_EMAIL
     value: "bot@asdlc.dev"
-  - key: GITHUB_PLATFORM_PAT_SEED_ORGS
-    value: "default"
-  - key: GITHUB_REPO_OWNER
-    value: "${GITHUB_REPO_OWNER}"
   - key: ASDLC_API_INTERNAL_URL
     value: "http://app-factory-api:8080"
-  - key: GITHUB_PLATFORM_PAT
-    value: "${GITHUB_PLATFORM_PAT}"
   - key: GITHUB_WEBHOOK_DELIVERY_URL
     value: "${GITHUB_WEBHOOK_DELIVERY_URL}"
   - key: GITHUB_WEBHOOK_SECRET
     value: "${GITHUB_WEBHOOK_SECRET}"
+  # Platform-wide Anthropic fallback used by AnthropicCredentialService.EffectiveKey
+  # when an org has not configured its own key. Local-k3d substitutes from
+  # deployments-v2/.env; cloud deployment will mount via SecretReference + ESO
+  # (see docs/design/anthropic-key-dual-token.md §10 non-goals).
+  - key: ANTHROPIC_PLATFORM_KEY
+    value: "${ANTHROPIC_API_KEY}"
+  # In-cluster base URL of agents-service. Used by AnthropicCredentialService
+  # to broadcast best-effort cache-invalidate to the resolver LRU on
+  # Connect/Disconnect. Empty disables the broadcast (the 5-min TTL still
+  # bounds staleness).
+  - key: AGENTS_SERVICE_URL
+    value: "http://app-factory-agents-service:3400"

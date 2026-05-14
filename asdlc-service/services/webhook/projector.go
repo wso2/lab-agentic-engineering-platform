@@ -24,12 +24,34 @@ import (
 // same task serialise. Phase 0 single-replica BFF inherits this scheme
 // unchanged when §9.3 (multi-replica hardening) lands — Postgres advisory
 // locks are cluster-wide.
+//
+// DispatchHook (injected via SetDispatchHook) is invoked post-commit
+// whenever a task transitions into `deployed` so dependents in
+// `pending_deps` get auto-dispatched. See docs/design/cross-component-
+// wiring-gaps.md §3 F1.
 type Projector struct {
-	db *gorm.DB
+	db           *gorm.DB
+	dispatchHook DispatchHook
+}
+
+// DispatchHook is the post-commit callback fired by the projector when a
+// task transitions into a state that should unblock dependents. The hook
+// implementation owns the cascade (eligibility scan + DispatchService
+// call); the projector only owns the trigger. Implemented by
+// services.DispatchCascadeHook.
+type DispatchHook interface {
+	OnTaskDeployed(ctx context.Context, orgID, projectID, componentName string)
 }
 
 func NewProjector(db *gorm.DB) *Projector {
 	return &Projector{db: db}
+}
+
+// SetDispatchHook wires the post-commit dispatch cascade. Called once
+// from main during service composition; nil is treated as "no cascade",
+// preserving the legacy behaviour for callers that haven't wired it.
+func (p *Projector) SetDispatchHook(h DispatchHook) {
+	p.dispatchHook = h
 }
 
 // ApplyToTaskByPR locks the task whose PullRequestNumber matches prNumber
@@ -154,9 +176,14 @@ func (p *Projector) AdvanceMergedTasksForPush(
 		if err := acquireProjectLock(tx, projectID); err != nil {
 			return err
 		}
+		// Defence in depth: only advance tasks where a build was actually
+		// dispatched (LastBuildRunName populated). Without this guard a
+		// silent-skip in TriggerForPush (e.g. path-filter mismatch, mint
+		// failure) would flip the task to `building` with no WorkflowRun
+		// behind it, and the build watcher would have nothing to poll.
 		var tasks []models.ComponentTask
 		if err := tx.
-			Where("project_id = ? AND status = ? AND merge_commit_sha IN ?",
+			Where("project_id = ? AND status = ? AND merge_commit_sha IN ? AND last_build_run_name <> ''",
 				projectID, string(models.TaskStatusMerged), commitSHAs).
 			Find(&tasks).Error; err != nil {
 			return fmt.Errorf("scan merged tasks: %w", err)
@@ -180,9 +207,10 @@ func (p *Projector) AdvanceMergedTasksForPush(
 }
 
 // MarkBuilding records the WorkflowRun name on the task when the push
-// handler creates the build. Decoupled from AdvanceMergedTasksForPush so
-// the build watcher can resume polling on restart by reading
-// LastBuildRunName + LastBuildSHA.
+// handler creates the build, and atomically transitions merged → building
+// in the same transaction. This is the only path that creates a `building`
+// task: the AdvanceMergedTasksForPush gate is now defensive (asserts
+// LastBuildRunName != "" before advancing).
 func (p *Projector) MarkBuilding(
 	ctx context.Context,
 	taskID, sha, runName string,
@@ -206,14 +234,29 @@ func (p *Projector) MarkBuilding(
 	})
 }
 
-// ApplyBuildResult advances a task from building → deployed/failed.
+// ApplyBuildResult applies a terminal/lifecycle event to a task: writes the
+// resulting status, optional errMsg, and cause inside a per-task advisory
+// lock. Used for any non-PR transition driven by build state — the build
+// watcher (building → deployed/failed) and the dispatch path
+// (merged → failed on TaskEventBuildPathMismatch).
+//
+// Post-commit, if the transition landed the task in `deployed` and a
+// dispatch hook is wired, fire it asynchronously so dependents in
+// `pending_deps` get re-evaluated + dispatched. The hook owns its own
+// per-project advisory lock; firing here just kicks off the cascade.
 func (p *Projector) ApplyBuildResult(
 	ctx context.Context,
 	taskID string,
 	event services.TaskEvent,
 	errMsg string,
 ) error {
-	return p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+	var (
+		landedDeployed bool
+		orgID          string
+		projectID      string
+		componentName  string
+	)
+	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		if err := acquireTaskLock(tx, taskID); err != nil {
 			return err
 		}
@@ -237,22 +280,105 @@ func (p *Projector) ApplyBuildResult(
 		now := time.Now().UTC()
 		task.LastEventAt = &now
 		setCauseIfTerminal(&task, event)
+		if next == models.TaskStatusDeployed {
+			landedDeployed = true
+			orgID = task.OrgID
+			projectID = task.ProjectID
+			componentName = task.ComponentName
+		}
+		return tx.Save(&task).Error
+	})
+	if err != nil {
+		return err
+	}
+	if landedDeployed && p.dispatchHook != nil {
+		// Fire-and-forget; the hook owns its own context lifecycle. We
+		// pass a detached context so the watcher's tick deadline doesn't
+		// cancel a cascade that may itself need to create WorkflowRuns.
+		hookCtx := context.WithoutCancel(ctx)
+		go p.dispatchHook.OnTaskDeployed(hookCtx, orgID, projectID, componentName)
+	}
+	return nil
+}
+
+// LinkTaskByIssue persists per-PR fields (PullRequestNumber,
+// PullRequestURL, BranchName, …) on the task identified by the
+// (repoFullName, issueNumber) tuple, under the same per-task advisory
+// lock used by ApplyToTaskByPR. No state transition — callers chain
+// ApplyToTaskByPR after to advance the lifecycle. Returns
+// errTaskNotFound when no task matches the issue (a human-opened PR
+// citing an unrelated issue, or a stale repo row).
+//
+// fillFields runs inside the transaction; it MUST only mutate columns
+// that are safe to write without going through ApplyTaskEvent
+// (PullRequestNumber, PullRequestURL, BranchName).
+func (p *Projector) LinkTaskByIssue(
+	ctx context.Context,
+	repoFullName string,
+	issueNumber int,
+	fillFields func(t *models.ComponentTask),
+) error {
+	if issueNumber <= 0 {
+		return fmt.Errorf("invalid issue number")
+	}
+	if repoFullName == "" {
+		return fmt.Errorf("repoFullName is required")
+	}
+	return p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		projectID, err := lookupProjectByRepo(tx, repoFullName)
+		if err != nil {
+			return fmt.Errorf("resolve project for repo %q: %w", repoFullName, err)
+		}
+		if projectID == "" {
+			return errTaskNotFound{issueNumber: issueNumber, repoFullName: repoFullName}
+		}
+
+		var task models.ComponentTask
+		err = tx.Where("project_id = ? AND issue_number = ?", projectID, issueNumber).
+			First(&task).Error
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return errTaskNotFound{issueNumber: issueNumber, repoFullName: repoFullName}
+		}
+		if err != nil {
+			return fmt.Errorf("find task by issue: %w", err)
+		}
+		if err := acquireTaskLock(tx, task.ID); err != nil {
+			return err
+		}
+		// Re-read under the lock — same belt-and-suspenders pattern used
+		// by ApplyToTaskByPR.
+		if err := tx.First(&task, "id = ?", task.ID).Error; err != nil {
+			return fmt.Errorf("re-read task: %w", err)
+		}
+		if fillFields != nil {
+			fillFields(&task)
+		}
+		now := time.Now().UTC()
+		task.LastEventAt = &now
 		return tx.Save(&task).Error
 	})
 }
 
-// errTaskNotFound is a sentinel for "no task with this PR number" so callers
-// can distinguish from real DB errors.
+// errTaskNotFound is a sentinel for "no task with this PR number" (or
+// issue number, when set via LinkTaskByIssue) so callers can distinguish
+// from real DB errors.
 type errTaskNotFound struct {
 	prNumber     int
+	issueNumber  int
 	repoFullName string
 }
 
 func (e errTaskNotFound) Error() string {
-	if e.repoFullName != "" {
+	switch {
+	case e.issueNumber > 0 && e.repoFullName != "":
+		return fmt.Sprintf("no task for issue #%d in repo %s", e.issueNumber, e.repoFullName)
+	case e.issueNumber > 0:
+		return fmt.Sprintf("no task for issue #%d", e.issueNumber)
+	case e.repoFullName != "":
 		return fmt.Sprintf("no task for PR #%d in repo %s", e.prNumber, e.repoFullName)
+	default:
+		return fmt.Sprintf("no task for PR #%d", e.prNumber)
 	}
-	return fmt.Sprintf("no task for PR #%d", e.prNumber)
 }
 
 // IsTaskNotFound reports whether err comes from ApplyToTaskByPR with no

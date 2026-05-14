@@ -1,8 +1,13 @@
 import type express from "express";
 import { z } from "zod";
 import { streamObject, streamText } from "ai";
-import { anthropic } from "@ai-sdk/anthropic";
+import { createAnthropic, type AnthropicProvider } from "@ai-sdk/anthropic";
 import { config } from "../../shared/config.js";
+import {
+  resolveAnthropicKey,
+  AnthropicKeyError,
+} from "../../shared/anthropic-key-resolver.js";
+import { getOrgId } from "../../middleware/org-id.js";
 import {
   PlanArraySchema,
   PlanItemSchema,
@@ -75,8 +80,20 @@ export function registerTechLeadPlan(app: express.Express) {
       return;
     }
 
+    const orgId = getOrgId(res);
+    let anthropic: AnthropicProvider;
+    try {
+      anthropic = createAnthropic({ apiKey: (await resolveAnthropicKey(orgId)).key });
+    } catch (err) {
+      if (err instanceof AnthropicKeyError) {
+        res.status(err.status).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
     console.log(
-      `[tech-lead/plan] mode=${parsed.data.mode} components=${parsed.data.slimDesign.length} existing=${parsed.data.existingTasks?.length ?? 0}`,
+      `[tech-lead/plan] orgId=${orgId} mode=${parsed.data.mode} components=${parsed.data.slimDesign.length} existing=${parsed.data.existingTasks?.length ?? 0}`,
     );
 
     const { abortController, keepAlive } = setupSse(res);
@@ -215,8 +232,20 @@ export function registerTechLeadDetail(app: express.Express) {
       return;
     }
 
+    const orgId = getOrgId(res);
+    let anthropic: AnthropicProvider;
+    try {
+      anthropic = createAnthropic({ apiKey: (await resolveAnthropicKey(orgId)).key });
+    } catch (err) {
+      if (err instanceof AnthropicKeyError) {
+        res.status(err.status).json({ error: err.message, code: err.code });
+        return;
+      }
+      throw err;
+    }
+
     console.log(
-      `[tech-lead/detail] tasks=${parsed.data.items.length} concurrency=${DETAIL_CONCURRENCY}`,
+      `[tech-lead/detail] orgId=${orgId} tasks=${parsed.data.items.length} concurrency=${DETAIL_CONCURRENCY}`,
     );
 
     const { abortController, keepAlive } = setupSse(res);
@@ -237,6 +266,7 @@ export function registerTechLeadDetail(app: express.Express) {
           data.spec,
           item,
           abortController,
+          anthropic,
         );
         await runNext();
       }
@@ -276,6 +306,7 @@ async function runDetailForItem(
   spec: string,
   item: TechLeadDetailInput["items"][number],
   abortController: AbortController,
+  anthropic: AnthropicProvider,
 ): Promise<void> {
   if (res.writableEnded) return;
 

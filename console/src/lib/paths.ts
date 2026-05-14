@@ -2,10 +2,6 @@ export function organizationOverviewPath(orgId: string): string {
   return `/organizations/${orgId}`;
 }
 
-export function organizationCreatePath(): string {
-  return `/organizations/new`;
-}
-
 export function projectCreatePath(orgId: string): string {
   return `/organizations/${orgId}/projects/new`;
 }
@@ -35,6 +31,10 @@ export function projectTasksPath(orgId: string, projectId: string): string {
   return `/organizations/${orgId}/projects/${projectId}/tasks`;
 }
 
+export function projectTaskDetailPath(orgId: string, projectId: string, taskId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/tasks/${taskId}`;
+}
+
 export function componentDetailPath(orgId: string, projectId: string, componentId: string): string {
   return `/organizations/${orgId}/projects/${projectId}/components/${componentId}`;
 }
@@ -49,4 +49,8 @@ export function componentDeployPath(orgId: string, projectId: string, componentI
 
 export function componentConfigsPath(orgId: string, projectId: string, componentId: string): string {
   return `/organizations/${orgId}/projects/${projectId}/components/${componentId}/configs`;
+}
+
+export function componentTestPath(orgId: string, projectId: string, componentId: string): string {
+  return `/organizations/${orgId}/projects/${projectId}/components/${componentId}/test`;
 }

@@ -112,9 +112,6 @@ export function MdEditor({
       className={className}
       sx={{
         width: '100%',
-        border: '1px solid',
-        borderColor: 'divider',
-        borderRadius: 1.5,
         overflow: 'hidden',
         bgcolor: 'background.paper',
         ...(fillHeight

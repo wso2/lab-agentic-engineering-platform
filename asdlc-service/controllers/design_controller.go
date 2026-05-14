@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/utils"
@@ -17,7 +16,7 @@ type DesignController interface {
 	GenerateDesign(w http.ResponseWriter, r *http.Request)
 	SaveAndProceed(w http.ResponseWriter, r *http.Request)
 	DiscardChanges(w http.ResponseWriter, r *http.Request)
-	GetDesignAtVersion(w http.ResponseWriter, r *http.Request)
+	GetDesignAtTag(w http.ResponseWriter, r *http.Request)
 	ListDesignVersions(w http.ResponseWriter, r *http.Request)
 }
 
@@ -101,6 +100,10 @@ func (c *designController) SaveAndProceed(w http.ResponseWriter, r *http.Request
 			utils.WriteErrorResponse(w, http.StatusNotFound, "design not found")
 			return
 		}
+		if errors.Is(err, services.ErrSpecNotApproved) {
+			utils.WriteErrorResponse(w, http.StatusConflict, "save requirements first — no v<N> baseline tag")
+			return
+		}
 		slog.ErrorContext(r.Context(), "save and proceed design failed", "error", err, "org", org, "project", project)
 		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to save and proceed design")
 		return
@@ -126,28 +129,26 @@ func (c *designController) DiscardChanges(w http.ResponseWriter, r *http.Request
 	utils.WriteSuccessResponse(w, http.StatusOK, design)
 }
 
-func (c *designController) GetDesignAtVersion(w http.ResponseWriter, r *http.Request) {
+func (c *designController) GetDesignAtTag(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("orgHandle")
 	project := r.PathValue("projectName")
 	if !requireOrgHandle(w, org) || !requireProjectName(w, project) {
 		return
 	}
-	versionStr := r.PathValue("version")
-
-	version, err := strconv.Atoi(versionStr)
-	if err != nil {
-		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid version number")
+	tag := r.PathValue("tag")
+	if tag == "" {
+		utils.WriteErrorResponse(w, http.StatusBadRequest, "tag is required")
 		return
 	}
 
-	design, err := c.service.GetDesignAtVersion(r.Context(), org, project, version)
+	design, err := c.service.GetDesignAtTag(r.Context(), org, project, tag)
 	if err != nil {
 		if errors.Is(err, services.ErrDesignNotFound) {
 			utils.WriteErrorResponse(w, http.StatusNotFound, "design not found")
 			return
 		}
-		slog.ErrorContext(r.Context(), "get design at version failed", "error", err, "org", org, "project", project, "version", version)
-		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to get design at version")
+		slog.ErrorContext(r.Context(), "get design at tag failed", "error", err, "org", org, "project", project, "tag", tag)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to get design at tag")
 		return
 	}
 

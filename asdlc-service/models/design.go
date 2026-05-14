@@ -12,7 +12,6 @@ type DesignComponent struct {
 	AppPath                    string   `json:"appPath"`
 	OpenAPISpec                string   `json:"openAPISpec"`
 	ComponentAgentInstructions string   `json:"componentAgentInstructions"`
-	WireframePath              string   `json:"wireframePath,omitempty"`
 }
 
 // DesignComponents is a slice of DesignComponent.

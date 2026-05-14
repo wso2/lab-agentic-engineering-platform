@@ -31,11 +31,36 @@ import (
 //
 // The Resolver (used at runtime by every git operation) doesn't change at
 // connect time — it just reads whatever this service has persisted.
+// BuildSecretCleaner cleans up the per-org build-credential Secret in the
+// org's workflow-plane namespace. Implemented by BuildCredentialsService;
+// kept as an interface here so CredentialService doesn't import a
+// concrete struct from a sibling file (no real circular import today,
+// but keeps the seam minimal and testable).
+//
+// Renamed from WPSecretCleaner in the anthropic-key-dual-token work —
+// each WP-Secret-cleanup concern (build, anthropic, future providers)
+// has its own narrowly-typed interface so cred services only depend on
+// what they own. See docs/design/anthropic-key-dual-token.md §S5.
+type BuildSecretCleaner interface {
+	DeleteBuildSecret(ctx context.Context, ocOrgID string) error
+}
+
+// AnthropicSecretCleaner mirrors BuildSecretCleaner for the per-org
+// Anthropic-credentials Secret. Implemented by AnthropicCredentialService.
+type AnthropicSecretCleaner interface {
+	DeleteAnthropicSecret(ctx context.Context, ocOrgID string) error
+}
+
 type CredentialService struct {
 	db        *gorm.DB
 	store     credentials.OpenBaoStore
 	minter    *credentials.AppTokenMinter
 	githubAPI string // "https://api.github.com" by default; overridden in tests.
+
+	// buildSecretCleaner is invoked from the Disconnect cascade so a
+	// disconnected org's WP build Secret doesn't outlive its credential
+	// row. nil is a graceful no-op (tests, off-cluster runs).
+	buildSecretCleaner BuildSecretCleaner
 
 	// envWebhookSecret is the platform-wide GITHUB_WEBHOOK_SECRET. The PAT
 	// connect path uses this value when seeding `webhook_secrets[0]` on a
@@ -531,17 +556,33 @@ func (s *CredentialService) Disconnect(ctx context.Context, ocOrgID string) erro
 		return fmt.Errorf("disconnect: commit: %w", err)
 	}
 
-	// Best-effort GC of OpenBao keys. Failure is logged, not surfaced —
+	// Best-effort GC of credential-store keys. Failure is logged, not surfaced —
 	// the periodic GC sweep (PR D) catches anything missed.
 	if row.Kind == "user-pat" {
 		if err := s.store.Delete(ctx, ocOrgID, "github/pat"); err != nil {
-			slog.WarnContext(ctx, "disconnect: openbao delete failed", "ocOrgId", ocOrgID, "key", "github/pat", "error", err)
+			slog.WarnContext(ctx, "disconnect: cred-store delete failed", "ocOrgId", ocOrgID, "key", "github/pat", "error", err)
 		}
 	}
-	// Build-mode secrets (secret/asdlc/{ocOrgId}/git/*) land in PR C; nothing to GC in PR B.
+
+	// Drop the per-org workflow-plane build Secret so a disconnected
+	// org's token doesn't linger inside the cluster. Best-effort.
+	if s.buildSecretCleaner != nil {
+		if err := s.buildSecretCleaner.DeleteBuildSecret(ctx, ocOrgID); err != nil {
+			slog.WarnContext(ctx, "disconnect: wp secret delete failed", "ocOrgId", ocOrgID, "error", err)
+		}
+	}
 
 	slog.InfoContext(ctx, "credentials.disconnected", "ocOrgId", ocOrgID, "kind", row.Kind)
 	return nil
+}
+
+// WithBuildSecretCleaner injects the post-disconnect cleanup hook for
+// the per-org build-credential Secret. Wired by main after both services
+// are constructed; nil-safe so tests don't have to pass one. Returns the
+// receiver to allow chained construction.
+func (s *CredentialService) WithBuildSecretCleaner(cleaner BuildSecretCleaner) *CredentialService {
+	s.buildSecretCleaner = cleaner
+	return s
 }
 
 // UninstallAppInstallation calls GitHub's DELETE /app/installations/{id} for

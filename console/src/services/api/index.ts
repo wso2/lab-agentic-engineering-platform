@@ -1,10 +1,11 @@
 export { api, ApiError } from './client';
 export type {
   Project,
-  Spec,
+  RequirementsBundle,
   Design,
   DesignComponent,
   ComponentDefinition,
+  ComponentOpenAPI,
   ComponentTask,
   ComponentConfig,
   EnvVar,
@@ -19,8 +20,12 @@ export type {
   ComponentStatus,
   ArtifactVersion,
   Organization,
-  CreateOrganizationInput,
   Task,
   ProjectBoard,
   LabelInfo,
+  TaskProgressEvent,
+  TaskProgressResponse,
+  TaskProgressKind,
+  TaskStatusResponse,
+  BuildStep,
 } from './client';

@@ -3,14 +3,19 @@
 # reachable from console's workspace:* dependency on @asdlc/md-editor.
 FROM node:22-alpine AS builder
 
-RUN corepack enable
+# Pin pnpm to match the local development version. The default corepack
+# pnpm in node:22-alpine predates `onlyBuiltDependencies` in
+# pnpm-workspace.yaml (a v10.6+ feature), so without this pin the build
+# fails with ERR_PNPM_IGNORED_BUILDS for transitive scripts.
+RUN corepack enable && corepack prepare pnpm@10.12.3 --activate
 
 WORKDIR /repo
 
 COPY pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY console/package.json ./console/
 COPY ui-components/md-editor/package.json ./ui-components/md-editor/
-COPY ui-components/md-explorer/package.json ./ui-components/md-explorer/
+COPY ui-components/excalidraw-editor/package.json ./ui-components/excalidraw-editor/
+COPY ui-components/explorer/package.json ./ui-components/explorer/
 COPY ui-components/project-status/package.json ./ui-components/project-status/
 RUN pnpm install --frozen-lockfile
 

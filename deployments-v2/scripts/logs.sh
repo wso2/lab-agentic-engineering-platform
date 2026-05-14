@@ -45,7 +45,6 @@ resolve_component_label() {
     console|ui)            echo "app-factory-console" ;;
     git|git-service)       echo "app-factory-git-service" ;;
     agents|agents-service) echo "app-factory-agents-service" ;;
-    rw|remote-worker)      echo "app-factory-remote-worker" ;;
     postgres|db)           echo "app-factory-postgresql" ;;
     *)                     echo "" ;;
   esac
@@ -65,7 +64,6 @@ COMPONENT (optional):
   console, ui       app-factory-console
   git, git-service  app-factory-git-service
   agents            app-factory-agents-service
-  rw, remote-worker app-factory-remote-worker
   postgres, db      app-factory-postgresql
 
 OPTIONS:
@@ -118,7 +116,7 @@ else
   COMP_LABEL=$(resolve_component_label "$COMPONENT_SHORT")
   if [ -z "$COMP_LABEL" ]; then
     echo "ERROR: unknown component '$COMPONENT_SHORT'" >&2
-    echo "       valid: api, console, git, agents, rw, postgres, all" >&2
+    echo "       valid: api, console, git, agents, postgres, all" >&2
     exit 1
   fi
   SELECTOR="openchoreo.dev/component=$COMP_LABEL"

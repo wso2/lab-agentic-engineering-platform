@@ -1,0 +1,41 @@
+{
+  "name": "@asdlc/explorer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc",
+    "storybook": "storybook dev -p 6007",
+    "build-storybook": "storybook build"
+  },
+  "dependencies": {
+    "@asdlc/md-editor": "workspace:*",
+    "@asdlc/excalidraw-editor": "workspace:*"
+  },
+  "peerDependencies": {
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "@wso2/oxygen-ui": "^0.1.0",
+    "@wso2/oxygen-ui-icons-react": "^0.1.0",
+    "@mui/material": "^7.0.0",
+    "@emotion/react": "^11.0.0",
+    "@emotion/styled": "^11.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "19.1.6",
+    "@types/react-dom": "19.0.2",
+    "typescript": "5.9.3",
+    "storybook": "^10.3.5",
+    "@storybook/react-vite": "^10.3.5",
+    "@storybook/addon-docs": "^10.3.5",
+    "@tiptap/core": "^3.22.0",
+    "@wso2/oxygen-ui": "0.1.0",
+    "@wso2/oxygen-ui-icons-react": "0.1.0",
+    "@mui/material": "7.3.4",
+    "@emotion/react": "11.14.0",
+    "@emotion/styled": "11.14.1"
+  }
+}

@@ -21,6 +21,7 @@ import {
   ChevronRight,
   ChevronRightCircle,
   Compass,
+  FlaskConical,
   LayoutDashboard,
   Package,
   Plus,
@@ -38,7 +39,6 @@ import ChatPanel from '../components/ChatPanel';
 import { subscribeCopilotRequest } from '../services/chatStore';
 import {
   organizationOverviewPath,
-  organizationCreatePath,
   projectOverviewPath,
   projectRequirementsPath,
   projectArchitecturePath,
@@ -47,8 +47,10 @@ import {
   componentBuildPath,
   componentDeployPath,
   componentConfigsPath,
+  componentTestPath,
   projectCreatePath,
 } from '../lib/paths';
+import { resolveOuHandle } from '../utils/orgClaims';
 
 export default function AsdlcLayout() {
   const navigate = useNavigate();
@@ -59,8 +61,10 @@ export default function AsdlcLayout() {
   const user = { name: claims?.name || 'User', email: claims?.email || '' };
 
   // Org identity: use JWT claims (ouHandle) which matches the OC namespace.
-  // Falls back to 'default' which is the standard OC namespace.
-  const claimsOrgId = claims?.ouHandle || claims?.ouName || claims?.ouId || 'default';
+  // Same precedence as the BFF (asdlc-service/middleware/jwt.ResolveOuHandle).
+  // No silent fallback — the route param (`:orgId` from useParams) is the
+  // canonical org for the page; the JWT claim only seeds the org switcher.
+  const claimsOrgId = resolveOuHandle(claims);
   const claimsOrgName = claims?.ouName || claimsOrgId;
 
   const [collapsed, setCollapsed] = useState(false);
@@ -77,7 +81,12 @@ export default function AsdlcLayout() {
   // MOCK: Listen for copilot open requests from pages
   useEffect(() => subscribeCopilotRequest(() => setCopilotOpen(true)), []);
 
-  const routeOrgId = orgId ?? claimsOrgId;
+  // routeOrgId resolves the org for the current page. Precedence:
+  //   1. `:orgId` URL param — set on every project/component sub-route.
+  //   2. JWT claim `ouHandle` — used on any org-less page.
+  // If both are missing, App.tsx's `/` route renders NoOrganizationPage.
+  const resolvedOrgId = orgId ?? claimsOrgId;
+  const routeOrgId = resolvedOrgId ?? '';
   const inProjectLevel = Boolean(projectId);
   const inComponentLevel = Boolean(projectId && componentId);
 
@@ -87,6 +96,7 @@ export default function AsdlcLayout() {
   const [orgs, setOrgs] = useState<import('../services/api/types').Organization[]>([]);
 
   useEffect(() => {
+    if (!routeOrgId) return;
     api.listProjects(routeOrgId).then(setProjects);
   }, [routeOrgId, location.pathname]);
 
@@ -106,7 +116,7 @@ export default function AsdlcLayout() {
   }, [projects, projectId]);
 
   useEffect(() => {
-    if (!projectId) { setComponents([]); return; }
+    if (!projectId || !routeOrgId) { setComponents([]); return; }
     api.listComponents(routeOrgId, projectId).then(setComponents);
   }, [routeOrgId, projectId, location.pathname]);
 
@@ -134,6 +144,9 @@ export default function AsdlcLayout() {
   const componentConfigsRoute = hasComponentRouteParams
     ? componentConfigsPath(routeOrgId, projectId!, routeComponentId)
     : '';
+  const componentTestRoute = hasComponentRouteParams
+    ? componentTestPath(routeOrgId, projectId!, routeComponentId)
+    : '';
 
   // Determine active sidebar item based on current route
   const activeSidebarItem = (() => {
@@ -153,6 +166,11 @@ export default function AsdlcLayout() {
         matchPath('/organizations/:orgId/projects/:projectId/components/:componentId/configs', location.pathname)
       ) {
         return 'configs';
+      }
+      if (
+        matchPath('/organizations/:orgId/projects/:projectId/components/:componentId/test', location.pathname)
+      ) {
+        return 'test';
       }
       return 'overview';
     }
@@ -175,7 +193,7 @@ export default function AsdlcLayout() {
       return 'architecture';
     }
     if (
-      matchPath('/organizations/:orgId/projects/:projectId/tasks', location.pathname)
+      matchPath('/organizations/:orgId/projects/:projectId/tasks/*', location.pathname)
     ) {
       return 'tasks';
     }
@@ -197,6 +215,9 @@ export default function AsdlcLayout() {
           return;
         case 'configs':
           navigate(componentConfigsRoute);
+          return;
+        case 'test':
+          navigate(componentTestRoute);
           return;
         default:
           return;
@@ -289,20 +310,17 @@ export default function AsdlcLayout() {
                 renderValue={renderOrgValue}
                 label="Organizations"
               >
-                <ComplexSelect.MenuItem
-                  onClick={(e) => {
-                    e.preventDefault();
-                    e.stopPropagation();
-                    navigate(organizationCreatePath());
-                  }}
-                >
-                  <ComplexSelect.MenuItem.Icon>
-                    <Plus size={16} />
-                  </ComplexSelect.MenuItem.Icon>
-                  <ComplexSelect.MenuItem.Text primary="Add Organization" />
-                </ComplexSelect.MenuItem>
                 {(orgs.length > 0 ? orgs : [{ name: claimsOrgId, displayName: claimsOrgName, uuid: '', createdAt: '' }]).map((org) => (
-                  <ComplexSelect.MenuItem key={org.name} value={org.name}>
+                  // onClick fires on every click (including the currently-selected
+                  // item), so clicking the active org in the dropdown lands on the
+                  // org overview — onChange alone only fires on a value change.
+                  <ComplexSelect.MenuItem
+                    key={org.name}
+                    value={org.name}
+                    onClick={() => {
+                      if (org.name) navigate(organizationOverviewPath(org.name));
+                    }}
+                  >
                     <ComplexSelect.MenuItem.Icon>
                       <Building size={16} />
                     </ComplexSelect.MenuItem.Icon>
@@ -347,7 +365,11 @@ export default function AsdlcLayout() {
                       <ComplexSelect.MenuItem.Text primary="Create a Project" />
                     </ComplexSelect.MenuItem>
                     {projects.map((project) => (
-                      <ComplexSelect.MenuItem key={project.id} value={project.id}>
+                      <ComplexSelect.MenuItem
+                        key={project.id}
+                        value={project.id}
+                        onClick={() => navigate(projectOverviewPath(routeOrgId, project.id))}
+                      >
                         <ComplexSelect.MenuItem.Icon>
                           <ScrollText size={16} />
                         </ComplexSelect.MenuItem.Icon>
@@ -435,7 +457,13 @@ export default function AsdlcLayout() {
                         label="Components"
                       >
                         {components.map((component) => (
-                          <ComplexSelect.MenuItem key={component.id} value={component.id}>
+                          <ComplexSelect.MenuItem
+                            key={component.id}
+                            value={component.id}
+                            onClick={() =>
+                              navigate(componentDetailPath(routeOrgId, projectId!, component.id))
+                            }
+                          >
                             <ComplexSelect.MenuItem.Icon>
                               <Package size={16} />
                             </ComplexSelect.MenuItem.Icon>
@@ -607,6 +635,12 @@ export default function AsdlcLayout() {
                     <Rocket size={20} />
                   </Sidebar.ItemIcon>
                   <Sidebar.ItemLabel>Deploy</Sidebar.ItemLabel>
+                </Sidebar.Item>
+                <Sidebar.Item id="test">
+                  <Sidebar.ItemIcon>
+                    <FlaskConical size={20} />
+                  </Sidebar.ItemIcon>
+                  <Sidebar.ItemLabel>Test</Sidebar.ItemLabel>
                 </Sidebar.Item>
               </Sidebar.Category>
             )}

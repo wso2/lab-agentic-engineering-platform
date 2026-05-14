@@ -41,13 +41,23 @@ render_workload() {
   ' "$fragment" "$overlay" | envsubst | yq 'del(.spec.container.env[] | select(.value == ""))'
 }
 
+# Workloads land in `wso2cloud` to align with WSO2 Cloud convention —
+# OC's ReleaseBinding controller resolves Workload-level secretKeyRefs
+# against the Workload's namespace (controller.go:336-350), so the
+# Workload, its ReleaseBinding, and its referenced SecretReferences all
+# live in `wso2cloud`. Pods still run in the data-plane release namespace
+# (`dp-default-app-factory-development-…`) — derived from the
+# ReleaseBinding's project + environment, independent of where the
+# Workload CR was applied.
+WORKLOAD_NAMESPACE="${WORKLOAD_NAMESPACE:-wso2cloud}"
+
 apply_workload() {
   local component=$1 src_dir=$2 image=$3
-  render_workload "$component" "$src_dir" "$image" | kubectl apply -f - -n default
+  render_workload "$component" "$src_dir" "$image" | kubectl apply -f - -n "$WORKLOAD_NAMESPACE"
 }
 
 patch_workload_image() {
   local component=$1 image=$2
-  kubectl patch workload "$component" -n default --type=merge \
+  kubectl patch workload "$component" -n "$WORKLOAD_NAMESPACE" --type=merge \
     -p "{\"spec\":{\"container\":{\"image\":\"$image\"}}}"
 }

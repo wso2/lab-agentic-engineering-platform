@@ -19,11 +19,6 @@ export {
   DeveloperInput,
   DeveloperOutput,
 } from "./agents/developer/index.js";
-export {
-  wireframe,
-  WireframeInput,
-  WireframeOutput,
-} from "./agents/wireframe/index.js";
 
 // Shared utilities
 export { createAgent } from "./shared/create-agent.js";

@@ -130,7 +130,7 @@ function computePipelineSteps(task: ComponentTask): PipelineStep[] {
     label: 'Deploy',
     description:
       status === 'deployed'
-        ? 'Component running in development environment'
+        ? 'Auto-deploy in progress — check the Deploy page for endpoint status'
         : 'Not yet deployed',
     state: stateFor(['deployed']),
   });

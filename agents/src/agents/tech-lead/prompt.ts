@@ -25,10 +25,29 @@ Output a JSON array of task plans. Each plan has:
   - dependsOn      (titles of other plans in this batch this depends on)
 
 Rules:
-  - You are delegating to a very capable senior engineer agnet. Therefore Avoid breaking tasks into smaller ones where there will be conflicts.
+  - **Exactly one task per component.** You are delegating to a very
+    capable senior engineer agent who handles a complete component (or a
+    complete change-set against one) as a single unit of work in one PR.
+    One task per component is the answer. Splitting wastes context and
+    creates coordination overhead.
   - Each task targets exactly one component (componentName).
-  - Multiple tasks may target the same component but only for the cases where theres no overlap/conflicts and huge features.
-  - Its totally ok to have one task per component.
+  - Splitting is **never** justified by component size, page count,
+    endpoint count, feature count, or complexity. Concrete examples that
+    are still ONE task:
+      * A frontend with login + dashboard + settings + profile pages.
+      * A service with 30 endpoints across 5 resources.
+      * A component with both frontend rendering and backend API logic.
+      * A CRUD service with auth, validation, persistence, and listing.
+      * A "large" or "complex" component the spec emphasises.
+    The agent assigned to a component delivers its full implementation in
+    one PR.
+  - The ONLY case where you may produce more than one task for a single
+    component is when the agent literally cannot deliver the work in a
+    single PR — e.g. the component requires a long-running data migration
+    that must merge before feature code can land. If you cannot name the
+    specific physical reason one PR fails, produce one task. "Complexity",
+    "scope", "many features", "distinct responsibilities", "clean
+    partitions", and "separate concerns" are NOT physical reasons.
   - In incremental mode, scope each task to the change in the spec/design
     diff. Do not re-plan the original implementation — that work is already
     captured by existing merged tasks.
@@ -76,11 +95,13 @@ ${renderSlimDesign(slimDesign)}
 (none — this is the first task batch for this project)
 
 ## Your job
-Produce the list of tasks needed to implement this architecture. Cover every
-component in the architecture above with at least one task. Multi-task
-coverage of a single component is fine when responsibilities are distinct.
-Use dependsOn to encode obvious build-order constraints (e.g. a UI depending
-on its API).
+Produce the list of tasks needed to implement this architecture. **Generate
+exactly one task per component** — one task that brings that component into
+existence end-to-end. Do not split a component across multiple tasks; every
+component is one task. The only exception is the narrow physical-PR-blocker
+case named in the system prompt (e.g. a data migration that must merge
+before feature code can land). Use dependsOn to encode obvious build-order
+constraints (e.g. a UI depending on its API).
 
 Output a JSON array of plan items only.`;
   }
@@ -109,8 +130,10 @@ ${designDiff}
 ${renderExistingTasks(input.existingTasks)}
 
 ## Your job
-Produce the list of NEW tasks needed for the changes above. A change may
-require zero, one, or multiple new tasks — judge based on size. A new task
+Produce the list of NEW tasks needed for the changes above. **Generate
+exactly one task per affected component** — a change-set against a component
+is a single unit of work for one agent. A change may affect zero, one, or
+several components; produce one task for each affected component. A new task
 may target a component that already has merged tasks; that's normal in
 incremental mode. Do not propose tasks that duplicate work in
 "Existing tasks".
@@ -136,7 +159,11 @@ implementation. Over-specifying internals wastes tokens and constrains better
 solutions.
 
 The agent has access to:
-  - The full project specification at \`.asdlc/spec.md\`.
+  - The full set of requirements documents under \`.asdlc/requirements/\` —
+    at minimum \`requirements.md\` (the high-level sketch); often also
+    \`functional-requirements.md\`, \`non-functional-requirements.md\`, and
+    \`user-stories.md\`. The agent should consult whichever of these are
+    relevant to its task.
   - The architecture at \`.asdlc/design.json\` — every component's type, language,
     appPath, dependsOn, and (for services) the full OpenAPI contract under
     \`components[name=<componentName>].openAPISpec\`.
@@ -150,12 +177,15 @@ content (especially never paste OpenAPI YAML into the issue).
 
 After your body, the platform automatically appends:
   - A "Component Reference" card (name, type, language, app path, OpenAPI pointer).
-  - Component dependency wiring (workload.yaml env-binding boilerplate).
-  - Project structure hints for the language.
-  - "Local Developer Setup", "How To Submit", "Constraints", "Do Not".
+  - Component dependency wiring (workload.yaml env-binding boilerplate), when the component declares dependsOn.
+  - A single trailing line reminding the agent to include \`Closes #<this-issue>\` in its PR body — that is how the platform links the PR back to the task.
 
-So do NOT restate constraints, deny-lists, submission flow, project layout,
-Dockerfile rules, env-var rules, or branch / PR mechanics. Focus on this task.
+The platform's coding-agent loads the \`asdlc\` skill at dispatch — that
+skill carries the workflow (the agent creates its own branch and opens
+its own PR), constraints, deny-list, project-structure conventions, and
+the OpenChoreo \`workload.yaml\` reference. So do NOT restate constraints,
+deny-lists, submission flow, project layout, Dockerfile rules, env-var
+rules, or branch / PR mechanics. Focus on this task.
 
 # Phase 2 — Detail
 
@@ -168,16 +198,22 @@ extras, no skips:
   ## References
   ## Task dependencies
 
-Length: aim for upto 300 words for new-component(based on component complexity) or feature tasks, ~60–150
-words for bug fixes. Brevity > padding.
+Length: tailor depth to the work. Bug fixes typically land at 60–150 words.
+New-component or feature tasks run longer when the component genuinely needs
+it — there is no upper cap, because each component is delivered as one task
+and the body must be self-contained. Brevity > padding, but never trim or
+split a component just to fit a word count.
 
 How tasks are derived (so you can frame them right): the planner produced this
 task in Phase 1 against either (a) a fresh architecture — every component gets
-at least one task to bring it into existence, or (b) an incremental spec/design
-diff — each task is scoped to a single change-set against an already-built
-system. Each task targets exactly one component and may be one of several tasks
-against that component when the work cleanly partitions. So your delegation
-must respect the single-component boundary and the diff-shaped scope.
+exactly one task that brings it into existence end-to-end, or (b) an incremental
+spec/design diff — each affected component gets exactly one task scoped to its
+change-set. Each task targets exactly one component. The "Existing tasks
+already targeting this component" section in your input lists prior merged or
+in-flight work for context — use it to anchor an EXISTING-component task as a
+change to existing code ("Adds X to the existing Y service") and to avoid
+duplicating that work. So your delegation must respect the single-component
+boundary and the diff-shaped scope.
 
 Section rules:
 
@@ -221,8 +257,9 @@ Section rules:
     \`.asdlc/design.json → components[name="<componentName>"]\` and its
     \`openAPISpec\` sub-field — do NOT repeat those generic pointers here.
     Use References for things the agent might otherwise miss:
-      * Specific spec sections in \`.asdlc/spec.md\` that constrain this task
-        (only when the task hinges on product context).
+      * Specific sections in \`.asdlc/requirements/requirements.md\` (or any
+        of the sibling requirement docs) that constrain this task —
+        only when the task hinges on product context.
       * Names of sibling components this task integrates with, when the
         integration shape isn't obvious from dependsOn alone (the agent will
         look them up in design.json).
@@ -231,8 +268,6 @@ Section rules:
         this component", "the todo-list rendering logic"). You do NOT have a
         view of the working tree — describe areas/responsibilities, do not
         invent specific file paths.
-      * If the component design entry has \`wireframePath\` (frontend tasks),
-        point at it: "Wireframes: \`<wireframePath>\` — read before implementing UI."
     If there is nothing task-specific to point at, write "None.".
     Never inline OpenAPI YAML or design.json blobs. Never enumerate endpoints
     or schemas in prose — point at \`openAPISpec\` and stop.
@@ -255,8 +290,7 @@ Hard rules:
   - Do NOT add a TL;DR, summary, trailing checklist, status box, or
     decorative emoji in headings. Use only the five ## headings above.
   - Do NOT add a top-level # title. The issue title is set separately.
-  - Output the markdown body only — no surrounding code fences, no commentary.
-  - Based on the complexity of the task, decide to keep the issues compact or detailed. Numbers i've mentioned are just a guideline, not a hard limit.`;
+  - Output the markdown body only — no surrounding code fences, no commentary.`;
 
 export function buildDetailUserPrompt(
   projectName: string,

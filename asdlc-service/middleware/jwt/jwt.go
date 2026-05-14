@@ -14,6 +14,33 @@ import (
 type Claims struct {
 	Subject  string
 	ClientID string
+	// Organisation claims sourced from Thunder. ResolveOuHandle is the
+	// only place that picks one — keep the precedence in lockstep with
+	// the console.
+	OuHandle string
+	OuName   string
+	OuId     string
+}
+
+// ResolveOuHandle returns the canonical OC org handle from a verified
+// JWT, preferring `ouHandle` over `ouName` over `ouId`. Returns "" when
+// the token has none of those claims (which the caller must surface as
+// a fail-loud error rather than silently substitute an org).
+//
+// The console mirrors this precedence verbatim
+// (console/src/utils/orgClaims.ts). Any change here MUST land on both
+// sides simultaneously.
+func ResolveOuHandle(c *Claims) string {
+	if c == nil {
+		return ""
+	}
+	if c.OuHandle != "" {
+		return c.OuHandle
+	}
+	if c.OuName != "" {
+		return c.OuName
+	}
+	return c.OuId
 }
 
 type claimsContextKey struct{}
@@ -61,6 +88,9 @@ func Middleware(cfg Config) func(http.Handler) http.Handler {
 				ctx := WithClaims(r.Context(), &Claims{
 					Subject:  tc.Subject,
 					ClientID: tc.ClientID,
+					OuHandle: tc.OuHandle,
+					OuName:   tc.OuName,
+					OuId:     tc.OuId,
 				})
 				r = r.WithContext(ctx)
 			}
