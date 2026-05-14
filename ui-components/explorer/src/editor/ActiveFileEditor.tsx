@@ -51,11 +51,15 @@ export function ActiveFileEditor({
     if (custom !== undefined && custom !== null) return <>{custom}</>;
   }
   if (isExcalidrawPath(activePath)) {
+    // Excalidraw canvases on the Requirements page render generated
+    // diagrams (wireframes / domain models) that the user should not
+    // accidentally drag or edit. Force view-only regardless of the
+    // surrounding editor props.
     return (
       <ExcalidrawFileEditor
         initialContent={initialContent}
         onChange={onChange}
-        readOnly={editorProps?.readOnly}
+        readOnly
       />
     );
   }

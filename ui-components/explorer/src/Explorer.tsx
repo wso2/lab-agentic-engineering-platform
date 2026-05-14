@@ -37,6 +37,7 @@ export function Explorer({
   showHeadings = true,
   getFileRenderer,
   getFileLabel,
+  getFileSortKey,
   searchPlaceholder = 'Search documents',
   sidebarWidth = 280,
   minHeight,
@@ -81,10 +82,19 @@ export function Explorer({
 
   const paths = useMemo(
     () =>
-      Object.keys(savedMap).sort((a, b) =>
-        a.localeCompare(b, undefined, { sensitivity: 'base' }),
-      ),
-    [savedMap],
+      Object.keys(savedMap).sort((a, b) => {
+        const keyA = getFileSortKey?.(a);
+        const keyB = getFileSortKey?.(b);
+        // Files with a host-supplied key win over alpha-only. When only
+        // one side has a key, the keyed file sorts first.
+        if (keyA !== undefined && keyB !== undefined && keyA !== keyB) {
+          return keyA - keyB;
+        }
+        if (keyA !== undefined && keyB === undefined) return -1;
+        if (keyA === undefined && keyB !== undefined) return 1;
+        return a.localeCompare(b, undefined, { sensitivity: 'base' });
+      }),
+    [savedMap, getFileSortKey],
   );
 
   const dirtyPaths = useMemo(() => {
@@ -241,6 +251,7 @@ export function Explorer({
           getFolderIcon={getFolderIcon}
           showHeadings={showHeadings}
           getFileLabel={getFileLabel}
+          getFileSortKey={getFileSortKey}
           onActivate={setActive}
           onTocClick={handleTocClick}
           onAddFile={onAddFile ? handleAddFile : undefined}

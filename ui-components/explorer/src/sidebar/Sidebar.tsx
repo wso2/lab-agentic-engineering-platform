@@ -1,8 +1,12 @@
 import { useMemo, useRef, useState } from 'react';
 import {
   Box,
+  ButtonBase,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogContent,
+  DialogTitle,
   IconButton,
   InputAdornment,
   InputBase,
@@ -38,7 +42,11 @@ type TreeRow =
   | { kind: 'folder'; path: string; depth: number }
   | { kind: 'file'; path: string; depth: number };
 
-function buildTreeRows(paths: string[], transparentFolders?: Set<string>): TreeRow[] {
+function buildTreeRows(
+  paths: string[],
+  transparentFolders?: Set<string>,
+  getFileSortKey?: (path: string) => number | undefined,
+): TreeRow[] {
   const sorted = [...paths].sort((a, b) => {
     // Sort: files at root first, then folders alphabetically, then files
     // alphabetically. This mirrors the design page intent: root
@@ -46,6 +54,16 @@ function buildTreeRows(paths: string[], transparentFolders?: Set<string>): TreeR
     const aHasSlash = a.includes('/');
     const bHasSlash = b.includes('/');
     if (aHasSlash !== bHasSlash) return aHasSlash ? 1 : -1;
+    // Host-supplied sort key wins over alpha — only consulted when both
+    // sides resolve to a number (so unrecognised filenames don't shuffle
+    // around the registered ones).
+    const keyA = getFileSortKey?.(a);
+    const keyB = getFileSortKey?.(b);
+    if (keyA !== undefined && keyB !== undefined && keyA !== keyB) {
+      return keyA - keyB;
+    }
+    if (keyA !== undefined && keyB === undefined) return -1;
+    if (keyA === undefined && keyB !== undefined) return 1;
     return a.localeCompare(b);
   });
   const rows: TreeRow[] = [];
@@ -105,6 +123,9 @@ export interface SidebarProps {
   /** Override the displayed label for specific paths. Falls back to the
    *  extension-stripped filename when the function returns undefined. */
   getFileLabel?: (path: string) => string | undefined;
+  /** Optional sort key for the sidebar tree (lower = earlier). When
+   *  undefined, files fall back to case-insensitive alphabetical order. */
+  getFileSortKey?: (path: string) => number | undefined;
   onActivate: (path: string) => void;
   onTocClick: (path: string, headingIndex: number) => void;
   onAddFile?: (typeId?: string) => void;
@@ -151,6 +172,7 @@ export function Sidebar({
   getFolderIcon,
   showHeadings = true,
   getFileLabel,
+  getFileSortKey,
   onActivate,
   onTocClick,
   onAddFile,
@@ -177,7 +199,7 @@ export function Sidebar({
   );
   const [collapsedDocs, setCollapsedDocs] = useState<Set<string>>(() => new Set());
   const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => new Set());
-  const [addMenuAnchor, setAddMenuAnchor] = useState<HTMLElement | null>(null);
+  const [addDialogOpen, setAddDialogOpen] = useState(false);
   const rowRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
   const docInfoByPath = useMemo(() => {
@@ -220,12 +242,12 @@ export function Sidebar({
   };
 
   const treeRows = useMemo(() => {
-    const rows = buildTreeRows(filteredPaths, transparentFolders);
+    const rows = buildTreeRows(filteredPaths, transparentFolders, getFileSortKey);
     return rows.filter((row) => {
       if (row.depth === 0) return true;
       return !isAncestorCollapsed(row.path, collapsedFolders);
     });
-  }, [filteredPaths, collapsedFolders, transparentFolders]);
+  }, [filteredPaths, collapsedFolders, transparentFolders, getFileSortKey]);
 
   const usesTree = useMemo(() => filteredPaths.some((p) => p.includes('/')), [filteredPaths]);
 
@@ -318,9 +340,9 @@ export function Sidebar({
               <IconButton
                 size="small"
                 aria-label="Add file"
-                onClick={(e) => {
+                onClick={() => {
                   if (addFileMenu && addFileMenu.items.length > 0) {
-                    setAddMenuAnchor(e.currentTarget);
+                    setAddDialogOpen(true);
                   } else {
                     onAddFile();
                   }
@@ -330,36 +352,66 @@ export function Sidebar({
               </IconButton>
             </Tooltip>
             {addFileMenu && (
-              <Menu
-                anchorEl={addMenuAnchor}
-                open={Boolean(addMenuAnchor)}
-                onClose={() => setAddMenuAnchor(null)}
-                anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-                transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+              <Dialog
+                open={addDialogOpen}
+                onClose={() => setAddDialogOpen(false)}
+                maxWidth="xs"
+                fullWidth
+                sx={{
+                  // Force a fully opaque Paper. slotProps.paper didn't
+                  // stick — Oxygen UI's theme paints the Dialog with a
+                  // translucent surface tint at higher MUI elevation,
+                  // which let the canvas bleed through. Pin the surface
+                  // here with `!important` so neither the theme overlay
+                  // nor MUI's elevation gradient can override it.
+                  '& .MuiDialog-paper': {
+                    backgroundColor: '#ffffff !important',
+                    backgroundImage: 'none !important',
+                    opacity: '1 !important',
+                  },
+                  '& .MuiBackdrop-root': {
+                    backgroundColor: 'rgba(0, 0, 0, 0.5) !important',
+                  },
+                }}
               >
-                {addFileMenu.items.map((item) => (
-                  <MenuItem
-                    key={item.id}
-                    disabled={item.disabled}
-                    onClick={() => {
-                      setAddMenuAnchor(null);
-                      onAddFile(item.id);
-                    }}
-                    sx={{ minWidth: 220 }}
-                  >
-                    <Stack direction="column" sx={{ py: 0.25 }}>
-                      <Typography variant="body2" sx={{ fontWeight: 500 }}>
-                        {item.label}
-                      </Typography>
-                      {item.description && (
-                        <Typography variant="caption" color="text.secondary">
-                          {item.description}
-                        </Typography>
-                      )}
-                    </Stack>
-                  </MenuItem>
-                ))}
-              </Menu>
+                <DialogTitle>Add document</DialogTitle>
+                <DialogContent dividers>
+                  <Stack direction="column" spacing={1}>
+                    {addFileMenu.items.map((item) => (
+                      <ButtonBase
+                        key={item.id}
+                        disabled={item.disabled}
+                        onClick={() => {
+                          setAddDialogOpen(false);
+                          onAddFile(item.id);
+                        }}
+                        sx={{
+                          justifyContent: 'flex-start',
+                          textAlign: 'left',
+                          p: 1.25,
+                          borderRadius: 1,
+                          border: '1px solid',
+                          borderColor: 'divider',
+                          width: '100%',
+                          '&:hover': { bgcolor: 'action.hover' },
+                          '&.Mui-disabled': { opacity: 0.5 },
+                        }}
+                      >
+                        <Stack direction="column" sx={{ width: '100%' }}>
+                          <Typography variant="body1" sx={{ fontWeight: 700 }}>
+                            {item.label}
+                          </Typography>
+                          {item.description && (
+                            <Typography variant="caption" color="text.secondary">
+                              {item.description}
+                            </Typography>
+                          )}
+                        </Stack>
+                      </ButtonBase>
+                    ))}
+                  </Stack>
+                </DialogContent>
+              </Dialog>
             )}
           </>
         )}

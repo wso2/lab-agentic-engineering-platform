@@ -140,6 +140,15 @@ export interface ExplorerProps {
    */
   getFileLabel?: (path: string) => string | undefined;
 
+  /**
+   * Optional sort key for the sidebar tree. Lower numbers sort earlier.
+   * Files that share a key (or for which the callback returns `undefined`)
+   * fall back to case-insensitive alphabetical order. Useful when the host
+   * has a domain-specific order (e.g. `requirements.md` always first,
+   * generated docs in registry order).
+   */
+  getFileSortKey?: (path: string) => number | undefined;
+
   // --- layout / style ---
   /** Placeholder shown in the sidebar search input. Default: "Search documents" */
   searchPlaceholder?: string;

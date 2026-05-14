@@ -53,6 +53,10 @@ type ExcalidrawAPI = {
   getSceneElements(): any;
   getAppState(): any;
   getFiles(): any;
+  scrollToContent(
+    target?: any,
+    opts?: { fitToContent?: boolean; viewportZoomFactor?: number; animate?: boolean },
+  ): void;
 };
 
 // `appState.collaborators` is a Map at runtime; JSON-stringifying turns
@@ -63,6 +67,27 @@ function sanitizeAppState(appState: any): any {
   if (!appState || typeof appState !== 'object') return appState;
   const { collaborators: _drop, ...rest } = appState;
   return rest;
+}
+
+/**
+ * Centre the canvas on the supplied elements. We don't call scrollToContent
+ * synchronously inside updateScene/excalidrawAPI because Excalidraw needs
+ * a tick to commit the new scene before its bounding-box calculation
+ * reflects the just-added elements. A requestAnimationFrame is enough to
+ * land in the next frame's render cycle.
+ */
+function fitContentToViewport(api: ExcalidrawAPI, elements: any) {
+  requestAnimationFrame(() => {
+    try {
+      api.scrollToContent(elements, {
+        fitToContent: true,
+        viewportZoomFactor: 0.9,
+        animate: false,
+      });
+    } catch {
+      /* api may have been torn down (component unmounted) */
+    }
+  });
 }
 
 function parseScene(value: string): Scene | null {
@@ -112,11 +137,25 @@ function ExcalidrawEditorImpl({
         const api = apiRef.current;
         if (!api) return;
         const parsed = parseScene(json);
+        // Two-step replace: first clear, then set. If consecutive
+        // generations of the same DSL produce identical element ids
+        // (because stableId is deterministic and the LLM emits the same
+        // names), Excalidraw's internal reconciliation can treat the
+        // updateScene as a no-op. Wiping first guarantees the canvas
+        // redraws even when ids collide.
+        api.updateScene({ elements: [] });
         api.updateScene({
           elements: parsed?.elements ?? [],
           appState: parsed?.appState ?? {},
         });
         lastEmittedRef.current = json;
+        // Centre the new scene in the viewport. Generated diagrams start
+        // at (0,0) and grow right/down, so without this they'd hug the
+        // top-left of the canvas. `fitToContent` zooms+scrolls so the
+        // entire bounding box is visible with a small margin.
+        if (parsed?.elements?.length) {
+          fitContentToViewport(api, parsed.elements);
+        }
       },
     }),
     [],
@@ -124,6 +163,15 @@ function ExcalidrawEditorImpl({
 
   const handleChange = useCallback(
     (elements: any, appState: any, files: any) => {
+      // In view-only mode the user cannot edit the scene, so any onChange
+      // Excalidraw fires is library-internal noise (initial render, hover,
+      // zoom, selection). Forwarding those upstream pollutes the host's
+      // file buffer with a near-but-not-equal-to-saved value, which then
+      // shadows future external content updates (e.g. regenerating a
+      // domain model — the host pushes new JSON but the stale buffer
+      // wins and the canvas keeps showing the previous scene). Gating
+      // onChange by readOnly side-steps the whole class of bugs.
+      if (readOnly) return;
       if (debounceTimerRef.current !== null) {
         window.clearTimeout(debounceTimerRef.current);
       }
@@ -138,7 +186,7 @@ function ExcalidrawEditorImpl({
         onChange?.(next);
       }, 150);
     },
-    [onChange],
+    [onChange, readOnly],
   );
 
   useEffect(
@@ -167,6 +215,21 @@ function ExcalidrawEditorImpl({
         position: 'relative',
         width: '100%',
         overflow: 'hidden',
+        border: '1px solid',
+        borderColor: 'divider',
+        borderRadius: 1,
+        // Hide Excalidraw's overlay controls that don't belong on a
+        // view-only generated diagram: the help "?" icon (bottom-right),
+        // the hamburger main menu (top-left) and the top-left menu cluster
+        // that hosts it. The canvas itself, zoom controls, and undo/redo
+        // are kept since they're useful even when read-only.
+        //
+        // `!important` because Excalidraw's own stylesheet uses a
+        // `.excalidraw .App-menu_top__left` selector that out-specifies
+        // the MUI-emitted `.MuiBox & .App-menu_top__left` rule otherwise.
+        '& .help-icon': { display: 'none !important' },
+        '& .dropdown-menu-button': { display: 'none !important' },
+        '& .App-menu_top__left': { display: 'none !important' },
       }}
     >
       <Box
@@ -186,6 +249,13 @@ function ExcalidrawEditorImpl({
           viewModeEnabled={readOnly}
           excalidrawAPI={(api: any) => {
             apiRef.current = api as ExcalidrawAPI;
+            // Centre the mount-time scene once Excalidraw is ready.
+            // Without this the diagram sits in the top-left of the
+            // canvas because our DSL renderer emits coordinates starting
+            // at (0,0).
+            if (initialData?.elements?.length) {
+              fitContentToViewport(apiRef.current!, initialData.elements);
+            }
           }}
         />
       </Box>

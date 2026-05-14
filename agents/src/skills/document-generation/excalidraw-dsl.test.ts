@@ -1,8 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { dslToExcalidraw, tryDslToExcalidraw } from "./excalidraw-dsl.js";
+import {
+  dslToExcalidraw,
+  layoutDomainModel,
+  tryDslToExcalidraw,
+} from "./excalidraw-dsl.js";
 
-test("wireframes DSL → Excalidraw scene with screens, elements, flow arrows", () => {
+test("wireframes DSL → numbered screens with per-flow →(N) markers, no arrows", () => {
   const dsl = `
 screen Login
   text "Sign in" 20,8
@@ -23,23 +27,23 @@ flow
     elements: { type: string; text?: string }[];
   };
   assert.equal(scene.type, "excalidraw");
-  // 2 screens (each: outer rect + header text) + 4 elements on Login (rect+label, rect+label, rect+label, button+label = 8 elements) + 2 elements on Home (text=1, rect+label=2) + 1 flow arrow
-  assert.ok(
-    scene.elements.length >= 12,
-    `expected at least 12 elements, got ${scene.elements.length}`,
-  );
-  // Has at least one arrow (the flow)
-  assert.ok(scene.elements.some((e) => e.type === "arrow"));
-  // Has the screen names as text labels
+  // No straight flow arrows — flows render as text markers, not lines.
+  assert.ok(!scene.elements.some((e) => e.type === "arrow"));
   const texts = scene.elements
     .filter((e) => e.type === "text")
     .map((e) => e.text);
+  // Screens, elements, and number badges all surface as text.
   assert.ok(texts.includes("Login"));
   assert.ok(texts.includes("Home"));
   assert.ok(texts.includes("Email"));
+  // Each screen carries its (N) badge.
+  assert.ok(texts.includes("(1)"));
+  assert.ok(texts.includes("(2)"));
+  // The flow Login -> Home renders as `→(2)` next to Login's last button.
+  assert.ok(texts.some((t) => t === "→(2)"));
 });
 
-test("domain-model DSL → Excalidraw scene with entities, attributes, relations", () => {
+test("domain-model DSL → entities laid out into layers with straight arrows", () => {
   const dsl = `
 entity Project
   id: uuid
@@ -53,20 +57,95 @@ relation Project -[1..*]-> Component "has"
 `;
   const json = dslToExcalidraw("domain-model", dsl);
   const scene = JSON.parse(json) as {
-    elements: { type: string; text?: string }[];
+    elements: { type: string; text?: string; elbowed?: boolean; y?: number }[];
   };
-  // 2 entities (each: outer rect + name text + 2 attr texts = 4 elements) + 1 relation arrow (+optional label)
   assert.ok(
     scene.elements.length >= 8,
     `expected at least 8 elements, got ${scene.elements.length}`,
   );
-  assert.ok(scene.elements.some((e) => e.type === "arrow"));
+  const arrows = scene.elements.filter((e) => e.type === "arrow");
+  assert.equal(arrows.length, 1);
+  // Straight arrows — Excalidraw's elbow router was crossing other
+  // entities, so the renderer emits direct closest-edge connectors instead.
+  assert.equal(arrows[0]!.elbowed, false);
   const texts = scene.elements
     .filter((e) => e.type === "text")
     .map((e) => e.text);
   assert.ok(texts.includes("Project"));
   assert.ok(texts.includes("Component"));
   assert.ok(texts.some((t) => t?.startsWith("name:")));
+});
+
+test("layoutDomainModel places parent above child for a directed relation", () => {
+  const layout = layoutDomainModel({
+    entities: [
+      { name: "Project", attrs: [{ name: "id", type: "uuid" }] },
+      { name: "Component", attrs: [{ name: "id", type: "uuid" }] },
+    ],
+    relations: [
+      { from: "Project", to: "Component", cardinality: "1..*", label: "has" },
+    ],
+  });
+  const project = layout.nodes.get("project");
+  const component = layout.nodes.get("component");
+  assert.ok(project);
+  assert.ok(component);
+  assert.equal(project!.layer, 0);
+  assert.equal(component!.layer, 1);
+  assert.ok(component!.y > project!.y);
+  assert.equal(layout.edges.length, 1);
+  assert.equal(layout.edges[0]!.kind, "forward");
+});
+
+test("domain-model arrows are bound to both source and target entities", () => {
+  const dsl = `
+entity A
+  id: uuid
+
+entity B
+  id: uuid
+
+entity C
+  id: uuid
+
+relation A -[1..1]-> B "owns"
+relation A -[1..1]-> C "owns"
+`;
+  const json = dslToExcalidraw("domain-model", dsl);
+  const scene = JSON.parse(json) as {
+    elements: {
+      type: string;
+      startBinding?: { elementId?: string };
+      endBinding?: { elementId?: string };
+    }[];
+  };
+  const arrows = scene.elements.filter((e) => e.type === "arrow");
+  assert.equal(arrows.length, 2);
+  for (const a of arrows) {
+    assert.ok(
+      a.startBinding?.elementId,
+      "startBinding.elementId required so the arrow follows its source",
+    );
+    assert.ok(
+      a.endBinding?.elementId,
+      "endBinding.elementId required so the arrow follows its target",
+    );
+  }
+});
+
+test("layoutDomainModel flags cycle relations as back edges", () => {
+  const layout = layoutDomainModel({
+    entities: [
+      { name: "A", attrs: [] },
+      { name: "B", attrs: [] },
+    ],
+    relations: [
+      { from: "A", to: "B", cardinality: "", label: "" },
+      { from: "B", to: "A", cardinality: "", label: "" },
+    ],
+  });
+  const kinds = layout.edges.map((e) => e.kind).sort();
+  assert.deepEqual(kinds, ["back", "forward"]);
 });
 
 test("tryDslToExcalidraw returns ok=false for empty/unparseable input", () => {

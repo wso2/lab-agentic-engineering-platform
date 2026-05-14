@@ -30,6 +30,7 @@ import {
   documentTypeForFile,
   getDocumentType,
   nextFilenameFor,
+  toTitleCase,
   type DocumentType,
 } from '../lib/documentTypes';
 import { tryDslToExcalidraw, type DslKind } from '@asdlc/excalidraw-dsl';
@@ -90,6 +91,9 @@ export default function ProjectRequirementsPage() {
   const [publishing, setPublishing] = useState(false);
 
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle');
+  // Files waiting for their first content delta after the user added them
+  // (or clicked Generate). Sidebar surfaces these with a spinner + label.
+  const [pendingPaths, setPendingPaths] = useState<Set<string>>(new Set());
   const [showDiff, setShowDiff] = useState(false);
   const [restorePromptFor, setRestorePromptFor] = useState<{
     filename: string;
@@ -272,6 +276,15 @@ export default function ProjectRequirementsPage() {
     const drafts = loadDrafts(routeOrgId, projectId);
     const filenames = Object.keys(drafts);
     for (const filename of filenames) {
+      // Canvas-backed files (wireframes / domain-model) are view-only on
+      // this page — the user can only update them via Generate. Any
+      // draft that survived in localStorage is a relic of the spurious
+      // initial Excalidraw onChange (pre-readOnly-gate); discard it so
+      // it can't shadow a fresh generation on the next page load.
+      if (/\.excalidraw$/i.test(filename)) {
+        clearDraft(routeOrgId, projectId, filename);
+        continue;
+      }
       const local = drafts[filename]!;
       const serverContent = savedFiles[filename] ?? '';
       if (local.draft === serverContent) {
@@ -449,16 +462,21 @@ export default function ProjectRequirementsPage() {
   // -- File operations: add / rename / delete ------------------------------
 
   const addFileMenuItems: AddFileMenuItem[] = useMemo(() => {
-    const existing = Object.keys(savedFiles);
-    return DOCUMENT_TYPES.filter((t) => !t.protected).map((t) => {
-      const disabled = t.unique && existing.some((n) => documentTypeForFile(n)?.id === t.id);
-      return {
+    // Each artifact type appears in the picker at most once. As soon as
+    // the user adds it, the type drops out of the list so the picker
+    // doesn't grow stale with already-added options.
+    const existingTypeIds = new Set(
+      Object.keys(savedFiles)
+        .map((n) => documentTypeForFile(n)?.id)
+        .filter((id): id is NonNullable<typeof id> => Boolean(id)),
+    );
+    return DOCUMENT_TYPES
+      .filter((t) => !t.protected && !existingTypeIds.has(t.id))
+      .map((t) => ({
         id: t.id,
         label: t.label,
         description: t.description,
-        disabled,
-      };
-    });
+      }));
   }, [savedFiles]);
 
   const handleAddFile = useCallback(
@@ -467,17 +485,27 @@ export default function ProjectRequirementsPage() {
       const type = getDocumentType(typeId);
       if (!type) return undefined;
       const filename = nextFilenameFor(type, Object.keys(savedFiles));
+      const willAutoGenerate = !!type.generationSkillId;
       // Optimistically create with starter content; server PUT happens via auto-save when user types.
       // Markdown gets a heading + hint; canvas-backed types start blank
       // because the editor parses empty string as a blank scene and any
-      // markdown placeholder would be invalid JSON.
+      // markdown placeholder would be invalid JSON. When we auto-generate
+      // (the common case from the Add document dialog) seed the markdown
+      // body empty too so the generated stream is the first content the
+      // user ever sees on this file.
       const initial = type.extension === '.excalidraw'
         ? ''
-        : `# ${type.label}\n\nGenerate from existing documents using the Sparkles button above.`;
+        : willAutoGenerate
+          ? ''
+          : `# ${type.label}\n\nGenerate from existing documents using the Sparkles button above.`;
       setLiveContents((prev) => ({ ...prev, [filename]: initial }));
       setSavedFiles((prev) => ({ ...prev, [filename]: '' }));
       setActivePath(filename);
-      // Persist the empty file so the directory exists on disk.
+      // Mark pending up-front so the spinner shows from the click — no
+      // gap between "file appears in sidebar" and "generation starts".
+      if (willAutoGenerate) markPending(filename);
+      // Persist the empty file so the directory exists on disk, then kick
+      // off generation immediately.
       api
         .updateRequirementFile(routeOrgId, projectId, filename, initial)
         .then((bundle) => {
@@ -486,6 +514,7 @@ export default function ProjectRequirementsPage() {
             if (bundle.versions) setVersions(bundle.versions);
             setHasUnsavedChanges(bundle.hasUnsavedChanges ?? false);
           }
+          if (willAutoGenerate) void generateFor(filename, type);
         });
       return filename;
     },
@@ -539,69 +568,109 @@ export default function ProjectRequirementsPage() {
   const activeDocType: DocumentType | undefined =
     activePath ? documentTypeForFile(activePath) : undefined;
 
-  const generateActive = async () => {
-    if (!projectId || !activePath || !activeDocType?.generationSkillId) return;
-    setGeneratingFile(activePath);
-    setStreamError(null);
+  const markPending = useCallback((path: string) => {
+    setPendingPaths((prev) => {
+      if (prev.has(path)) return prev;
+      const next = new Set(prev);
+      next.add(path);
+      return next;
+    });
+  }, []);
 
-    const filename = activePath;
-    const skillId = activeDocType.generationSkillId;
-    // Excalidraw-backed skills (wireframes / domain-model) stream a tiny DSL
-    // and emit a final `replace:true` delta with the converted JSON. While
-    // the DSL is in flight we run the same conversion client-side for a
-    // best-effort live preview on the canvas — partial DSL that doesn't
-    // parse yet just leaves the canvas at its previous state.
-    const excalidrawKind: DslKind | null =
-      filename.toLowerCase().endsWith('.excalidraw')
-        ? activeDocType.id === 'wireframes'
-          ? 'wireframes'
-          : activeDocType.id === 'domain-model'
-            ? 'domain-model'
-            : null
-        : null;
-    let accumulated = '';
-    const ok = await api.generateRequirementFile(
-      routeOrgId,
-      projectId,
-      filename,
-      {
-        skillId,
-        sources: activeDocType.generationSourceFiles,
-      },
-      (delta, opts) => {
-        if (!delta) return;
-        if (opts?.replace) {
-          accumulated = delta;
-        } else {
-          accumulated += delta;
+  const clearPending = useCallback((path: string) => {
+    setPendingPaths((prev) => {
+      if (!prev.has(path)) return prev;
+      const next = new Set(prev);
+      next.delete(path);
+      return next;
+    });
+  }, []);
+
+  const generateFor = useCallback(
+    async (filename: string, docType: DocumentType) => {
+      if (!projectId || !docType.generationSkillId) return;
+      setGeneratingFile(filename);
+      markPending(filename);
+      setStreamError(null);
+
+      const skillId = docType.generationSkillId;
+      // Excalidraw-backed skills (wireframes / domain-model) stream a tiny DSL
+      // and emit a final `replace:true` delta with the converted JSON. While
+      // the DSL is in flight we run the same conversion client-side for a
+      // best-effort live preview on the canvas — partial DSL that doesn't
+      // parse yet just leaves the canvas at its previous state.
+      const excalidrawKind: DslKind | null =
+        filename.toLowerCase().endsWith('.excalidraw')
+          ? docType.id === 'wireframes'
+            ? 'wireframes'
+            : docType.id === 'domain-model'
+              ? 'domain-model'
+              : null
+          : null;
+      let accumulated = '';
+      // First *visible* delta clears the pending spinner. For excalidraw
+      // it's the first DSL frame that parses; for markdown it's the first
+      // non-empty delta.
+      let firstContent = false;
+      const noteFirstContent = () => {
+        if (!firstContent) {
+          firstContent = true;
+          clearPending(filename);
         }
-        if (excalidrawKind) {
+      };
+      const ok = await api.generateRequirementFile(
+        routeOrgId,
+        projectId,
+        filename,
+        {
+          skillId,
+          sources: docType.generationSourceFiles,
+        },
+        (delta, opts) => {
+          if (!delta) return;
           if (opts?.replace) {
-            // Final converted Excalidraw JSON from the agents-service.
-            setLiveContents((prev) => ({ ...prev, [filename]: delta }));
+            accumulated = delta;
           } else {
-            const attempt = tryDslToExcalidraw(excalidrawKind, accumulated);
-            if (attempt.ok) {
-              setLiveContents((prev) => ({ ...prev, [filename]: attempt.json }));
-            }
+            accumulated += delta;
           }
-          return;
+          if (excalidrawKind) {
+            if (opts?.replace) {
+              // Final converted Excalidraw JSON from the agents-service.
+              setLiveContents((prev) => ({ ...prev, [filename]: delta }));
+              noteFirstContent();
+            } else {
+              const attempt = tryDslToExcalidraw(excalidrawKind, accumulated);
+              if (attempt.ok) {
+                setLiveContents((prev) => ({ ...prev, [filename]: attempt.json }));
+                noteFirstContent();
+              }
+            }
+            return;
+          }
+          setLiveContents((prev) => ({ ...prev, [filename]: accumulated }));
+          editorRef.current?.setActiveMarkdown(accumulated);
+          noteFirstContent();
+        },
+      );
+      setGeneratingFile(null);
+      clearPending(filename);
+      if (ok) {
+        const bundle = await api.getRequirements(routeOrgId, projectId);
+        if (bundle?.files) {
+          setSavedFiles(bundle.files);
+          if (bundle.versions) setVersions(bundle.versions);
+          setHasUnsavedChanges(bundle.hasUnsavedChanges ?? false);
         }
-        setLiveContents((prev) => ({ ...prev, [filename]: accumulated }));
-        editorRef.current?.setActiveMarkdown(accumulated);
-      },
-    );
-    setGeneratingFile(null);
-    if (ok) {
-      const bundle = await api.getRequirements(routeOrgId, projectId);
-      if (bundle?.files) {
-        setSavedFiles(bundle.files);
-        if (bundle.versions) setVersions(bundle.versions);
-        setHasUnsavedChanges(bundle.hasUnsavedChanges ?? false);
+      } else {
+        setStreamError(`Failed to generate ${filename}.`);
       }
-    } else {
-      setStreamError(`Failed to generate ${filename}.`);
-    }
+    },
+    [routeOrgId, projectId, markPending, clearPending],
+  );
+
+  const generateActive = () => {
+    if (!activePath || !activeDocType) return;
+    void generateFor(activePath, activeDocType);
   };
 
   // -- Publish (Save & Proceed) --------------------------------------------
@@ -648,11 +717,41 @@ export default function ProjectRequirementsPage() {
   // Files presented to the explorer:
   //   - viewingHistorical → snapshot at selected version
   //   - otherwise → the live buffers (fall back to savedFiles for un-typed files)
-  const explorerFiles = viewingHistorical && historicalFiles
-    ? historicalFiles
-    : Object.fromEntries(
-        Object.keys(savedFiles).map((k) => [k, liveContents[k] ?? savedFiles[k] ?? '']),
-      );
+  // The `.dsl` sibling files persisted alongside wireframes / domain-model
+  // canvases are an internal source format; hide them from the sidebar so
+  // the user only sees the rendered `.excalidraw`.
+  const hideDsl = (m: Record<string, string>): Record<string, string> =>
+    Object.fromEntries(Object.entries(m).filter(([k]) => !/\.dsl$/i.test(k)));
+  const explorerFiles = hideDsl(
+    viewingHistorical && historicalFiles
+      ? historicalFiles
+      : Object.fromEntries(
+          Object.keys(savedFiles).map((k) => [k, liveContents[k] ?? savedFiles[k] ?? '']),
+        ),
+  );
+
+  const getFileLabel = (path: string): string | undefined => {
+    const type = documentTypeForFile(path);
+    const base = type ? type.label : toTitleCase(path);
+    // Surface a "generating…" tag in the sidebar while the file is
+    // waiting for its first content delta (auto-generate on add, or
+    // explicit Generate). Spinner from `pendingPaths` covers the icon
+    // slot; this suffixes the label so users can read the state at a
+    // glance.
+    if (pendingPaths.has(path)) return `${base} — generating…`;
+    return base;
+  };
+
+  // Sort the sidebar by registered document order — keeps `requirements.md`
+  // at the top and lays out the generated docs (functional → NFR → stories
+  // → wireframes → domain model) the way the user added them. Anything not
+  // in the registry falls back to alphabetical at the end.
+  const getFileSortKey = (path: string): number | undefined => {
+    const type = documentTypeForFile(path);
+    if (!type) return undefined;
+    const idx = DOCUMENT_TYPES.findIndex((t) => t.id === type.id);
+    return idx < 0 ? undefined : idx;
+  };
 
   // Streaming bootstrap (fresh project from a prompt): the first delta hasn't
   // landed yet, so there are no files for the Explorer to render. Show a
@@ -857,6 +956,9 @@ export default function ProjectRequirementsPage() {
             addFileMenu={{ items: addFileMenuItems }}
             onDelete={handleDelete}
             onRename={handleRename}
+            getFileLabel={getFileLabel}
+            getFileSortKey={getFileSortKey}
+            pendingPaths={pendingPaths}
             editorProps={{
               readOnly: viewingHistorical || streamingMain || generatingFile === activePath,
               showToolbar: !viewingHistorical && !streamingMain,

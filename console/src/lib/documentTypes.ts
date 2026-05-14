@@ -124,6 +124,22 @@ export function documentTypeForFile(filename: string): DocumentType | undefined 
   });
 }
 
+const EXT_RE = /\.(md|markdown|excalidraw|dsl)$/i;
+
+/**
+ * Title-case a filename (strip extension, split on `-`/space, capitalise
+ * each token). Used as the sidebar fallback when a file doesn't match a
+ * registered document type — e.g. user-renamed `my-doc.md` → "My Doc".
+ */
+export function toTitleCase(name: string): string {
+  return name
+    .replace(EXT_RE, '')
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
 /**
  * Compute the next free filename for a given doc type. Unique types return
  * the canonical filename; non-unique types append `-2`, `-3`, ... when the
