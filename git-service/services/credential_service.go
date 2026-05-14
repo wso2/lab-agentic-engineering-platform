@@ -42,7 +42,7 @@ import (
 // has its own narrowly-typed interface so cred services only depend on
 // what they own. See docs/design/anthropic-key-dual-token.md §S5.
 type BuildSecretCleaner interface {
-	DeleteBuildSecret(ctx context.Context, ocOrgID string) error
+	DeleteBuildSecretsForOrg(ctx context.Context, ocOrgID string) error
 }
 
 // AnthropicSecretCleaner mirrors BuildSecretCleaner for the per-org
@@ -564,10 +564,11 @@ func (s *CredentialService) Disconnect(ctx context.Context, ocOrgID string) erro
 		}
 	}
 
-	// Drop the per-org workflow-plane build Secret so a disconnected
-	// org's token doesn't linger inside the cluster. Best-effort.
+	// Drop every per-WorkflowRun build Secret in this org's WP namespace
+	// so a disconnected org's tokens don't linger inside the cluster.
+	// Best-effort.
 	if s.buildSecretCleaner != nil {
-		if err := s.buildSecretCleaner.DeleteBuildSecret(ctx, ocOrgID); err != nil {
+		if err := s.buildSecretCleaner.DeleteBuildSecretsForOrg(ctx, ocOrgID); err != nil {
 			slog.WarnContext(ctx, "disconnect: wp secret delete failed", "ocOrgId", ocOrgID, "error", err)
 		}
 	}

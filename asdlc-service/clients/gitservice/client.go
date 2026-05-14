@@ -79,8 +79,11 @@ type Client interface {
 	// CreateOrReplaceCredential.
 	ResolveUserInstallations(ctx context.Context, ocOrgID, oauthCode, redirectURI string) ([]AppInstallationSummary, error)
 
-	// Phase 2 PR C — build credentials (mint-build).
-	MintBuildToken(ctx context.Context, ocOrgID, repoSlug string) (*MintResult, error)
+	// Build credentials. Pre-stages a per-WorkflowRun K8s Secret named
+	// <workflowRunName>-git-secret in workflows-<ocOrgID> that the
+	// shared dockerfile-builder ClusterWorkflow mounts at checkout-source.
+	// See docs/design/build-credential-injection.md.
+	StageBuildSecret(ctx context.Context, ocOrgID, repoSlug, workflowRunName string) (*StageResult, error)
 
 	// Anthropic credentials — see docs/design/anthropic-key-dual-token.md.
 	// Connect/Status/Disconnect mirror the GitHub-credentials surface;

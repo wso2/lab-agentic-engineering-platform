@@ -27,20 +27,24 @@ func WorkflowPlaneNamespace(ocOrgID string) string {
 	return boundedDNSName("workflows-", ocOrgID)
 }
 
-// BuildSecretName returns the per-org K8s Secret name git-service writes
-// (kubernetes.io/basic-auth) into WorkflowPlaneNamespace(ocOrgID). The
-// build's checkout step mounts this Secret by name via a regular
-// `volume.secret.secretName`.
+// BuildSecretNameFor returns the K8s Secret name git-service writes
+// (kubernetes.io/basic-auth) into WorkflowPlaneNamespace(ocOrgID) for one
+// WorkflowRun. The name matches the upstream `dockerfile-builder`
+// ClusterWorkflow's expected default for `workflow.parameters.git-secret`
+// — `${metadata.workflowRunName}-git-secret` (line 144 of the workflow).
 //
-// Per-org (NOT per-repo) because the underlying GitHub credential is
-// per-installation (App mode) or per-PAT (PAT mode) — a single token
-// grants access to every repo the install/PAT can see, so fan-out to one
-// Secret per repo would be N copies of the same value.
+// Per-WorkflowRun (NOT per-org) because the upstream workflow templates
+// the Secret name from the WorkflowRun's metadata.name; using that exact
+// shape lets us keep the shared workflow byte-identical to upstream while
+// pre-staging the Secret from git-service before the build pod runs.
 //
-// DNS-label bounded; over-long orgIDs are truncated with a SHA-256
-// suffix to stay collision-free inside 63 chars.
-func BuildSecretName(ocOrgID string) string {
-	return boundedDNSName("git-", ocOrgID)
+// We intentionally do NOT length-bound here. The workflow itself fails
+// the Argo Workflow creation if `<workflowRunName>-git-secret` exceeds
+// DNS-1123 subdomain length, so the WorkflowRun would already be invalid
+// upstream — bounding here would produce a name that doesn't match what
+// the workflow templates and silently break the mount.
+func BuildSecretNameFor(workflowRunName string) string {
+	return workflowRunName + "-git-secret"
 }
 
 // AnthropicSecretName is the fixed K8s Secret name git-service writes

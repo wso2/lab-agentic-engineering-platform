@@ -281,12 +281,14 @@ func main() {
 	// which calls the same /credentials/connect endpoint the console uses.
 	// Hosted environments connect via the console UI per GUIDELINES.md §9.
 
-	// Build credentials service. The mint-build endpoint validates
-	// (ocOrgId, repoSlug) ownership, mints a fresh GitHub token via the
-	// resolver, persists it to the credential store, AND SSAs the per-org
-	// `kubernetes.io/basic-auth` Secret into workflows-<ocOrgID>. The BFF
-	// never sees the token.
-	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, store, wpClient)
+	// Build credentials service. The stage-build-secret endpoint validates
+	// (ocOrgId, repoSlug) ownership, resolves the org's GitHub credential,
+	// and SSAs a per-WorkflowRun `kubernetes.io/basic-auth` Secret named
+	// `<workflowRunName>-git-secret` into workflows-<ocOrgID>. The BFF
+	// generates the WorkflowRun name upfront, calls this endpoint, then
+	// POSTs the WorkflowRun with secretRef="" so the upstream workflow's
+	// ExternalSecret synth is skipped. The token never crosses the boundary.
+	buildCredService := services.NewBuildCredentialsService(repoRepo, resolver, wpClient)
 
 	// Wire the post-disconnect WP-secret cleanup hook so disconnecting an
 	// org wipes its build credential from the WP namespace too.

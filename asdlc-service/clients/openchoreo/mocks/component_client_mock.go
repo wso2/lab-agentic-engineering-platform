@@ -39,10 +39,10 @@ var _ openchoreo.ComponentClient = &ComponentClientMock{}
 //			ListWorkflowRunsFunc: func(ctx context.Context, orgName string, projectName string, componentName string, limit int, cursor string) (*models.WorkflowRunList, error) {
 //				panic("mock out the ListWorkflowRuns method")
 //			},
-//			TriggerBuildFunc: func(ctx context.Context, orgName string, projectName string, componentName string) (*models.WorkflowRun, error) {
+//			TriggerBuildFunc: func(ctx context.Context, orgName string, projectName string, componentName string, runName string) (*models.WorkflowRun, error) {
 //				panic("mock out the TriggerBuild method")
 //			},
-//			TriggerBuildAtCommitFunc: func(ctx context.Context, orgName string, projectName string, componentName string, commitSHA string) (*models.WorkflowRun, error) {
+//			TriggerBuildAtCommitFunc: func(ctx context.Context, orgName string, projectName string, componentName string, commitSHA string, runName string) (*models.WorkflowRun, error) {
 //				panic("mock out the TriggerBuildAtCommit method")
 //			},
 //			TriggerCodingAgentFunc: func(ctx context.Context, params openchoreo.CodingAgentParams) (*models.WorkflowRun, error) {
@@ -77,10 +77,10 @@ type ComponentClientMock struct {
 	ListWorkflowRunsFunc func(ctx context.Context, orgName string, projectName string, componentName string, limit int, cursor string) (*models.WorkflowRunList, error)
 
 	// TriggerBuildFunc mocks the TriggerBuild method.
-	TriggerBuildFunc func(ctx context.Context, orgName string, projectName string, componentName string) (*models.WorkflowRun, error)
+	TriggerBuildFunc func(ctx context.Context, orgName string, projectName string, componentName string, runName string) (*models.WorkflowRun, error)
 
 	// TriggerBuildAtCommitFunc mocks the TriggerBuildAtCommit method.
-	TriggerBuildAtCommitFunc func(ctx context.Context, orgName string, projectName string, componentName string, commitSHA string) (*models.WorkflowRun, error)
+	TriggerBuildAtCommitFunc func(ctx context.Context, orgName string, projectName string, componentName string, commitSHA string, runName string) (*models.WorkflowRun, error)
 
 	// TriggerCodingAgentFunc mocks the TriggerCodingAgent method.
 	TriggerCodingAgentFunc func(ctx context.Context, params openchoreo.CodingAgentParams) (*models.WorkflowRun, error)
@@ -170,6 +170,8 @@ type ComponentClientMock struct {
 			ProjectName string
 			// ComponentName is the componentName argument value.
 			ComponentName string
+			// RunName is the runName argument value.
+			RunName string
 		}
 		// TriggerBuildAtCommit holds details about calls to the TriggerBuildAtCommit method.
 		TriggerBuildAtCommit []struct {
@@ -183,6 +185,8 @@ type ComponentClientMock struct {
 			ComponentName string
 			// CommitSHA is the commitSHA argument value.
 			CommitSHA string
+			// RunName is the runName argument value.
+			RunName string
 		}
 		// TriggerCodingAgent holds details about calls to the TriggerCodingAgent method.
 		TriggerCodingAgent []struct {
@@ -490,7 +494,7 @@ func (mock *ComponentClientMock) ListWorkflowRunsCalls() []struct {
 }
 
 // TriggerBuild calls TriggerBuildFunc.
-func (mock *ComponentClientMock) TriggerBuild(ctx context.Context, orgName string, projectName string, componentName string) (*models.WorkflowRun, error) {
+func (mock *ComponentClientMock) TriggerBuild(ctx context.Context, orgName string, projectName string, componentName string, runName string) (*models.WorkflowRun, error) {
 	if mock.TriggerBuildFunc == nil {
 		panic("ComponentClientMock.TriggerBuildFunc: method is nil but ComponentClient.TriggerBuild was just called")
 	}
@@ -499,16 +503,18 @@ func (mock *ComponentClientMock) TriggerBuild(ctx context.Context, orgName strin
 		OrgName       string
 		ProjectName   string
 		ComponentName string
+		RunName       string
 	}{
 		Ctx:           ctx,
 		OrgName:       orgName,
 		ProjectName:   projectName,
 		ComponentName: componentName,
+		RunName:       runName,
 	}
 	mock.lockTriggerBuild.Lock()
 	mock.calls.TriggerBuild = append(mock.calls.TriggerBuild, callInfo)
 	mock.lockTriggerBuild.Unlock()
-	return mock.TriggerBuildFunc(ctx, orgName, projectName, componentName)
+	return mock.TriggerBuildFunc(ctx, orgName, projectName, componentName, runName)
 }
 
 // TriggerBuildCalls gets all the calls that were made to TriggerBuild.
@@ -520,12 +526,14 @@ func (mock *ComponentClientMock) TriggerBuildCalls() []struct {
 	OrgName       string
 	ProjectName   string
 	ComponentName string
+	RunName       string
 } {
 	var calls []struct {
 		Ctx           context.Context
 		OrgName       string
 		ProjectName   string
 		ComponentName string
+		RunName       string
 	}
 	mock.lockTriggerBuild.RLock()
 	calls = mock.calls.TriggerBuild
@@ -534,7 +542,7 @@ func (mock *ComponentClientMock) TriggerBuildCalls() []struct {
 }
 
 // TriggerBuildAtCommit calls TriggerBuildAtCommitFunc.
-func (mock *ComponentClientMock) TriggerBuildAtCommit(ctx context.Context, orgName string, projectName string, componentName string, commitSHA string) (*models.WorkflowRun, error) {
+func (mock *ComponentClientMock) TriggerBuildAtCommit(ctx context.Context, orgName string, projectName string, componentName string, commitSHA string, runName string) (*models.WorkflowRun, error) {
 	if mock.TriggerBuildAtCommitFunc == nil {
 		panic("ComponentClientMock.TriggerBuildAtCommitFunc: method is nil but ComponentClient.TriggerBuildAtCommit was just called")
 	}
@@ -544,17 +552,19 @@ func (mock *ComponentClientMock) TriggerBuildAtCommit(ctx context.Context, orgNa
 		ProjectName   string
 		ComponentName string
 		CommitSHA     string
+		RunName       string
 	}{
 		Ctx:           ctx,
 		OrgName:       orgName,
 		ProjectName:   projectName,
 		ComponentName: componentName,
 		CommitSHA:     commitSHA,
+		RunName:       runName,
 	}
 	mock.lockTriggerBuildAtCommit.Lock()
 	mock.calls.TriggerBuildAtCommit = append(mock.calls.TriggerBuildAtCommit, callInfo)
 	mock.lockTriggerBuildAtCommit.Unlock()
-	return mock.TriggerBuildAtCommitFunc(ctx, orgName, projectName, componentName, commitSHA)
+	return mock.TriggerBuildAtCommitFunc(ctx, orgName, projectName, componentName, commitSHA, runName)
 }
 
 // TriggerBuildAtCommitCalls gets all the calls that were made to TriggerBuildAtCommit.
@@ -567,6 +577,7 @@ func (mock *ComponentClientMock) TriggerBuildAtCommitCalls() []struct {
 	ProjectName   string
 	ComponentName string
 	CommitSHA     string
+	RunName       string
 } {
 	var calls []struct {
 		Ctx           context.Context
@@ -574,6 +585,7 @@ func (mock *ComponentClientMock) TriggerBuildAtCommitCalls() []struct {
 		ProjectName   string
 		ComponentName string
 		CommitSHA     string
+		RunName       string
 	}
 	mock.lockTriggerBuildAtCommit.RLock()
 	calls = mock.calls.TriggerBuildAtCommit

@@ -20,9 +20,13 @@ type GitRepository struct {
 	// Populated at repo provision; nil for repos created before Phase 0.
 	// Used to deregister on repo cleanup or re-register on rotation.
 	WebhookID *int64 `json:"webhookId,omitempty"`
-	// OcSecretRefName is the name of the OC SecretReference CR backing this
-	// repo's git credentials. Phase 2 PR A adds the column (nullable);
-	// PR C populates it via the SecretReference + mint-build flow.
+	// OcSecretRefName was the OC SecretReference name when builds went
+	// through the per-run ExternalSecret synth path. The new flow
+	// (docs/design/build-credential-injection.md) pre-stages a
+	// per-WorkflowRun K8s Secret named `<workflowRunName>-git-secret`
+	// directly in workflows-<ocOrgID> and passes secretRef="" to the
+	// workflow, so this field is unused on new rows. Retained for the
+	// JSON contract and as a column on legacy rows.
 	OcSecretRefName *string `gorm:"column:oc_secret_ref_name" json:"ocSecretRefName,omitempty"`
 	// RepoSlug is the SecretReference slug — `lower(<owner>-<repo>)`. PR C adds
 	// the column, backfilled from RepoURL. Used for OpenBao path keying
@@ -69,21 +73,3 @@ func OwnerRepoFromURL(repoURL string) (owner, repo string) {
 	return parts[0], parts[1]
 }
 
-// SecretRefNameFor returns the deterministic K8s Secret name for the per-org
-// build credential. As of the post-2f26614 redesign the secret is per-org
-// (not per-repo) because the underlying GitHub credential is per-installation
-// (App mode) or per-PAT — one token grants access to every repo the
-// install/PAT can see, so a per-repo fan-out would be N copies of the same
-// value. The second `repoSlug` parameter is retained for call-site
-// compatibility and intentionally unused.
-//
-// The returned name is also what git-service writes into the workflow-plane
-// namespace via BuildCredentialsService.applyBuildSecret; the build's
-// checkout step mounts it as a regular volume.secret.secretName.
-//
-// Delegates to BuildSecretName which is the single source of truth. The
-// older comment about a SHA-256 truncation suffix no longer applies — the
-// name shape is `git-<ocOrgID>` and ocOrgIDs are short slugs by contract.
-func SecretRefNameFor(ocOrgID, _ string) string {
-	return BuildSecretName(ocOrgID)
-}

@@ -76,20 +76,16 @@ func (s *projectService) CreateProject(ctx context.Context, orgName string, req 
 			slog.ErrorContext(ctx, "failed to provision repo", "project", project.Name, "error", createErr)
 			// Don't fail project creation — clone happens async and can be retried.
 		} else {
-			// Post-2f26614: the OC SecretReference creation step is gone.
-			// git-service.MintBuildToken now writes the per-org build
-			// credential as a `kubernetes.io/basic-auth` Secret straight
-			// into `workflows-<orgID>` on every dispatch, and the build's
-			// checkout step mounts it directly. The asdlc-service no
-			// longer participates in secret provisioning. See
-			// docs/design/cross-component-wiring-gaps.md.
+			// Build credentials are now pre-staged per WorkflowRun as a K8s
+			// Secret named `<workflowRunName>-git-secret` in
+			// workflows-<orgID> by git-service immediately before each
+			// dispatch — see docs/design/build-credential-injection.md.
+			// The asdlc-service no longer participates in any secret
+			// provisioning at project-creation time; OcSecretRefName is
+			// unused on new flows.
 			if repoInfo == nil {
 				slog.ErrorContext(ctx, "git-service returned nil repoInfo on InitProjectComponents",
 					"project", project.Name)
-			} else if repoInfo.OcSecretRefName == nil || *repoInfo.OcSecretRefName == "" {
-				slog.ErrorContext(ctx, "BUG: git-service init response missing OcSecretRefName — first build will fail because the dispatcher passes empty secretRef to the workflow",
-					"project", project.Name, "orgId", orgName,
-					"repoUrl", repoInfo.RepoURL)
 			}
 			// Register the per-repo webhook so the BFF starts receiving events
 			// (pull_request, push, issue_comment) on this repo. Best-effort:

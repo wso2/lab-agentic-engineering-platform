@@ -634,10 +634,15 @@ func (s *dispatchService) ensureOCComponent(
 		dockerContext = "."
 	}
 
-	if repoInfo == nil || repoInfo.OcSecretRefName == nil || *repoInfo.OcSecretRefName == "" {
-		return fmt.Errorf("repo has no SecretReference name; project=%s", task.ProjectID)
+	// Per docs/design/build-credential-injection.md: build credentials are
+	// pre-staged per WorkflowRun as a K8s Secret in workflows-<orgID> by
+	// git-service. The Component's `repository.secretRef` parameter stays
+	// empty so the upstream dockerfile-builder ClusterWorkflow skips its
+	// SecretReference / ExternalSecret synth path entirely.
+	const secretRefName = ""
+	if repoInfo == nil {
+		return fmt.Errorf("repo info missing for project=%s", task.ProjectID)
 	}
-	secretRefName := *repoInfo.OcSecretRefName
 
 	branch := repoInfo.DefaultBranch
 	if branch == "" {

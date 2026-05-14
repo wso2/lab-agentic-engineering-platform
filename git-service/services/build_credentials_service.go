@@ -1,17 +1,21 @@
 // Package services — build credentials.
 //
-// MintBuildToken is the BFF-only entry point for provisioning a per-build
-// GitHub token. It validates (ocOrgId, repoSlug) ownership, mints a fresh
-// token via the credential resolver, persists it to the credential store
-// (Postgres post-2f26614), AND writes a per-org `kubernetes.io/basic-auth`
-// Secret straight into the org's workflow-plane namespace
-// (`workflows-<ocOrgID>`). The build's checkout-source step mounts that
-// Secret as a regular volume.secret.secretName — no OpenBao, no
-// SecretReference, no per-run ExternalSecret synthesis.
+// StageBuildSecret is the BFF entry point for provisioning a per-build GitHub
+// credential. The BFF generates the WorkflowRun name upfront and asks
+// git-service to materialise a per-WorkflowRun `kubernetes.io/basic-auth`
+// Secret named `<workflowRunName>-git-secret` in the org's workflow-plane
+// namespace `workflows-<ocOrgID>`. The build pod's checkout-source step then
+// mounts that Secret as a regular volume.secret.secretName — same name the
+// upstream `dockerfile-builder` ClusterWorkflow templates from
+// `${metadata.workflowRunName}-git-secret` (line 144 of the workflow).
 //
-// See docs/design/github-integration-phase2.md §9.2 and the
-// post-2f26614 follow-up notes in
-// docs/design/cross-component-wiring-gaps.md.
+// This sidesteps the SecretReference / per-run ExternalSecret synth entirely
+// because the BFF POSTs the WorkflowRun with `parameters.repository.secretRef
+// == ""` — OC's externalRefs resolver explicitly skips empty refs
+// (openchoreo internal/controller/workflowrun/externalref.go:41-44) and the
+// workflow's `git-secret` resource has `includeWhen: secretRef != ""`.
+//
+// Design doc: docs/design/build-credential-injection.md.
 package services
 
 import (
@@ -19,7 +23,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -32,88 +35,92 @@ import (
 	"github.com/wso2/asdlc/git-service/repositories"
 )
 
-// MintResult is the response shape returned to the BFF — secretRef name +
-// the token's expiry. The token itself never crosses the boundary.
-type MintResult struct {
-	SecretRefName string    `json:"secretRefName"`
-	ExpiresAt     time.Time `json:"expiresAt"`
+// StageResult is the response shape returned to the BFF. The token itself
+// never crosses the boundary; only the K8s Secret name the workflow will
+// mount.
+type StageResult struct {
+	SecretName string `json:"secretName"`
 }
 
 // Errors with stable codes the API layer maps to phase2.md §5.2 status codes:
 //
-//   - ErrRepoNotInOrg       → 404 (the (ocOrgId, repoSlug) tuple doesn't match
-//                            an active repo — server-side ownership fence)
-//   - ErrOrgDisconnected    → 409 (credential row is suspended or disconnected)
-//   - ErrOpenBaoUnavailable → 503 (OpenBao Put failed transiently)
+//   - ErrRepoNotInOrg    → 404 (the (ocOrgId, repoSlug) tuple doesn't match
+//                          an active repo — server-side ownership fence)
+//   - ErrOrgDisconnected → 409 (credential row is suspended or disconnected)
 //
-// 429 (App rate-limit) is deferred to PR D's build-watcher auth-failure
-// classifier; transient mint failures fall through as 500-class.
+// Transient K8s SSA / credential-store failures fall through as 500-class.
 var (
-	ErrRepoNotInOrg       = errors.New("mint-build: repo not in org")
-	ErrOrgDisconnected    = errors.New("mint-build: org disconnected")
-	ErrOpenBaoUnavailable = errors.New("mint-build: openbao unavailable")
+	ErrRepoNotInOrg    = errors.New("stage-build-secret: repo not in org")
+	ErrOrgDisconnected = errors.New("stage-build-secret: org disconnected")
 )
 
-// BuildCredentialsService orchestrates per-build token minting. Uses the
-// credential resolver, the credential store (Postgres-backed,
-// AES-256-GCM encrypted), the repos table, and a workflow-plane k8s
-// client for writing per-org build Secrets.
+// Labels stamped on every per-WorkflowRun build Secret. Used by
+// DeleteBuildSecretsForOrg and the (future) sweep loop to find Secrets to
+// clean up. The `build-secret` value is the discriminator from
+// AnthropicSecretName / other things git-service writes into WP namespaces.
+const (
+	LabelManagedBy   = "app.kubernetes.io/managed-by"
+	LabelOrgID       = "app-factory.openchoreo.dev/oc-org-id"
+	LabelSecretType  = "app-factory.openchoreo.dev/secret-type"
+	BuildSecretLabel = "build-credentials"
+)
+
+// BuildCredentialsService stages per-WorkflowRun build Secrets in
+// workflows-<ocOrgID>. It reads the credential from the resolver (which
+// reads from `org_secrets` in postgres for PAT mode), packages it as a
+// kubernetes.io/basic-auth Secret, and SSAs it into the WP namespace.
 //
 // wpClient may be nil in tests or when running outside a cluster — in
-// that case Secret writes are skipped (Postgres write still happens)
-// and the build will fail at clone time with "Git secret exists but no
-// recognized credentials found" until the operator wires a cluster.
-// We surface this loudly via a startup log so the misconfiguration is
-// obvious.
+// that case Secret writes are skipped (with a loud warning) and the build
+// will fail at clone time with a clearer NotFound error than a silent
+// misroute. Production startup logs the configured state.
 type BuildCredentialsService struct {
 	repos    repositories.RepoRepository
 	resolver credentials.Resolver
-	store    credentials.OpenBaoStore
 	wpClient client.Client
 }
 
 func NewBuildCredentialsService(
 	repos repositories.RepoRepository,
 	resolver credentials.Resolver,
-	store credentials.OpenBaoStore,
 	wpClient client.Client,
 ) *BuildCredentialsService {
 	return &BuildCredentialsService{
 		repos:    repos,
 		resolver: resolver,
-		store:    store,
 		wpClient: wpClient,
 	}
 }
 
-// MintBuildToken implements the §9.2 sequence (revised post-2f26614):
+// StageBuildSecret materialises a per-WorkflowRun K8s Secret carrying the
+// org's GitHub credential, named to match the upstream
+// `dockerfile-builder` workflow's expected default
+// (`${metadata.workflowRunName}-git-secret`).
 //
-//  1. Validate (ocOrgId, repoSlug) maps to an active git_repositories row.
-//  2. Resolve the org's credential — refuses if status != active.
+// Flow:
+//
+//  1. Validate (ocOrgId, repoSlug) maps to an active git_repositories row
+//     — server-side ownership fence, identical to the prior MintBuildToken
+//     surface.
+//  2. Resolve the org's credential. Refuses if status != active.
 //  3. cred.Token(ctx) → fresh token (App: per-installation mint, cached;
-//     PAT: Postgres read).
-//  4. Persist the token to the credential store (Postgres). Keyed per-repo
-//     for historical compatibility; the value is identical across repos
-//     in the same org.
-//  5. Ensure the org's workflow-plane namespace exists, then SSA the
-//     per-org `kubernetes.io/basic-auth` Secret holding {username, password}.
-//     This is what the build pod's checkout step mounts.
-//  6. Return {secretRefName, expiresAt} where secretRefName is the
-//     per-org WP Secret name (see models.BuildSecretName).
+//     PAT: postgres read via `userPATCred`).
+//  4. SSA `<workflowRunName>-git-secret` into workflows-<ocOrgID>:
+//     - type: kubernetes.io/basic-auth
+//     - data: {username, password}
+//     - labels: managed-by + oc-org-id + secret-type=build-credentials
 //
-// Per-org (not per-repo) because the underlying credential is per-installation
-// (App) or per-PAT — a single token grants access to every repo. Multiple
-// concurrent mints against the same org SSA the same Secret with the same
-// FieldOwner; last write wins, all writes contain valid tokens (the
-// App-token cache returns the same value for the deadline window).
-func (s *BuildCredentialsService) MintBuildToken(ctx context.Context, ocOrgID, repoSlug string) (*MintResult, error) {
-	if ocOrgID == "" || repoSlug == "" {
-		return nil, fmt.Errorf("mint-build: ocOrgId and repoSlug are required")
+// Idempotent on retry (SSA with stable FieldOwner).
+func (s *BuildCredentialsService) StageBuildSecret(
+	ctx context.Context, ocOrgID, repoSlug, workflowRunName string,
+) (*StageResult, error) {
+	if ocOrgID == "" || repoSlug == "" || workflowRunName == "" {
+		return nil, fmt.Errorf("stage-build-secret: ocOrgId, repoSlug, workflowRunName are required")
 	}
 
 	repo, err := s.repos.GetByOrgAndSlug(ctx, ocOrgID, repoSlug)
 	if err != nil {
-		return nil, fmt.Errorf("mint-build: lookup repo: %w", err)
+		return nil, fmt.Errorf("stage-build-secret: lookup repo: %w", err)
 	}
 	if repo == nil {
 		return nil, ErrRepoNotInOrg
@@ -121,90 +128,65 @@ func (s *BuildCredentialsService) MintBuildToken(ctx context.Context, ocOrgID, r
 
 	cred, err := s.resolver.Resolve(ctx, ocOrgID)
 	if err != nil {
-		// Resolver returns OrgNotActiveError (suspended/disconnected) and
-		// OrgNotFoundError (no row). The mint-build endpoint pre-validates
-		// (ocOrgId, repoSlug) against git_repositories, so a missing org
-		// row at this point means the credential was disconnected after
-		// the repo was provisioned — surface as ErrOrgDisconnected (409).
 		var notActive *credentials.OrgNotActiveError
 		var notFound *credentials.OrgNotFoundError
 		if errors.As(err, &notActive) || errors.As(err, &notFound) {
 			return nil, fmt.Errorf("%w: %v", ErrOrgDisconnected, err)
 		}
-		return nil, fmt.Errorf("mint-build: resolve credential: %w", err)
+		return nil, fmt.Errorf("stage-build-secret: resolve credential: %w", err)
 	}
 
-	token, expiresAt, err := cred.Token(ctx)
+	token, _, err := cred.Token(ctx)
 	if err != nil {
 		return nil, classifyMintErr(err)
 	}
 
-	// Credential-store persistence stays — call sites that read the build
-	// token without going through k8s (none today, but the legacy contract
-	// is preserved) continue to work, and the credential store remains the
-	// authoritative record of the most recent mint.
-	if err := s.store.Put(ctx, ocOrgID, "git/"+repoSlug, []byte(token)); err != nil {
-		return nil, fmt.Errorf("%w: %v", ErrOpenBaoUnavailable, err)
+	secretName := models.BuildSecretNameFor(workflowRunName)
+	if err := s.applyBuildSecret(ctx, ocOrgID, secretName, cred, token); err != nil {
+		return nil, fmt.Errorf("stage-build-secret: write WP secret: %w", err)
 	}
 
-	// SSA the per-org build Secret into the WP namespace. This is the path
-	// the build pod's checkout-source step actually reads from.
-	secretRefName := models.BuildSecretName(ocOrgID)
-	if err := s.applyBuildSecret(ctx, ocOrgID, cred, token); err != nil {
-		return nil, fmt.Errorf("mint-build: write workflow-plane secret: %w", err)
-	}
-
-	slog.InfoContext(ctx, "mint-build",
+	slog.InfoContext(ctx, "stage-build-secret",
 		"ocOrgId", ocOrgID, "repoSlug", repoSlug,
-		"secretRef", secretRefName,
-		"wpNamespace", models.WorkflowPlaneNamespace(ocOrgID),
-		"expiresAt", expiresAt)
+		"workflowRunName", workflowRunName,
+		"secretName", secretName,
+		"wpNamespace", models.WorkflowPlaneNamespace(ocOrgID))
 
-	return &MintResult{
-		SecretRefName: secretRefName,
-		ExpiresAt:     expiresAt,
-	}, nil
+	return &StageResult{SecretName: secretName}, nil
 }
 
-// applyBuildSecret ensures workflows-<ocOrgID> exists and Server-Side
-// Applies the per-org git-credentials Secret. No-op (with a warn) when
-// wpClient is nil — see NewBuildCredentialsService for the rationale.
+// applyBuildSecret SSAs the per-WorkflowRun build Secret into the WP
+// namespace. No-op (with warn) when wpClient is nil.
 func (s *BuildCredentialsService) applyBuildSecret(
 	ctx context.Context,
-	ocOrgID string,
+	ocOrgID, secretName string,
 	cred credentials.Credential,
 	token string,
 ) error {
 	if s.wpClient == nil {
-		slog.WarnContext(ctx, "mint-build: wp k8s client not configured — Secret write skipped (build will fail at clone)",
-			"ocOrgId", ocOrgID)
+		slog.WarnContext(ctx, "stage-build-secret: wp k8s client not configured — Secret write skipped (build will fail at clone)",
+			"ocOrgId", ocOrgID, "secretName", secretName)
 		return nil
 	}
 
 	ns := models.WorkflowPlaneNamespace(ocOrgID)
-	// The WP namespace is pre-provisioned (setup.sh for the `default` org,
-	// asdlc-service's org-onboarding flow for additional orgs — TODO). The
-	// namespaced Role we run under doesn't grant `namespaces get/create`,
-	// so we skip the ensure-namespace step entirely and let the SSA below
-	// surface a clear NotFound error if the operator forgot to provision
-	// the namespace first.
-
-	username := usernameForCredential(cred)
+	// The WP namespace is pre-provisioned by OC's project-onboarding flow.
+	// If absent, the SSA below surfaces a clear NotFound to the operator.
 
 	secret := &corev1.Secret{
 		TypeMeta: metav1.TypeMeta{APIVersion: "v1", Kind: "Secret"},
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      models.BuildSecretName(ocOrgID),
+			Name:      secretName,
 			Namespace: ns,
 			Labels: map[string]string{
-				"app.kubernetes.io/managed-by":           "app-factory-git-service",
-				"app-factory.openchoreo.dev/oc-org-id":   ocOrgID,
-				"app-factory.openchoreo.dev/secret-type": "git-credentials",
+				LabelManagedBy:  k8s.FieldOwner,
+				LabelOrgID:      ocOrgID,
+				LabelSecretType: BuildSecretLabel,
 			},
 		},
 		Type: corev1.SecretTypeBasicAuth,
 		StringData: map[string]string{
-			"username": username,
+			"username": usernameForCredential(cred),
 			"password": token,
 		},
 	}
@@ -220,33 +202,35 @@ func (s *BuildCredentialsService) applyBuildSecret(
 	return nil
 }
 
-// DeleteBuildSecret removes the per-org build-credential Secret from the
-// org's workflow-plane namespace. Called from the org.disconnected
-// cascade so a disconnected org's token doesn't linger in the WP
-// namespace after the cred row is wiped from Postgres. Idempotent —
-// returns nil on NotFound and on nil wpClient.
-func (s *BuildCredentialsService) DeleteBuildSecret(ctx context.Context, ocOrgID string) error {
+// DeleteBuildSecretsForOrg removes every per-WorkflowRun build Secret in
+// the org's WP namespace. Called from the org.disconnected cascade so
+// staged tokens for that org don't linger after the credential row is
+// wiped. Idempotent — NotFound list / delete errors are returned as nil.
+//
+// Selector: managed-by=<FieldOwner> + secret-type=build-credentials. The
+// org-id label is implicit in the WP namespace name; we don't filter on
+// it (the namespace is per-org).
+func (s *BuildCredentialsService) DeleteBuildSecretsForOrg(ctx context.Context, ocOrgID string) error {
 	if s.wpClient == nil {
 		return nil
 	}
 	ns := models.WorkflowPlaneNamespace(ocOrgID)
-	secret := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      models.BuildSecretName(ocOrgID),
-			Namespace: ns,
+	if err := s.wpClient.DeleteAllOf(ctx, &corev1.Secret{},
+		client.InNamespace(ns),
+		client.MatchingLabels{
+			LabelManagedBy:  k8s.FieldOwner,
+			LabelSecretType: BuildSecretLabel,
 		},
-	}
-	if err := s.wpClient.Delete(ctx, secret); err != nil {
+	); err != nil {
 		if apierrors.IsNotFound(err) {
 			return nil
 		}
-		return fmt.Errorf("delete build secret %s/%s: %w", ns, secret.Name, err)
+		return fmt.Errorf("delete build secrets in %s: %w", ns, err)
 	}
-	slog.InfoContext(ctx, "mint-build: deleted per-org build secret on disconnect",
-		"ocOrgId", ocOrgID, "namespace", ns, "secret", secret.Name)
+	slog.InfoContext(ctx, "stage-build-secret: deleted org build secrets on disconnect",
+		"ocOrgId", ocOrgID, "namespace", ns)
 	return nil
 }
-
 
 // usernameForCredential derives the HTTPS basic-auth username for git push/pull.
 //
@@ -269,16 +253,13 @@ func usernameForCredential(cred credentials.Credential) string {
 	return "git"
 }
 
-// classifyMintErr maps credential-package errors onto the BuildCredentialsService
-// stable error set. OpenBao read failures (PAT mode after disconnect-GC) are
-// treated as ErrOrgDisconnected so the BFF can mark the task abandoned.
-//
-// App rate-limit detection is deferred to PR D (the build-watcher
-// auth-failure classifier). For now, all other token errors fall through
-// as 500-class transients.
+// classifyMintErr maps credential-package errors onto the
+// BuildCredentialsService stable error set. ErrSecretNotFound (credential
+// missing from store) is treated as ErrOrgDisconnected so the BFF can mark
+// the task abandoned.
 func classifyMintErr(err error) error {
 	if errors.Is(err, credentials.ErrSecretNotFound) {
 		return fmt.Errorf("%w: %v", ErrOrgDisconnected, err)
 	}
-	return fmt.Errorf("mint-build: token: %w", err)
+	return fmt.Errorf("stage-build-secret: token: %w", err)
 }
