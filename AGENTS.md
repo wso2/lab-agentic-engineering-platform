@@ -203,9 +203,9 @@ When the user clicks "Start Implementation" in the console:
 5. Agent reads the issue (via `gh issue view`), edits code, runs `git commit` / `git push origin HEAD`, posts `gh issue comment` for progress, and runs `gh pr ready <prNumber>` when done. The SDK is credential-blind — `git` and `gh` authenticate via the workspace's credential helper / `gh` wrapper, both of which fetch fresh tokens from `git-service /api/v1/credentials/refresh`. **The agent does not merge.**
 6. Webhooks drive every state transition. The BFF's `/webhooks/github` (HMAC-validated, delivery-ID-deduped) processes:
    - `pull_request.ready_for_review` → task `in_progress` → `ready_for_review`
-   - `pull_request.closed merged=true` → task `* → merged`, records merge SHA
+   - `pull_request.closed merged=true` → task `* → merged`, records merge SHA, **and dispatches the build directly** (creates an OC `WorkflowRun` with `params.repository.revision.commit` pinned to the merge SHA). This is the only entry point that dispatches builds — relying on the platform invariant that `main` only moves via merged PRs (branch protection + the `asdlc` agent skill both forbid direct pushes to `main`).
    - `pull_request.closed merged=false` → task `* → rejected`
-   - `push` to default branch → BFF creates an OC `WorkflowRun` with `params.repository.revision.commit` pinned to the merge SHA. Filters components by changed paths.
+   - `push` to default branch → audit-only log line. Does NOT dispatch builds; the `pr.closed merged=true` handler already did.
 
    There is **no polling fallback** — if the relay is down (see "GitHub
    webhook delivery (local dev)" above), the projector never fires and
@@ -223,7 +223,11 @@ Specs and designs are stored as files in the `.asdlc/` directory within each pro
 - `.asdlc/requirements/` — multi-document requirements directory
   - `requirements.md` — main requirements doc (always present, cannot be deleted)
   - `functional-requirements.md`, `non-functional-requirements.md`, `user-stories.md` — optional sibling docs derived from `requirements.md` via document-generation skills
-- `.asdlc/design.json` — Architecture design (components, overview, requirements)
+  - `wireframes.dsl` + `wireframes.excalidraw`, `domain-model.dsl` + `domain-model.excalidraw` — optional canvases. The `.dsl` is the agent-readable source; the `.excalidraw` is the rendered scene the user views.
+- `.asdlc/design/` — multi-file architecture tree
+  - `design.md` — system-level overview (root)
+  - `components/<name>/design.md` — per-component design (YAML frontmatter — `type`, `language`, `dependsOn`, `buildpack`, `appPath`, `entrypoint` — plus a Markdown body)
+  - `components/<name>/openapi.yaml` — OpenAPI 3.0.3 contract, present for `service` components only (web-apps have no OpenAPI)
 
 The BFF reads/writes these files via `ArtifactStore` and commits/pushes changes via `git-service`. `ComponentTask` and `ComponentConfig` live in PostgreSQL; generated tasks also surface as GitHub issues on the project repo.
 

@@ -64,9 +64,8 @@ type ArchitectRequest struct {
 
 // ArchitectDesign mirrors the architect output shape for incremental regen.
 type ArchitectDesign struct {
-	Overview     string                   `json:"overview"`
-	Requirements []string                 `json:"requirements"`
-	Components   []models.DesignComponent `json:"components"`
+	Overview   string                   `json:"overview"`
+	Components []models.DesignComponent `json:"components"`
 }
 
 // TechLeadPlanRequest is the body sent to /v1/agents/tech-lead/plan. Mirrors

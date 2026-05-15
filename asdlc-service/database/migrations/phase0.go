@@ -15,8 +15,6 @@ import (
 	"log/slog"
 
 	"gorm.io/gorm"
-
-	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
 // RunPhase0 executes the Phase 0 destructive migration.
@@ -70,30 +68,12 @@ func RunPhase0(db *gorm.DB, deploymentTier string) error {
 		slog.Info("phase0 migration: legacy columns dropped, component_tasks truncated")
 	}
 
-	// project_default_pushes.project_id was initially declared as uuid, but
-	// project IDs in the rest of the schema are text slugs (component_tasks,
-	// git_repositories, etc). Drop the table when the column shape is wrong
-	// so AutoMigrate recreates it with the correct text type.
-	var pdpUUID columnExists
-	if err := db.Raw(`
-		SELECT EXISTS (
-			SELECT 1 FROM information_schema.columns
-			WHERE table_name = 'project_default_pushes'
-			  AND column_name = 'project_id'
-			  AND data_type = 'uuid'
-		) AS exists
-	`).Scan(&pdpUUID).Error; err != nil {
-		return fmt.Errorf("phase0: check project_default_pushes shape: %w", err)
-	}
-	if pdpUUID.Exists {
-		slog.Warn("phase0 migration: project_default_pushes.project_id is uuid, dropping table")
-		if err := db.Exec(`DROP TABLE IF EXISTS project_default_pushes`).Error; err != nil {
-			return fmt.Errorf("phase0: drop project_default_pushes: %w", err)
-		}
-		// Recreate with the corrected text PK from the model.
-		if err := db.AutoMigrate(&models.ProjectDefaultPush{}); err != nil {
-			return fmt.Errorf("phase0: recreate project_default_pushes: %w", err)
-		}
+	// project_default_pushes was a cross-handler rendezvous table between the
+	// push and pull_request.closed webhook handlers. The build-dispatch path
+	// now runs off `pr.closed merged=true` only, so the table is unused.
+	// Drop it on first run so the schema stays clean.
+	if err := db.Exec(`DROP TABLE IF EXISTS project_default_pushes`).Error; err != nil {
+		return fmt.Errorf("phase0: drop project_default_pushes: %w", err)
 	}
 
 	return nil

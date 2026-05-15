@@ -44,9 +44,9 @@ type TaskService interface {
 	// for one task and the user clicks "Retry body".
 	RegenerateTaskBody(ctx context.Context, taskID string, out io.Writer, flush func()) error
 	// ReconcilePendingForDesignChange auto-closes pending tasks whose
-	// componentName no longer exists in the project's design.json.
-	// Idempotent; emits no SSE; called from design_service.SaveAndProceed
-	// after the design tag bump.
+	// componentName no longer exists in the project's `.asdlc/design/`
+	// tree. Idempotent; emits no SSE; called from
+	// design_service.SaveAndProceed after the design tag bump.
 	ReconcilePendingForDesignChange(ctx context.Context, orgID, projectID string) error
 	ExecTask(ctx context.Context, taskID string) error
 }
@@ -311,11 +311,11 @@ func (s *taskService) ExecTask(ctx context.Context, taskID string) error {
 // been created, and stores the URL + number back on the task. Idempotent —
 // a task that already has an IssueURL is left untouched.
 //
-// `comp` is the DesignComponent resolved fresh from .asdlc/design.json. It
-// drives the issue body's Component Reference card and the Local Developer
-// Setup `cd <appPath>` line. Pass nil when the design entry can't be
-// resolved (e.g. component already removed) — the body falls back to a
-// generic shape.
+// `comp` is the DesignComponent resolved fresh from the `.asdlc/design/`
+// tree. It drives the issue body's Component Reference card and the Local
+// Developer Setup `cd <appPath>` line. Pass nil when the design entry
+// can't be resolved (e.g. component already removed) — the body falls back
+// to a generic shape.
 //
 // repoURL + repoSlug are baked into the body's Local Developer Setup
 // section. The branch name is computed from the persisted task.ID via

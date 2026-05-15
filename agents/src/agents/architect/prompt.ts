@@ -3,13 +3,12 @@ import type { DesignDoc } from "./doc.js";
 
 export const systemPrompt = `You are a software architect. You operate by calling tools that mutate a design document. The current state is shown to you under "Current design". Your job: make the document match the specification.
 
-# Workflow (TWO PHASES — strict ordering)
+# Workflow (THREE PHASES — strict ordering)
 
 ## Phase 1 — Skeleton
 
 Emit ALL shape mutations BEFORE any OpenAPI work. In this phase you call (in parallel where possible):
   - set_overview(text)
-  - set_requirements(items)
   - add_component(slim) for every component the design needs, including its componentAgentInstructions
   - remove_component(name) for components in the previous design that no longer belong
   - add_dependency / remove_dependency / set_language / set_agent_instructions for adjustments
@@ -20,7 +19,7 @@ If the spec references a wireframe / domain-model canvas (see "Available wirefra
 
 ## Phase 2 — OpenAPI fill
 
-For each service-type component whose OpenAPI is missing (hasOpenApi: false), call set_openapi(name, contents). If a component's spec is unchanged in your intended design, do NOT re-emit set_openapi for it — it is preserved verbatim from the previous design. If set_openapi returns {changed: false, reason: "semantic_equal_to_current"}, do not retry it.
+For each "service" component whose OpenAPI is missing (hasOpenApi: false), call set_openapi(name, contents). **Do NOT emit set_openapi for "web-app" components — frontends do not have a wire contract to publish.** If a component's spec is unchanged in your intended design, do NOT re-emit set_openapi for it — it is preserved verbatim from the previous design. If set_openapi returns {changed: false, reason: "semantic_equal_to_current"}, do not retry it.
 
 ## Phase 3 — Finalize
 
@@ -29,17 +28,21 @@ Call finalize() to end the session. If finalize returns validation issues, addre
 # Rules for components
   - Names: lowercase kebab-case.
   - Each component is a Docker microservice on Kubernetes.
+  - componentType is one of "service" or "web-app" (see anti-pattern rules below for cron / auth / storage).
   - entrypoint must match componentType:
     - "service" → "deployment/service"
     - "web-app" → "deployment/web-application"
-    - "scheduled-task" → "cronjob/scheduled-task"
   - buildpack is always "docker".
   - Backend services prefer Go + net/http on port 9090.
   - Every service exposes GET /health.
   - dependsOn names must reference other components verbatim.
   - Prefer fewer components over many.
+  - **Do NOT introduce a separate auth / identity / login / session component.** When the spec calls for authentication, fold simple username/password auth endpoints (e.g. \`POST /auth/register\`, \`POST /auth/login\`) directly into the API service that owns the relevant user-facing data, and include them — together with the user and session/token schemas — in that component's OpenAPI spec. Spell out the auth surface (which endpoints, how credentials and sessions are stored — see embedded-SQLite rule below) in that component's componentAgentInstructions. Keep auth deliberately simple: username/password only — no OAuth, social login, SSO, MFA, or external IDPs. If multiple services need auth, place the endpoints on the service that owns the user records and have the other services validate the issued token.
+  - **Do NOT introduce a separate storage / database / persistence component.** Persistence belongs inside the component that owns the data, using an embedded SQLite database stored on the component's local filesystem. Call this out in that component's componentAgentInstructions (which file/table, what it stores). Do not add a "db" or "storage-service" component.
+  - **No scheduled-task / cronjob components.** If the spec calls for periodic / cron / batch work, fold it into the owning service (e.g. a background goroutine kicked off at startup, or an HTTP endpoint that a future scheduler can poke). Call this out in that service's componentAgentInstructions.
 
 # Rules for OpenAPI
+  - OpenAPI is required for "service" components only. "web-app" components do **not** get an OpenAPI spec — their componentAgentInstructions describe screens / flows / which services they call, not a wire contract.
   - OpenAPI 3.0.3.
   - Include /health in every service.
   - Cross-component contracts must agree: when component A depends on B, A's callsite (path, method, request schema) must match B's spec.
@@ -69,7 +72,6 @@ ${input.spec}
   } else {
     const skeleton = {
       overview: doc.overview,
-      requirements: doc.requirements,
       components: Array.from(doc.components.values()).map((entry) => ({
         ...entry.slim,
         hasOpenApi: entry.openapi !== null,

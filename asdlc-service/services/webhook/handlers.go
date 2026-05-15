@@ -3,12 +3,10 @@ package webhook
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
 	"strings"
-	"time"
 
 	"gorm.io/gorm"
 
@@ -21,8 +19,9 @@ import (
 // caller doesn't need to know the routing table.
 //
 // State transitions go through the projector; build triggers go through the
-// WorkflowRunService. Cross-handler rendezvous (push before pr.merged or
-// vice-versa) goes through project_default_pushes.
+// WorkflowRunService. Build dispatch runs off `pull_request.closed
+// merged=true` only — see PullRequestClosed for the rationale. The Push
+// handler is audit-only.
 func Register(
 	router *Router,
 	db *gorm.DB,
@@ -192,11 +191,10 @@ func (h *Handler) PullRequestReady(ctx context.Context, event, action string, bo
 	return err
 }
 
-// pushPayload subset.
+// pushPayload subset — only what the audit-only Push handler needs.
 type pushPayload struct {
-	Ref      string `json:"ref"`
-	Before   string `json:"before"`
-	After    string `json:"after"`
+	Ref        string `json:"ref"`
+	After      string `json:"after"`
 	Repository struct {
 		DefaultBranch string `json:"default_branch"`
 		FullName      string `json:"full_name"`
@@ -204,12 +202,6 @@ type pushPayload struct {
 	HeadCommit struct {
 		ID string `json:"id"`
 	} `json:"head_commit"`
-	Commits []struct {
-		ID       string   `json:"id"`
-		Added    []string `json:"added"`
-		Modified []string `json:"modified"`
-		Removed  []string `json:"removed"`
-	} `json:"commits"`
 }
 
 func (h *Handler) PullRequestClosed(ctx context.Context, event, action string, body []byte) error {
@@ -243,10 +235,13 @@ func (h *Handler) PullRequestClosed(ctx context.Context, event, action string, b
 		return err
 	}
 
-	// Cross-handler rendezvous: if the matching push already arrived, we'll
-	// find a row in project_default_pushes and can dispatch the build now.
-	// Look up the task fresh — scoped to this repo's project so stale tasks
-	// from unrelated projects (same PR number) don't bleed in.
+	// Dispatch the build immediately. The platform invariant is that `main`
+	// only moves via merged PRs (branch protection + the asdlc agent skill
+	// enforce this), so pr.closed is the single source of truth for "code
+	// just landed on main" — we do not need to wait for the push event or
+	// reconcile against it. DispatchTaskBuild stages the build secret,
+	// triggers the OC WorkflowRun, and atomically transitions
+	// merged → building via projector.MarkBuilding.
 	if mergeSHA == "" {
 		return nil
 	}
@@ -260,22 +255,9 @@ func (h *Handler) PullRequestClosed(ctx context.Context, event, action string, b
 		First(&task).Error; err != nil {
 		return nil // already handled above
 	}
-	var existing models.ProjectDefaultPush
-	err = h.db.WithContext(ctx).
-		Where("project_id = ? AND sha = ?", task.ProjectID, mergeSHA).
-		First(&existing).Error
-	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return nil // push will arrive later
-		}
-		return fmt.Errorf("lookup project_default_push: %w", err)
-	}
-	// Push already processed — dispatch the build now. DispatchTaskBuild
-	// is idempotent on (LastBuildSHA, LastBuildRunName) and atomically
-	// transitions merged → building via projector.MarkBuilding.
 	if h.wfService != nil {
 		if _, derr := h.wfService.DispatchTaskBuild(ctx, &task, mergeSHA); derr != nil {
-			slog.WarnContext(ctx, "dispatch build at merge rendezvous failed",
+			slog.WarnContext(ctx, "dispatch build at merge failed",
 				"task", task.ID, "sha", mergeSHA, "error", derr)
 		}
 	}
@@ -286,6 +268,13 @@ func (h *Handler) PullRequestClosed(ctx context.Context, event, action string, b
 	return nil
 }
 
+// Push is an audit-only handler. The platform's build-dispatch path runs off
+// `pull_request.closed merged=true` exclusively — see PullRequestClosed above.
+// We keep the subscription so GitHub gets a 2xx (otherwise it would mark the
+// hook as failing) and log default-branch pushes for forensic visibility. We
+// do NOT trigger builds here: the agent skill forbids direct pushes to main,
+// and branch protection enforces it, so every commit on `main` is the
+// merge_commit_sha of a PR we already processed via pr.closed.
 func (h *Handler) Push(ctx context.Context, event, action string, body []byte) error {
 	var p pushPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -296,10 +285,8 @@ func (h *Handler) Push(ctx context.Context, event, action string, body []byte) e
 	}
 	branch := strings.TrimPrefix(p.Ref, "refs/heads/")
 	if branch != p.Repository.DefaultBranch {
-		// Pushes to feature branches are recorded for audit only.
 		return nil
 	}
-
 	sha := p.HeadCommit.ID
 	if sha == "" {
 		sha = p.After
@@ -307,53 +294,8 @@ func (h *Handler) Push(ctx context.Context, event, action string, body []byte) e
 	if sha == "" {
 		return nil
 	}
-
-	// Resolve project from the repo full_name.
-	projectID, err := lookupProjectByRepo(h.db.WithContext(ctx), p.Repository.FullName)
-	if err != nil || projectID == "" {
-		slog.WarnContext(ctx, "push: project not found for repo",
-			"repo", p.Repository.FullName, "error", err)
-		return nil
-	}
-
-	// Record the push (idempotent on (project, sha)). Used as the
-	// rendezvous row when the matching pr.closed arrives later.
-	if err := h.db.WithContext(ctx).
-		Where("project_id = ? AND sha = ?", projectID, sha).
-		Attrs(&models.ProjectDefaultPush{
-			ProjectID: projectID,
-			SHA:       sha,
-			PushedAt:  time.Now().UTC(),
-		}).
-		FirstOrCreate(&models.ProjectDefaultPush{}).Error; err != nil {
-		return fmt.Errorf("persist project_default_push: %w", err)
-	}
-
-	// Compute changed paths from the push payload.
-	changed := changedPathsFromPush(&p)
-
-	// Trigger builds for components matching the changed paths and whose
-	// merged task is still at LastBuildSHA != sha.
-	if h.wfService != nil {
-		// Determine orgID for this project. Read any existing task row for
-		// the project to get OrgID.
-		var taskRow models.ComponentTask
-		if err := h.db.WithContext(ctx).
-			Where("project_id = ?", projectID).
-			Order("created_at ASC").
-			First(&taskRow).Error; err == nil {
-			if _, terr := h.wfService.TriggerForPush(ctx, taskRow.OrgID, projectID, sha, changed); terr != nil {
-				slog.WarnContext(ctx, "trigger builds for push failed", "error", terr)
-			}
-		}
-	}
-
-	// State transition (merged → building) is performed atomically inside
-	// TriggerForPush via projector.MarkBuilding when a build is dispatched.
-	// AdvanceMergedTasksForPush is no longer wired here — keeping it would
-	// be a no-op given its LastBuildRunName guard, but routing the
-	// transition through one path keeps the invariant easy to reason about
-	// ("a task in `building` always has a WorkflowRun").
+	slog.InfoContext(ctx, "default-branch push received",
+		"repo", p.Repository.FullName, "sha", sha)
 	return nil
 }
 
@@ -382,26 +324,3 @@ func lookupProjectByRepo(db *gorm.DB, repoFullName string) (string, error) {
 	return r.ProjectID, nil
 }
 
-// changedPathsFromPush flattens push.commits[].{added,modified,removed} into
-// a unique slice. The commit list is capped by GitHub at 2048 entries; for
-// pushes that exceed that or the per-commit file-list cap, the caller falls
-// back to a `compare` API call (see github-integration-phase0.md §8.4 step 2).
-func changedPathsFromPush(p *pushPayload) []string {
-	seen := map[string]struct{}{}
-	for _, c := range p.Commits {
-		for _, path := range c.Added {
-			seen[path] = struct{}{}
-		}
-		for _, path := range c.Modified {
-			seen[path] = struct{}{}
-		}
-		for _, path := range c.Removed {
-			seen[path] = struct{}{}
-		}
-	}
-	out := make([]string, 0, len(seen))
-	for path := range seen {
-		out = append(out, path)
-	}
-	return out
-}

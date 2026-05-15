@@ -31,10 +31,12 @@ const (
 	// of the per-task `app-factory-coding-agent` WorkflowRun.
 	TaskEventCodingAgentFailed TaskEvent = "coding_agent.failed"
 	// Build dispatch was skipped because the task's own merge push contained
-	// no file under its design.json appPath. This is a configuration/contract
-	// violation (architect emitted a path that doesn't match what the
-	// coding-agent committed) — failing loudly is better than orphaning the
-	// task in `building` with no WorkflowRun behind it. Drives merged → failed.
+	// no file under its design-declared appPath (read from
+	// `.asdlc/design/components/<name>/design.md` frontmatter). This is a
+	// configuration/contract violation (architect emitted a path that
+	// doesn't match what the coding-agent committed) — failing loudly is
+	// better than orphaning the task in `building` with no WorkflowRun
+	// behind it. Drives merged → failed.
 	TaskEventBuildPathMismatch TaskEvent = "build.path_mismatch"
 	// TaskEventVerificationFailed (F3c) — the dispatched agent could not
 	// verify the live api dependency before opening its PR. Drives
@@ -130,9 +132,10 @@ var allowedTransitions = []stateTransition{
 	// when both fire — first-write-wins on the projector.
 	{models.TaskStatusInProgress, models.TaskStatusFailed, TaskEventCodingAgentFailed},
 	// Push containing this task's own merge SHA arrived, but the task's
-	// design.json appPath matched no file in the push — build was never
-	// dispatched. Drives merged → failed so the orphan is visible rather
-	// than silently stuck in `building`.
+	// design-declared appPath (from
+	// `.asdlc/design/components/<name>/design.md` frontmatter) matched no
+	// file in the push — build was never dispatched. Drives merged → failed
+	// so the orphan is visible rather than silently stuck in `building`.
 	{models.TaskStatusMerged, models.TaskStatusFailed, TaskEventBuildPathMismatch},
 	// F3c — agent's pre-PR integration verification failed. The agent has
 	// kept the PR a draft + posted a diagnostic comment on the issue. The

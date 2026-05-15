@@ -241,10 +241,10 @@ dependency URL from your local environment and confirm:
    documented status — e.g. some health endpoints return 200; some root
    paths return 404 and that's fine if `/<spec'd path>` returns 200).
 2. **A happy-path operation** for each resource group described in the
-   upstream's OpenAPI (in `.asdlc/design.json`). For a CRUD api, that's
-   typically `POST` + `GET` + `DELETE` against one resource path. Don't
-   try to enumerate every endpoint — pick one canonical operation per
-   resource.
+   upstream's OpenAPI (`.asdlc/design/components/<upstream>/openapi.yaml`).
+   For a CRUD api, that's typically `POST` + `GET` + `DELETE` against one
+   resource path. Don't try to enumerate every endpoint — pick one
+   canonical operation per resource.
 3. **The response shape loosely matches the OpenAPI**: HTTP status code
    in the right family, top-level JSON fields present.
 

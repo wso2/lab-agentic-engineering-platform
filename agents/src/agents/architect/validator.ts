@@ -12,7 +12,6 @@ export type ValidationIssue = {
 const ENTRYPOINT_BY_TYPE: Record<string, string> = {
   service: "deployment/service",
   "web-app": "deployment/web-application",
-  "scheduled-task": "cronjob/scheduled-task",
 };
 
 const HTTP_METHODS = new Set([
@@ -133,10 +132,7 @@ function validatePerOpenApi(doc: DesignDoc, issues: ValidationIssue[]): void {
 
     const slim = entry.slim;
     const paths = (spec.paths ?? {}) as Record<string, unknown>;
-    const requiresPathOps =
-      slim.componentType === "service" ||
-      slim.componentType === "scheduled-task";
-    if (requiresPathOps && Object.keys(paths).length === 0) {
+    if (slim.componentType === "service" && Object.keys(paths).length === 0) {
       issues.push({ component: name, code: "no-path-operations" });
     }
 

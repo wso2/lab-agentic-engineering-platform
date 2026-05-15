@@ -161,12 +161,21 @@ solutions.
 The agent has access to:
   - The full set of requirements documents under \`.asdlc/requirements/\` —
     at minimum \`requirements.md\` (the high-level sketch); often also
-    \`functional-requirements.md\`, \`non-functional-requirements.md\`, and
-    \`user-stories.md\`. The agent should consult whichever of these are
-    relevant to its task.
-  - The architecture at \`.asdlc/design.json\` — every component's type, language,
-    appPath, dependsOn, and (for services) the full OpenAPI contract under
-    \`components[name=<componentName>].openAPISpec\`.
+    \`functional-requirements.md\`, \`non-functional-requirements.md\`,
+    \`user-stories.md\`, and any \`wireframes.dsl\` / \`domain-model.dsl\`
+    canvases (the matching \`.excalidraw\` files are the rendered scenes —
+    do NOT read them; the \`.dsl\` is the agent-readable source). The
+    agent should consult whichever of these are relevant to its task.
+  - The architecture as a multi-file tree under \`.asdlc/design/\`:
+      * \`design.md\` — system-level overview.
+      * \`components/<componentName>/design.md\` — per-component design with
+        YAML frontmatter (\`type\`, \`language\`, \`dependsOn\`, \`buildpack\`,
+        \`appPath\`, \`entrypoint\`) and a Markdown body covering Overview /
+        Responsibilities / Interfaces / Implementation Notes.
+      * \`components/<componentName>/openapi.yaml\` — OpenAPI 3.0.3 contract.
+        Present for \`type: service\` components only. Web-app components
+        have NO \`openapi.yaml\`; their interface is described in their
+        \`design.md\` body.
   - The repo working tree, including any code already committed for this or
     other components.
 
@@ -234,9 +243,12 @@ Section rules:
   - **Scope**: A short bulleted list of the outcomes the agent must deliver,
     plus the boundary. Stay at the level of WHAT, not HOW. Shape by task kind:
       * **New component / feature**: list outcomes, e.g.
-          - "Implement the full OpenAPI contract for this service (see \`.asdlc/design.json\`)."
+          - "Implement the full OpenAPI contract (see \`.asdlc/design/components/<componentName>/openapi.yaml\`)."
           - "Persist todos to local SQLite; schema is the agent's choice."
           - "Frontend must let a user create, list, complete, and delete todos."
+        For \`web-app\` components there is no \`openapi.yaml\` — describe the
+        UI scope and point at the upstream service(s)' \`openapi.yaml\` files
+        the SPA integrates with.
       * **Bug fix**: name the symptom and the surface area; forbid drive-by
         refactors. Two or three bullets is plenty:
           - "Fix: POST /todos returns 500 when title is empty (should be 400)."
@@ -253,24 +265,25 @@ Section rules:
     describes the previously-failing behaviour and the expected new behaviour.
 
   - **References**: Task-specific pointers, not content. The platform's
-    appended Component Reference card already points at
-    \`.asdlc/design.json → components[name="<componentName>"]\` and its
-    \`openAPISpec\` sub-field — do NOT repeat those generic pointers here.
-    Use References for things the agent might otherwise miss:
+    appended Component Reference card already points at the component's
+    \`.asdlc/design/components/<componentName>/design.md\` and (for service
+    components) \`.asdlc/design/components/<componentName>/openapi.yaml\` —
+    do NOT repeat those generic pointers here. Use References for things
+    the agent might otherwise miss:
       * Specific sections in \`.asdlc/requirements/requirements.md\` (or any
         of the sibling requirement docs) that constrain this task —
         only when the task hinges on product context.
       * Names of sibling components this task integrates with, when the
         integration shape isn't obvious from dependsOn alone (the agent will
-        look them up in design.json).
+        look them up under \`.asdlc/design/components/<sibling>/\`).
       * For EXISTING-component tasks (esp. bug fixes), the likely **area**
         of the codebase to start in (e.g. "the request-validation layer of
         this component", "the todo-list rendering logic"). You do NOT have a
         view of the working tree — describe areas/responsibilities, do not
         invent specific file paths.
     If there is nothing task-specific to point at, write "None.".
-    Never inline OpenAPI YAML or design.json blobs. Never enumerate endpoints
-    or schemas in prose — point at \`openAPISpec\` and stop.
+    Never inline OpenAPI YAML or design.md contents. Never enumerate endpoints
+    or schemas in prose — point at \`openapi.yaml\` and stop.
 
   - **Task dependencies**: List other tasks in THIS batch by title (from the
     plan's \`dependsOn\`). If none, write "None.". This is the task graph,
@@ -278,11 +291,48 @@ Section rules:
     Reference / dependency-wiring sections). Do not invent dependencies that
     aren't in the plan.
 
+Auth endpoints — sample test user:
+
+If the target component's design (its \`componentAgentInstructions\` or its
+\`openapi.yaml\`) exposes username/password auth endpoints (e.g.
+\`/auth/register\`, \`/auth/login\`, \`/login\`, \`/signin\`), the build
+ships with no usable account and reviewers cannot exercise it. For those
+components only, the issue body must:
+
+  - Add a **Scope** bullet instructing the agent to seed a sample test
+    user on first start, idempotently (only seed if no user exists),
+    with concrete credentials. Use \`admin\` / \`admin123\` by default;
+    switch the username field to \`admin@example.com\` if the schema is
+    email-keyed. State the exact credentials in this bullet — the agent
+    will use them verbatim.
+
+  - Add a second **Scope** bullet instructing the agent, once the seed
+    code is in place and the PR is ready for review, to post a comment
+    on this issue via \`gh issue comment\` containing the credentials.
+    The comment must literally include the username and password
+    chosen above (e.g. "Sample test user — username: \`admin\`,
+    password: \`admin123\`. Sign in via \`POST /auth/login\` or the
+    equivalent endpoint to verify the build."). This is the canonical
+    way to surface test credentials to reviewers — credentials must
+    NOT live only in the PR body or commit messages; the issue comment
+    is the durable record.
+
+  - Add an **Acceptance criteria** bullet that signing in as the sample
+    user returns the expected token / session and the token
+    authenticates against a protected endpoint, and a second bullet
+    that the credentials are posted as an issue comment per the Scope
+    instruction above.
+
+Skip the sample-user treatment for components that do not own auth
+endpoints (e.g. a web-app that calls a sibling service to log in) —
+seeding and the credentials comment belong only on the component that
+actually seeds the account.
+
 Hard rules:
   - Stay at the WHAT/boundary altitude. Do NOT write step-by-step instructions,
     code skeletons, or library choices. Trust the agent.
   - Tailor depth to task kind. Don't pad short tasks; don't truncate big ones.
-  - Do NOT inline OpenAPI YAML or design.json content. Reference by path.
+  - Do NOT inline OpenAPI YAML or per-component design.md content. Reference by path.
   - Do NOT restate the platform-appended sections (Component Reference card,
     constraints, do-not list, submission flow, project-structure hints,
     workload.yaml templates, local setup, "Closes #N").
@@ -329,7 +379,7 @@ ${spec}
 ## Component situation
 ${componentSituation}
 
-## Component design entry (JSON — \`openAPISpec\` stripped here for brevity; the agent reads the full entry on disk. Do NOT inline)
+## Component design entry (assembled from \`.asdlc/design/components/${item.componentName}/design.md\`; \`openAPISpec\` stripped here for brevity. The agent reads the full \`design.md\` + \`openapi.yaml\` on disk. Do NOT inline.)
 \`\`\`json
 ${item.designSlice}
 \`\`\`

@@ -153,64 +153,10 @@ func setCauseIfTerminal(task *models.ComponentTask, event services.TaskEvent) {
 	task.Cause = &cause
 }
 
-// AdvanceMergedTasksForPush advances all tasks in a project whose
-// MergeCommitSHA appears in the given push's commit list. Used by the push
-// handler to flip merged → building when the push that included a merge
-// commit arrives. Project-scoped lock keeps this serialised against
-// concurrent pushes for the same project.
-//
-// commitSHAs includes head_commit.id plus every commits[].id from the push
-// payload. Empty MergeCommitSHA is matched separately by the caller using
-// the PR head ref (the §8.3 backfill case) — that lookup happens before
-// this function is invoked.
-func (p *Projector) AdvanceMergedTasksForPush(
-	ctx context.Context,
-	projectID string,
-	commitSHAs []string,
-) (int, error) {
-	if len(commitSHAs) == 0 {
-		return 0, nil
-	}
-	advanced := 0
-	err := p.db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
-		if err := acquireProjectLock(tx, projectID); err != nil {
-			return err
-		}
-		// Defence in depth: only advance tasks where a build was actually
-		// dispatched (LastBuildRunName populated). Without this guard a
-		// silent-skip in TriggerForPush (e.g. path-filter mismatch, mint
-		// failure) would flip the task to `building` with no WorkflowRun
-		// behind it, and the build watcher would have nothing to poll.
-		var tasks []models.ComponentTask
-		if err := tx.
-			Where("project_id = ? AND status = ? AND merge_commit_sha IN ? AND last_build_run_name <> ''",
-				projectID, string(models.TaskStatusMerged), commitSHAs).
-			Find(&tasks).Error; err != nil {
-			return fmt.Errorf("scan merged tasks: %w", err)
-		}
-		now := time.Now().UTC()
-		for i := range tasks {
-			next, err := services.ApplyTaskEvent(models.TaskStatus(tasks[i].Status), services.TaskEventPushMatched)
-			if err != nil {
-				continue
-			}
-			tasks[i].Status = string(next)
-			tasks[i].LastEventAt = &now
-			if err := tx.Save(&tasks[i]).Error; err != nil {
-				return fmt.Errorf("save task %s: %w", tasks[i].ID, err)
-			}
-			advanced++
-		}
-		return nil
-	})
-	return advanced, err
-}
-
-// MarkBuilding records the WorkflowRun name on the task when the push
-// handler creates the build, and atomically transitions merged → building
-// in the same transaction. This is the only path that creates a `building`
-// task: the AdvanceMergedTasksForPush gate is now defensive (asserts
-// LastBuildRunName != "" before advancing).
+// MarkBuilding records the WorkflowRun name on the task when DispatchTaskBuild
+// fires from the pr.closed handler, and atomically transitions
+// merged → building in the same transaction. This is the only path that
+// creates a `building` task.
 func (p *Projector) MarkBuilding(
 	ctx context.Context,
 	taskID, sha, runName string,

@@ -44,7 +44,7 @@ export interface CollabSession {
 
 export interface DesignComponent {
   name: string;
-  componentType: 'service' | 'web-app' | 'scheduled-task';
+  componentType: 'service' | 'web-app';
   language: string;
   dependsOn: string[];
   entrypoint: 'deployment/service';
@@ -60,7 +60,6 @@ export interface DesignComponent {
 export interface Design {
   projectId: string;
   overview: string;
-  requirements: string[];
   components: DesignComponent[];
   status: DesignStatus;
   version: number;
@@ -73,7 +72,7 @@ export interface Design {
 
 export interface ComponentOpenAPI {
   componentName: string;
-  componentType: 'service' | 'web-app' | 'scheduled-task';
+  componentType: 'service' | 'web-app';
   // Raw OpenAPI 3.0 YAML, canonicalised by the BFF. Always present on a 200
   // response. On a 409 (non-service component) the BFF returns the same
   // envelope without a spec — the UI can render a typed empty state.

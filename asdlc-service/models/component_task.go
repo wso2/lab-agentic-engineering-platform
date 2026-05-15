@@ -76,14 +76,16 @@ func (s TaskStatus) IsTerminal() bool {
 //
 // As of the tech-lead agent revamp (docs/design/tech-lead-agent.md), the row
 // no longer snapshots component shape (OpenAPI, language, dependencies, etc.).
-// Dispatch reads the current design from .asdlc/design.json on every run.
+// Dispatch reads the current design from the multi-file `.asdlc/design/`
+// tree on every run.
 type ComponentTask struct {
 	ID        string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
 	ProjectID string `gorm:"index;not null" json:"projectId"`
 	OrgID     string `gorm:"index;not null" json:"-"`
 
-	// Component identity — name only. Full component shape lives in
-	// .asdlc/design.json keyed by ComponentName.
+	// Component identity — name only. Full component shape lives under
+	// `.asdlc/design/components/<ComponentName>/` (design.md +
+	// optional openapi.yaml).
 	ComponentName string `gorm:"not null" json:"componentName"`
 
 	// Title is the GitHub issue title. Used as the dependsOn key within a
@@ -102,8 +104,9 @@ type ComponentTask struct {
 	Body string `gorm:"type:text" json:"body,omitempty"`
 
 	// DependsOnComponents lists component names this task's component
-	// depends on, sourced directly from .asdlc/design.json
-	// (design.Components[*].DependsOn). The value is platform-authored,
+	// depends on, sourced directly from the `.asdlc/design/` tree
+	// (design.Components[*].DependsOn, parsed from per-component
+	// design.md frontmatter). The value is platform-authored,
 	// not LLM-authored, so gating cannot silently fail open on a
 	// hallucinated identifier. Dispatch (deploy-gated): a task is
 	// dispatchable only when, for every entry c in DependsOnComponents,
