@@ -43,6 +43,7 @@ type requirementsService struct {
 	store        *ArtifactStore
 	agentsClient agents.Client
 	gitClient    gitservice.Client
+	locker       *RequirementsDirLocker
 }
 
 func NewRequirementsService(
@@ -55,6 +56,28 @@ func NewRequirementsService(
 		agentsClient: agentsClient,
 		gitClient:    gitClient,
 	}
+}
+
+// WithLocker attaches the requirements-directory advisory locker. When set,
+// every mutating call wraps its work in the locker's WithTxLock so the
+// short-writer path correctly contends with an in-flight chat stream
+// (which holds the session-scoped variant of the same lock key — see
+// docs/design/requirements-chat.md §4.4).
+//
+// Returned for ergonomic chaining; the receiver is mutated.
+func (s *requirementsService) WithLocker(locker *RequirementsDirLocker) RequirementsService {
+	s.locker = locker
+	return s
+}
+
+// withLock runs `fn` under the dir lock when the locker is configured.
+// Returns RequirementsDirLockBusy if the lock is held by another writer
+// (the controller maps that to HTTP 409 with `chat_in_progress`).
+func (s *requirementsService) withLock(ctx context.Context, orgID, projectID string, fn func(ctx context.Context) error) error {
+	if s.locker == nil {
+		return fn(ctx)
+	}
+	return s.locker.WithTxLock(ctx, orgID, projectID, fn)
 }
 
 // GetRequirements returns the working-tree file map plus version metadata.
@@ -118,17 +141,41 @@ func (s *requirementsService) GetRequirementsAtTag(ctx context.Context, orgID, p
 }
 
 func (s *requirementsService) UpdateRequirementFile(ctx context.Context, orgID, projectID, name, content string) (*models.RequirementsBundle, error) {
-	if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, name, content); err != nil {
+	var bundle *models.RequirementsBundle
+	err := s.withLock(ctx, orgID, projectID, func(ctx context.Context) error {
+		if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, name, content); err != nil {
+			return err
+		}
+		b, err := s.GetRequirements(ctx, orgID, projectID)
+		if err != nil {
+			return err
+		}
+		bundle = b
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return s.GetRequirements(ctx, orgID, projectID)
+	return bundle, nil
 }
 
 func (s *requirementsService) DeleteRequirementFile(ctx context.Context, orgID, projectID, name string) (*models.RequirementsBundle, error) {
-	if err := s.store.DeleteRequirementFile(ctx, orgID, projectID, name); err != nil {
+	var bundle *models.RequirementsBundle
+	err := s.withLock(ctx, orgID, projectID, func(ctx context.Context) error {
+		if err := s.store.DeleteRequirementFile(ctx, orgID, projectID, name); err != nil {
+			return err
+		}
+		b, err := s.GetRequirements(ctx, orgID, projectID)
+		if err != nil {
+			return err
+		}
+		bundle = b
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
-	return s.GetRequirements(ctx, orgID, projectID)
+	return bundle, nil
 }
 
 // SaveAndProceed persists the working-tree directory as a new `v<N>` tag.
@@ -137,28 +184,52 @@ func (s *requirementsService) SaveAndProceed(ctx context.Context, orgID, project
 	if s.gitClient == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-	res, err := s.gitClient.SaveRequirements(ctx, orgID, projectID, gitservice.SaveArtifactRequest{
-		Message: "Update requirements",
+	var bundle *models.RequirementsBundle
+	err := s.withLock(ctx, orgID, projectID, func(ctx context.Context) error {
+		res, err := s.gitClient.SaveRequirements(ctx, orgID, projectID, gitservice.SaveArtifactRequest{
+			Message: "Update requirements",
+		})
+		if err != nil {
+			return fmt.Errorf("save requirements: %w", err)
+		}
+		slog.InfoContext(ctx, "requirements save completed",
+			"project", projectID, "tag", res.Tag, "status", res.Status)
+		b, err := s.GetRequirements(ctx, orgID, projectID)
+		if err != nil {
+			return err
+		}
+		bundle = b
+		return nil
 	})
 	if err != nil {
-		return nil, fmt.Errorf("save requirements: %w", err)
+		return nil, err
 	}
-	slog.InfoContext(ctx, "requirements save completed",
-		"project", projectID, "tag", res.Tag, "status", res.Status)
-	return s.GetRequirements(ctx, orgID, projectID)
+	return bundle, nil
 }
 
 func (s *requirementsService) DiscardChanges(ctx context.Context, orgID, projectID string) (*models.RequirementsBundle, error) {
 	if s.gitClient == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-	if _, err := s.gitClient.DiscardRequirements(ctx, orgID, projectID); err != nil {
-		if errors.Is(err, gitservice.ErrArtifactNotFound) {
-			return nil, fmt.Errorf("no saved version to revert to")
+	var bundle *models.RequirementsBundle
+	err := s.withLock(ctx, orgID, projectID, func(ctx context.Context) error {
+		if _, err := s.gitClient.DiscardRequirements(ctx, orgID, projectID); err != nil {
+			if errors.Is(err, gitservice.ErrArtifactNotFound) {
+				return fmt.Errorf("no saved version to revert to")
+			}
+			return fmt.Errorf("discard requirements: %w", err)
 		}
-		return nil, fmt.Errorf("discard requirements: %w", err)
+		b, err := s.GetRequirements(ctx, orgID, projectID)
+		if err != nil {
+			return err
+		}
+		bundle = b
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
-	return s.GetRequirements(ctx, orgID, projectID)
+	return bundle, nil
 }
 
 func (s *requirementsService) ListVersions(ctx context.Context, orgID, projectID string) ([]models.ArtifactVersion, error) {
@@ -293,17 +364,26 @@ func (s *requirementsService) StreamGenerate(
 		return fmt.Errorf("agents service returned no content")
 	}
 
-	if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, name, content); err != nil {
-		return fmt.Errorf("write %s: %w", name, err)
-	}
-	for sName, sContent := range siblings {
-		if sName == name {
-			continue
+	// The persist step contends with chat/manual-PUT writers; wrap it in
+	// the directory lock so the on-disk state stays consistent. We
+	// deliberately don't hold the lock during the upstream model stream
+	// (could be 30s+) — only the final write block.
+	if err := s.withLock(ctx, orgID, projectID, func(ctx context.Context) error {
+		if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, name, content); err != nil {
+			return fmt.Errorf("write %s: %w", name, err)
 		}
-		if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, sName, sContent); err != nil {
-			slog.WarnContext(ctx, "failed to write sibling file",
-				"target", sName, "error", err)
+		for sName, sContent := range siblings {
+			if sName == name {
+				continue
+			}
+			if _, err := s.store.WriteRequirementFile(ctx, orgID, projectID, sName, sContent); err != nil {
+				slog.WarnContext(ctx, "failed to write sibling file",
+					"target", sName, "error", err)
+			}
 		}
+		return nil
+	}); err != nil {
+		return err
 	}
 	slog.InfoContext(ctx, "document written from stream",
 		"project", projectID, "target", name, "bytes", len(content),

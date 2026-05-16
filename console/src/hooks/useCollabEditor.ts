@@ -40,12 +40,22 @@ export interface UseCollabEditorOptions {
   onSave?: (markdown: string) => void;
   onSeedRequested?: (markdown: string) => void;
   isEditing?: boolean;
+  /**
+   * When true, the 5s auto-save tick early-returns. Used by the requirements
+   * chat flow: while a chat turn is in flight, the BFF holds an advisory
+   * lock on the requirements dir, so this loop would just get 409s. Pausing
+   * also avoids overwriting the BFF-authoritative content the page is
+   * reseeding via `editorRef.current?.setActiveMarkdown(...)` after each
+   * tool result. See docs/design/requirements-chat.md §4.5.
+   */
+  paused?: boolean;
 }
 
 export function useCollabEditor(opts: UseCollabEditorOptions): UseCollabEditorResult {
   const {
     roomId, orgId, projectId, userName,
     getMarkdown, onSave, onSeedRequested, isEditing,
+    paused,
   } = opts;
 
   const [connected, setConnected] = useState(false);
@@ -63,6 +73,8 @@ export function useCollabEditor(opts: UseCollabEditorOptions): UseCollabEditorRe
   onSaveRef.current = onSave;
   const onSeedRequestedRef = useRef(onSeedRequested);
   onSeedRequestedRef.current = onSeedRequested;
+  const pausedRef = useRef(!!paused);
+  pausedRef.current = !!paused;
 
   useEffect(() => {
     if (!roomId) return;
@@ -117,6 +129,10 @@ export function useCollabEditor(opts: UseCollabEditorOptions): UseCollabEditorRe
         if (!saveTimer) {
           saveTimer = setInterval(() => {
             if (cleanedUpRef.current) return;
+            // Skip auto-save while a chat turn is mutating the working tree
+            // — the BFF holds an advisory lock for the duration and would
+            // 409 us anyway, but suppressing the call avoids the noise.
+            if (pausedRef.current) return;
             const md = getMarkdownRef.current?.();
             if (md != null) onSaveRef.current?.(md);
           }, 5000);

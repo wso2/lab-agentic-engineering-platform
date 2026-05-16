@@ -66,6 +66,10 @@ func (c *requirementsController) UpdateRequirementFile(w http.ResponseWriter, r 
 	}
 	out, err := c.service.UpdateRequirementFile(r.Context(), org, project, name, body.Content)
 	if err != nil {
+		if errors.Is(err, services.RequirementsDirLockBusy) {
+			utils.WriteErrorResponse(w, http.StatusConflict, "another writer is editing the requirements directory")
+			return
+		}
 		slog.ErrorContext(r.Context(), "update requirement file failed", "error", err, "org", org, "project", project, "name", name)
 		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to update requirement file")
 		return
@@ -83,6 +87,10 @@ func (c *requirementsController) DeleteRequirementFile(w http.ResponseWriter, r 
 	}
 	out, err := c.service.DeleteRequirementFile(r.Context(), org, project, name)
 	if err != nil {
+		if errors.Is(err, services.RequirementsDirLockBusy) {
+			utils.WriteErrorResponse(w, http.StatusConflict, "another writer is editing the requirements directory")
+			return
+		}
 		slog.ErrorContext(r.Context(), "delete requirement file failed", "error", err, "org", org, "project", project, "name", name)
 		utils.WriteErrorResponse(w, http.StatusInternalServerError, err.Error())
 		return
@@ -98,6 +106,10 @@ func (c *requirementsController) SaveAndProceed(w http.ResponseWriter, r *http.R
 	}
 	out, err := c.service.SaveAndProceed(r.Context(), org, project)
 	if err != nil {
+		if errors.Is(err, services.RequirementsDirLockBusy) {
+			utils.WriteErrorResponse(w, http.StatusConflict, "another writer is editing the requirements directory")
+			return
+		}
 		if errors.Is(err, services.ErrSpecNotFound) {
 			utils.WriteErrorResponse(w, http.StatusNotFound, "requirements not found")
 			return
@@ -117,6 +129,10 @@ func (c *requirementsController) DiscardChanges(w http.ResponseWriter, r *http.R
 	}
 	out, err := c.service.DiscardChanges(r.Context(), org, project)
 	if err != nil {
+		if errors.Is(err, services.RequirementsDirLockBusy) {
+			utils.WriteErrorResponse(w, http.StatusConflict, "another writer is editing the requirements directory")
+			return
+		}
 		slog.ErrorContext(r.Context(), "discard requirements failed", "error", err, "org", org, "project", project)
 		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to discard requirements")
 		return

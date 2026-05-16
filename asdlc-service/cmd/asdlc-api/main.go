@@ -211,7 +211,14 @@ func main() {
 		componentService = cs.WithGitClient(gitClient)
 	}
 	configService := services.NewConfigService(configRepo, componentService)
+	requirementsDirLocker := services.NewRequirementsDirLocker(db)
 	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
+	if locked, ok := requirementsService.(interface {
+		WithLocker(*services.RequirementsDirLocker) services.RequirementsService
+	}); ok {
+		requirementsService = locked.WithLocker(requirementsDirLocker)
+	}
+	requirementsChatService := services.NewRequirementsChatService(artifactStore, agentsClient, gitClient, requirementsDirLocker)
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
 
 	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, gitClient, agentsClient, dbClient)
@@ -368,7 +375,8 @@ func main() {
 		ProjectController:      controllers.NewProjectController(projectService),
 		OrganizationController: controllers.NewOrganizationController(organizationService),
 		ComponentController:    controllers.NewComponentController(componentService, taskService),
-		RequirementsController: controllers.NewRequirementsController(requirementsService),
+		RequirementsController:     controllers.NewRequirementsController(requirementsService),
+		RequirementsChatController: controllers.NewRequirementsChatController(requirementsChatService),
 		DesignController:       controllers.NewDesignController(designService),
 		TaskController: controllers.NewTaskController(
 			taskService,

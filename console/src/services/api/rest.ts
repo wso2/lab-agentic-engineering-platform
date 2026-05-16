@@ -367,6 +367,268 @@ export const restApi = {
     return !errored;
   },
 
+  /**
+   * Stream a single chat turn against the requirements directory. The BFF
+   * returns SSE frames covering free-form text, structured tool events,
+   * and a final turn-finish — see docs/design/requirements-chat.md §4.2.
+   *
+   * Resolves to true if the stream ran to completion (data-finish or
+   * [DONE]). false on transport error / fatal `error` frame; the caller
+   * sees individual `error` frames via `onError`.
+   */
+  async streamRequirementsChat(
+    orgHandle: string,
+    projectId: string,
+    body: {
+      message: string;
+      history?: { role: 'user' | 'assistant'; content: string }[];
+      files?: string[]; // in-scope filenames; empty means all
+      mode?: 'edit' | 'ask';
+      requestSessionBaseline?: boolean;
+    },
+    handlers: {
+      onTurnStarted?: (turnId: string, startedMs: number) => void;
+      onSessionBaseline?: (snapshotId: string) => void;
+      onText?: (delta: string) => void;
+      onToolStarted?: (e: {
+        id: string;
+        name: string;
+        filename: string;
+        summary?: string;
+      }) => void;
+      onToolResult?: (e: {
+        id: string;
+        filename: string;
+        content?: string;
+        siblings?: Record<string, string>;
+        diff?: { added: number; removed: number; preview: string };
+      }) => void;
+      onToolError?: (e: {
+        id?: string;
+        name?: string;
+        filename?: string;
+        errorCode?: string;
+        message?: string;
+      }) => void;
+      onValidationFailed?: (issues: { filename?: string; message: string }[]) => void;
+      onFinish?: (e: { summary?: string; touched?: string[] }) => void;
+      onError?: (e: { errorCode?: string; errorText?: string }) => void;
+    },
+    signal?: AbortSignal,
+  ): Promise<boolean> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      Accept: 'text/event-stream',
+    };
+    if (_getAccessToken) {
+      const token = await _getAccessToken();
+      if (token) headers.Authorization = `Bearer ${token}`;
+    }
+
+    const res = await fetch(
+      `${BASE}${projectPrefix(orgHandle, projectId)}/requirements/chat`,
+      { method: 'POST', headers, body: JSON.stringify(body), signal },
+    );
+    if (!res.ok || !res.body) {
+      handlers.onError?.({ errorText: `chat request failed: ${res.status}` });
+      return false;
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let sawFinish = false;
+    let sawFatal = false;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      let idx: number;
+      while ((idx = buffer.indexOf('\n\n')) !== -1) {
+        const frame = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data: ')) continue;
+          const payload = line.slice(6);
+          if (payload === '[DONE]') continue;
+
+          let chunk: { type?: string; delta?: string; data?: Record<string, unknown>; errorCode?: string; errorText?: string };
+          try {
+            chunk = JSON.parse(payload);
+          } catch {
+            continue;
+          }
+
+          switch (chunk.type) {
+            case 'text-delta':
+              if (typeof chunk.delta === 'string') handlers.onText?.(chunk.delta);
+              break;
+            case 'data-turn-started': {
+              const d = chunk.data as { turnId?: string; started?: number } | undefined;
+              if (d?.turnId) handlers.onTurnStarted?.(d.turnId, d.started ?? Date.now());
+              break;
+            }
+            case 'data-session-baseline': {
+              const d = chunk.data as { snapshotId?: string } | undefined;
+              if (d?.snapshotId) handlers.onSessionBaseline?.(d.snapshotId);
+              break;
+            }
+            case 'data-tool-started': {
+              const d = chunk.data as { id?: string; name?: string; filename?: string; summary?: string } | undefined;
+              if (d?.id && d.name && d.filename !== undefined) {
+                handlers.onToolStarted?.({
+                  id: d.id,
+                  name: d.name,
+                  filename: d.filename,
+                  summary: d.summary,
+                });
+              }
+              break;
+            }
+            case 'data-tool-result': {
+              const d = chunk.data as {
+                id?: string;
+                filename?: string;
+                content?: string;
+                siblings?: Record<string, string>;
+                diff?: { added: number; removed: number; preview: string };
+              } | undefined;
+              if (d?.id && d.filename) {
+                handlers.onToolResult?.({
+                  id: d.id,
+                  filename: d.filename,
+                  content: d.content,
+                  siblings: d.siblings,
+                  diff: d.diff,
+                });
+              }
+              break;
+            }
+            case 'data-tool-error': {
+              const d = chunk.data as {
+                id?: string;
+                name?: string;
+                filename?: string;
+                errorCode?: string;
+                message?: string;
+              } | undefined;
+              if (d) handlers.onToolError?.(d);
+              break;
+            }
+            case 'data-validation-failed': {
+              const d = chunk.data as { issues?: { filename?: string; message: string }[] } | undefined;
+              if (d?.issues) handlers.onValidationFailed?.(d.issues);
+              break;
+            }
+            case 'data-finish': {
+              sawFinish = true;
+              const d = chunk.data as { summary?: string; touched?: string[] } | undefined;
+              handlers.onFinish?.(d ?? {});
+              break;
+            }
+            case 'error':
+              sawFatal = true;
+              handlers.onError?.({
+                errorCode: chunk.errorCode,
+                errorText: chunk.errorText,
+              });
+              break;
+            default:
+              // Forward-compatible: ignore unknown frame types silently.
+              break;
+          }
+        }
+      }
+    }
+
+    return sawFinish && !sawFatal;
+  },
+
+  /**
+   * Undo a single chat turn. Restores the working tree to the snapshot the
+   * BFF captured at turn start.
+   */
+  async undoChatTurn(
+    orgHandle: string,
+    projectId: string,
+    turnId: string,
+  ): Promise<{ files: Record<string, string> } | undefined> {
+    try {
+      return await fetchJSON<{ files: Record<string, string> }>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/chat/turns/${encodeURIComponent(turnId)}/undo`,
+        { method: 'POST' },
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  /**
+   * Read a single file's content from the chat session's baseline
+   * snapshot. Drives the "View original" dialog. `existed=false` means
+   * the file did not exist at baseline (the agent created it) — Revert
+   * deletes the working-tree file.
+   */
+  async getRequirementsBaselineFile(
+    orgHandle: string,
+    projectId: string,
+    baselineId: string,
+    filename: string,
+  ): Promise<{ snapshotId: string; filename: string; existed: boolean; content: string } | undefined> {
+    try {
+      return await fetchJSON(
+        `${projectPrefix(orgHandle, projectId)}/requirements/chat/baseline/${encodeURIComponent(baselineId)}/files/${encodeURIComponent(filename)}`,
+      );
+    } catch {
+      return undefined;
+    }
+  },
+
+  /**
+   * Revert a single requirement file back to its content at the session
+   * baseline. Held under the requirements dir lock so it serialises with
+   * concurrent chat / manual writes.
+   */
+  async revertRequirementsBaselineFile(
+    orgHandle: string,
+    projectId: string,
+    baselineId: string,
+    filename: string,
+  ): Promise<boolean> {
+    try {
+      await fetchJSON<void>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/chat/baseline/${encodeURIComponent(baselineId)}/files/${encodeURIComponent(filename)}/revert`,
+        { method: 'POST' },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
+  /**
+   * Drop the session-baseline snapshot. The console calls this once the
+   * modified-files set becomes empty after Accepts.
+   */
+  async dropRequirementsBaseline(
+    orgHandle: string,
+    projectId: string,
+    baselineId: string,
+  ): Promise<boolean> {
+    try {
+      await fetchJSON<void>(
+        `${projectPrefix(orgHandle, projectId)}/requirements/chat/baseline/${encodeURIComponent(baselineId)}`,
+        { method: 'DELETE' },
+      );
+      return true;
+    } catch {
+      return false;
+    }
+  },
+
   // -- Collaboration (still scoped to the requirements editor session) ------
   async getCollabSession(orgHandle: string, projectId: string): Promise<CollabSession | undefined> {
     try {

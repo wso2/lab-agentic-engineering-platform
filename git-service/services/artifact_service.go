@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -146,6 +148,22 @@ type ArtifactService interface {
 	SaveDesign(ctx context.Context, projectID string, req SaveRequest) (*DesignSaveResult, error)
 	DiscardRequirements(ctx context.Context, projectID string) (map[string]string, error)
 	DiscardDesign(ctx context.Context, projectID string) (map[string]string, error)
+
+	// Requirements directory snapshots (chat per-turn undo + chat
+	// session baseline). Stored out-of-band under
+	// `<clone>/.git/asdlc-reqchat-snapshots/` so they don't pollute the
+	// working tree, get committed, or appear in tag lists. Auto-cleaned
+	// when the clone directory is recreated.
+	CaptureRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) (map[string]string, error)
+	RestoreRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) (map[string]string, error)
+	DeleteRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) error
+	// ReadFileFromRequirementsSnapshot returns the content of a single
+	// requirement file as captured in `snapshotID`. The `existed` flag
+	// distinguishes "file was present in the snapshot" from "snapshot
+	// existed but did not contain this file" — callers (per-file Revert)
+	// use it to decide between write-back vs. delete. Returns
+	// ErrArtifactNotFound only when the snapshot blob itself is missing.
+	ReadFileFromRequirementsSnapshot(ctx context.Context, projectID, snapshotID, filename string) (content string, existed bool, err error)
 
 	// Versions.
 	ListRequirementsVersions(ctx context.Context, projectID string) ([]RequirementsVersionInfo, error)
@@ -1181,6 +1199,198 @@ func runGitWithEnv(ctx context.Context, dir string, env []string, args ...string
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("%s: %w", strings.TrimSpace(stderr.String()), err)
+	}
+	return nil
+}
+
+// ----- Requirements snapshots (chat per-turn undo) -----
+
+// snapshotIDPattern accepts the same `t_...` / ULID-ish shape the BFF
+// generates. Conservative to prevent path traversal — IDs only ever come
+// from the BFF, never from the user.
+var snapshotIDPattern = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func validateSnapshotID(id string) error {
+	if !snapshotIDPattern.MatchString(id) {
+		return fmt.Errorf("%w: invalid snapshot id", ErrArtifactPathInvalid)
+	}
+	return nil
+}
+
+// snapshotDir returns `<clonePath>/.git/asdlc-reqchat-snapshots`. The
+// snapshots live under `.git` so git ignores them, they're not committed,
+// and they're wiped when the clone is recreated.
+func snapshotDir(clonePath string) string {
+	return filepath.Join(clonePath, ".git", "asdlc-reqchat-snapshots")
+}
+
+func snapshotPath(clonePath, id string) string {
+	return filepath.Join(snapshotDir(clonePath), id+".json")
+}
+
+// CaptureRequirementsSnapshot writes the current working-tree contents of
+// `.asdlc/requirements/` to a JSON blob keyed by `snapshotID`. Returns the
+// captured file map. Idempotent — re-capturing the same id overwrites the
+// blob.
+func (s *artifactService) CaptureRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) (map[string]string, error) {
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("ensure clone: %w", err)
+	}
+
+	files, err := readMarkdownDir(filepath.Join(repoRecord.ClonePath, RequirementsDir))
+	if err != nil {
+		return nil, err
+	}
+
+	dir := snapshotDir(repoRecord.ClonePath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("mkdir snapshots: %w", err)
+	}
+	payload, err := json.Marshal(files)
+	if err != nil {
+		return nil, fmt.Errorf("encode snapshot: %w", err)
+	}
+	if err := atomicWrite(snapshotPath(repoRecord.ClonePath, snapshotID), payload); err != nil {
+		return nil, fmt.Errorf("write snapshot: %w", err)
+	}
+	slog.InfoContext(ctx, "captured requirements snapshot",
+		"project", projectID, "snapshot", snapshotID, "files", len(files))
+	return files, nil
+}
+
+// RestoreRequirementsSnapshot rewrites `.asdlc/requirements/` to the
+// contents captured under `snapshotID`. Files added since the snapshot are
+// removed; files deleted since the snapshot are restored.
+func (s *artifactService) RestoreRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) (map[string]string, error) {
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return nil, err
+	}
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return nil, fmt.Errorf("ensure clone: %w", err)
+	}
+
+	data, err := os.ReadFile(snapshotPath(repoRecord.ClonePath, snapshotID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, ErrArtifactNotFound
+		}
+		return nil, fmt.Errorf("read snapshot: %w", err)
+	}
+	var snapshot map[string]string
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return nil, fmt.Errorf("decode snapshot: %w", err)
+	}
+
+	reqDir := filepath.Join(repoRecord.ClonePath, RequirementsDir)
+	if err := os.RemoveAll(reqDir); err != nil {
+		return nil, fmt.Errorf("clear %s: %w", RequirementsDir, err)
+	}
+	if err := os.MkdirAll(reqDir, 0o755); err != nil {
+		return nil, fmt.Errorf("recreate %s: %w", RequirementsDir, err)
+	}
+	for name, content := range snapshot {
+		// Defence in depth: only write recognised filenames. A malformed
+		// snapshot blob can't smuggle traversal segments through.
+		if err := validateRequirementFilename(name); err != nil {
+			slog.WarnContext(ctx, "snapshot file skipped",
+				"name", name, "error", err)
+			continue
+		}
+		if err := atomicWrite(filepath.Join(reqDir, name), []byte(content)); err != nil {
+			return nil, fmt.Errorf("write %s: %w", name, err)
+		}
+	}
+	slog.InfoContext(ctx, "restored requirements snapshot",
+		"project", projectID, "snapshot", snapshotID, "files", len(snapshot))
+	return readMarkdownDir(reqDir)
+}
+
+// ReadFileFromRequirementsSnapshot reads `filename` from the snapshot JSON
+// blob (see CaptureRequirementsSnapshot). Returns:
+//   - (content, true, nil) when the file existed in the snapshot.
+//   - ("", false, nil)     when the snapshot exists but did not include
+//     this file (the agent created it post-baseline). The caller treats
+//     a Revert as "delete the working-tree file".
+//   - ("", false, ErrArtifactNotFound) when the snapshot blob itself is
+//     missing.
+func (s *artifactService) ReadFileFromRequirementsSnapshot(ctx context.Context, projectID, snapshotID, filename string) (string, bool, error) {
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return "", false, err
+	}
+	if err := validateRequirementFilename(filename); err != nil {
+		return "", false, err
+	}
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return "", false, err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return "", false, fmt.Errorf("ensure clone: %w", err)
+	}
+
+	data, err := os.ReadFile(snapshotPath(repoRecord.ClonePath, snapshotID))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, ErrArtifactNotFound
+		}
+		return "", false, fmt.Errorf("read snapshot: %w", err)
+	}
+	var snapshot map[string]string
+	if err := json.Unmarshal(data, &snapshot); err != nil {
+		return "", false, fmt.Errorf("decode snapshot: %w", err)
+	}
+	content, ok := snapshot[filename]
+	if !ok {
+		return "", false, nil
+	}
+	return content, true, nil
+}
+
+// DeleteRequirementsSnapshot removes a stored snapshot. Idempotent.
+func (s *artifactService) DeleteRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) error {
+	if err := validateSnapshotID(snapshotID); err != nil {
+		return err
+	}
+
+	mu := s.gitOps.getRepoLock(projectID)
+	mu.Lock()
+	defer mu.Unlock()
+
+	repoRecord, err := s.requireReadyRepo(ctx, projectID)
+	if err != nil {
+		return err
+	}
+	if err := s.gitOps.ensureCloneReady(ctx, repoRecord); err != nil {
+		return fmt.Errorf("ensure clone: %w", err)
+	}
+	if err := os.Remove(snapshotPath(repoRecord.ClonePath, snapshotID)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("remove snapshot: %w", err)
 	}
 	return nil
 }

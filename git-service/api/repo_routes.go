@@ -72,6 +72,13 @@ func registerRepoOnlyRoutes(
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/versions", wrap(ac.ListRequirementsVersions))
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/versions/{tag}", wrap(ac.GetRequirementsVersion))
 
+		// Requirements snapshots (BFF-only — IDs are `t_<ulid>` for per-turn
+		// undo and `sb_<ulid>` for chat session baselines).
+		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/snapshots/{id}", wrap(ac.CaptureRequirementsSnapshot))
+		mux.Handle("POST /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/snapshots/{id}/restore", wrap(ac.RestoreRequirementsSnapshot))
+		mux.Handle("DELETE /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/snapshots/{id}", wrap(ac.DeleteRequirementsSnapshot))
+		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/requirements/snapshots/{id}/files/{name}", wrap(ac.GetRequirementsSnapshotFile))
+
 		// ---- Artifacts: design (multi-file directory, tagged v<N>-<M>) ----
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design", wrap(ac.ListDesign))
 		mux.Handle("GET /api/v1/repos/{orgId}/{projectId}/artifacts/design/files/{path...}", wrap(ac.GetDesignFile))

@@ -45,6 +45,31 @@ type Client interface {
 
 	// StreamTechLeadDetail POSTs N issued tasks to /v1/agents/tech-lead/detail.
 	StreamTechLeadDetail(ctx context.Context, orgID string, req TechLeadDetailRequest) (io.ReadCloser, error)
+
+	// StreamRequirementsChat POSTs a chat turn to /v1/agents/requirements-chat
+	// and returns the raw SSE response body. The stream emits text-delta plus
+	// custom data-* frames (tool-started, tool-result, tool-error,
+	// validation-failed, finish).
+	StreamRequirementsChat(ctx context.Context, orgID string, req RequirementsChatRequest) (io.ReadCloser, error)
+
+	// RenderDsl calls /v1/internal/dsl/render — a cluster-internal helper.
+	// kind is "wireframes" or "domain-model"; returns the rendered Excalidraw
+	// scene JSON.
+	RenderDsl(ctx context.Context, kind, dsl string) (string, error)
+}
+
+// RequirementsChatRequest mirrors RequirementsChatInput in
+// agents/src/agents/requirements-chat/schema.ts.
+type RequirementsChatRequest struct {
+	Message string                  `json:"message"`
+	History []ChatHistoryMessage    `json:"history,omitempty"`
+	Files   map[string]string       `json:"files,omitempty"`
+	Mode    string                  `json:"mode"` // "edit" | "ask"
+}
+
+type ChatHistoryMessage struct {
+	Role    string `json:"role"`    // "user" | "assistant"
+	Content string `json:"content"`
 }
 
 // DocumentGenerationRequest is the body sent to the generic skill endpoint.
@@ -182,6 +207,38 @@ func (c *client) StreamTechLeadPlan(ctx context.Context, orgID string, req TechL
 
 func (c *client) StreamTechLeadDetail(ctx context.Context, orgID string, req TechLeadDetailRequest) (io.ReadCloser, error) {
 	return c.streamSSE(ctx, orgID, "/v1/agents/tech-lead/detail", req)
+}
+
+func (c *client) StreamRequirementsChat(ctx context.Context, orgID string, req RequirementsChatRequest) (io.ReadCloser, error) {
+	return c.streamSSE(ctx, orgID, "/v1/agents/requirements-chat", req)
+}
+
+func (c *client) RenderDsl(ctx context.Context, kind, dsl string) (string, error) {
+	body, err := json.Marshal(map[string]string{"kind": kind, "dsl": dsl})
+	if err != nil {
+		return "", fmt.Errorf("marshal: %w", err)
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/internal/dsl/render", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return "", fmt.Errorf("dsl render request: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		msg, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("dsl render error (status %d): %s", resp.StatusCode, string(msg))
+	}
+	var out struct {
+		Excalidraw string `json:"excalidraw"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", fmt.Errorf("decode dsl render response: %w", err)
+	}
+	return out.Excalidraw, nil
 }
 
 // streamSSE is the shared POST + SSE wrapper used by every streaming agent
