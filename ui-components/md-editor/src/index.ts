@@ -1,6 +1,7 @@
 export { MdEditor } from './MdEditor.js';
 export { MdDiffViewer } from './MdDiffViewer.js';
 export { useEditorStorage } from './hooks/useEditorStorage.js';
+export { countLineChanges, type LineDiffCounts } from './diff/lineCounts.js';
 export type {
   MdEditorProps,
   MdEditorRef,

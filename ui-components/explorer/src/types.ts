@@ -101,6 +101,18 @@ export interface ExplorerProps {
   pendingPaths?: Set<string>;
 
   /**
+   * Paths currently in a "modified by chat" state. Sidebar rows tint with the
+   * indigo accent and append a compact `+N/-M` counter so the user can spot
+   * which other files in the project have pending changes without hovering.
+   * The map value is the per-file line-diff summary against the session
+   * baseline. Active selection styling still wins on top of the tint.
+   *
+   * Purely presentational — the host owns the modified-set lifecycle and the
+   * Accept / Revert plumbing.
+   */
+  chatModifiedPaths?: Map<string, { added: number; removed: number }>;
+
+  /**
    * Folder paths that should not appear as their own row in the tree. Their
    * children promote one level up. Underlying paths in `files` are
    * unchanged — only the visual nesting collapses. Example: pass

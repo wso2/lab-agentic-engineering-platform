@@ -11,7 +11,7 @@ import {
   Typography,
 } from '@wso2/oxygen-ui';
 import { GitCompare, GitHub, Rocket, Sparkles } from '@wso2/oxygen-ui-icons-react';
-import type { CollabConfig } from '@asdlc/md-editor';
+import { MdDiffViewer, countLineChanges, type CollabConfig } from '@asdlc/md-editor';
 import { Explorer, type ExplorerRef, type AddFileMenuItem } from '@asdlc/explorer';
 import { api, ApiError } from '../services/api';
 import type { ArtifactVersion } from '../services/api';
@@ -35,7 +35,6 @@ import {
   subscribeRequirementsPageEvent,
 } from '../services/chatStore';
 import ChatModifiedBanner from '../components/ChatModifiedBanner';
-import BaselineContentDialog from '../components/BaselineContentDialog';
 import {
   DOCUMENT_TYPES,
   documentTypeForFile,
@@ -114,11 +113,14 @@ export default function ProjectRequirementsPage() {
   const [chatModifiedFiles, setChatModifiedFiles] = useState<Record<string, ModifiedFileEntry>>({});
   // Per-file Revert in flight — used to disable the banner action.
   const [revertingPaths, setRevertingPaths] = useState<Set<string>>(new Set());
-  // "View original" dialog state.
-  const [baselineDialog, setBaselineDialog] = useState<
-    | { open: true; filename: string; state: 'loading' | 'present' | 'tombstone' | 'missing'; baseline?: string }
-    | null
-  >(null);
+  /**
+   * Baseline content per chat-modified file, keyed by filename. Populated
+   * lazily as files enter the modified set so the inline diff view can
+   * render without flicker on file-switch. `null` is a sentinel for
+   * "fetched and the file did not exist at baseline" (tombstone — diff
+   * shows everything as additions).
+   */
+  const [baselineContents, setBaselineContents] = useState<Record<string, string | null>>({});
   const [showDiff, setShowDiff] = useState(false);
   const [restorePromptFor, setRestorePromptFor] = useState<{
     filename: string;
@@ -232,28 +234,128 @@ export default function ProjectRequirementsPage() {
     return subscribeChatStore(apply);
   }, [routeOrgId, projectId]);
 
-  // ---- Chat-modified banner handlers --------------------------------------
+  // ---- Chat-modified handlers --------------------------------------------
 
-  const handleViewOriginal = useCallback(async (filename: string) => {
+  // Lazily fetch the baseline content for every file in the chat-modified
+  // set. We cache by filename so switching between files doesn't re-fetch
+  // (the snapshot is immutable for the session). Tombstone files (created
+  // by chat) cache as `null` — the diff viewer treats that as "all added".
+  useEffect(() => {
     if (!projectId) return;
     const baseline = getSessionBaseline(routeOrgId, projectId);
-    if (!baseline) {
-      setBaselineDialog({ open: true, filename, state: 'missing' });
-      return;
-    }
-    setBaselineDialog({ open: true, filename, state: 'loading' });
-    const file = await api.getRequirementsBaselineFile(routeOrgId, projectId, baseline.snapshotId, filename);
-    if (!file) {
-      setBaselineDialog({ open: true, filename, state: 'missing' });
-      return;
-    }
-    setBaselineDialog({
-      open: true,
-      filename,
-      state: file.existed ? 'present' : 'tombstone',
-      baseline: file.content,
+    if (!baseline) return;
+    const pending = Object.keys(chatModifiedFiles).filter(
+      (filename) => baselineContents[filename] === undefined,
+    );
+    if (pending.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const fetched = await Promise.all(
+        pending.map(async (filename) => {
+          const file = await api.getRequirementsBaselineFile(
+            routeOrgId,
+            projectId,
+            baseline.snapshotId,
+            filename,
+          );
+          return [filename, file?.existed ? file.content : null] as const;
+        }),
+      );
+      if (cancelled) return;
+      setBaselineContents((prev) => {
+        const next = { ...prev };
+        for (const [filename, content] of fetched) {
+          next[filename] = content;
+        }
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [routeOrgId, projectId, chatModifiedFiles, baselineContents]);
+
+  // Garbage-collect baselineContents when files leave the modified set
+  // (Accept / Revert / clear). Keeps the map honest so a stale entry
+  // can't survive a session reset.
+  useEffect(() => {
+    setBaselineContents((prev) => {
+      let changed = false;
+      const next: Record<string, string | null> = {};
+      for (const [filename, value] of Object.entries(prev)) {
+        if (chatModifiedFiles[filename]) {
+          next[filename] = value;
+        } else {
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
     });
-  }, [routeOrgId, projectId]);
+  }, [chatModifiedFiles]);
+
+  // Per-file +N/-M counts for the explorer tree. Recomputed only when
+  // the modified set, the cached baselines, or the live content of those
+  // files changes. Skipped entries (`undefined` baseline = still
+  // fetching) are simply omitted so the sidebar chip shows nothing
+  // until the diff is computable.
+  const chatModifiedCounts = useMemo(() => {
+    const map = new Map<string, { added: number; removed: number }>();
+    for (const filename of Object.keys(chatModifiedFiles)) {
+      const baseline = baselineContents[filename];
+      if (baseline === undefined) continue;
+      const current = liveContents[filename] ?? savedFiles[filename] ?? '';
+      const counts = countLineChanges(baseline ?? '', current);
+      map.set(filename, counts);
+    }
+    return map;
+  }, [chatModifiedFiles, baselineContents, liveContents, savedFiles]);
+
+  /**
+   * Renders the inline diff view for files in the chat-modified set, in
+   * place of the default markdown editor. Both the baseline and the
+   * current content are markdown-only — canvas-backed files (`.excalidraw`)
+   * fall back to the regular editor pipeline.
+   */
+  const renderChatModifiedFile = useCallback(
+    (path: string): React.ReactNode | undefined => {
+      const entry = chatModifiedFiles[path];
+      if (!entry) return undefined;
+      if (/\.excalidraw$/i.test(path)) return undefined;
+      // Don't render the diff view while a chat turn is still writing
+      // to this file — the live stream would fight the diff state.
+      if (chatBusyPaths.has(path)) return undefined;
+      const baseline = baselineContents[path];
+      const current = liveContents[path] ?? savedFiles[path] ?? '';
+      if (baseline === undefined) {
+        return (
+          <Box
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 1.5,
+              color: 'text.secondary',
+            }}
+          >
+            <CircularProgress size={18} />
+            <Typography variant="body2">Loading diff…</Typography>
+          </Box>
+        );
+      }
+      return (
+        <Box
+          data-testid="chat-diff-view"
+          data-filename={path}
+          sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: 2, bgcolor: 'background.default' }}
+        >
+          <MdDiffViewer oldMarkdown={baseline ?? ''} newMarkdown={current} />
+        </Box>
+      );
+    },
+    [chatModifiedFiles, baselineContents, liveContents, savedFiles, chatBusyPaths],
+  );
 
   const handleAcceptChatFile = useCallback((filename: string) => {
     if (!projectId) return;
@@ -1139,7 +1241,7 @@ export default function ProjectRequirementsPage() {
             filename={activePath}
             busy={chatTurnInFlight}
             pending={revertingPaths.has(activePath)}
-            onViewOriginal={() => void handleViewOriginal(activePath)}
+            counts={chatModifiedCounts.get(activePath)}
             onAccept={() => handleAcceptChatFile(activePath)}
             onRevert={() => void handleRevertChatFile(activePath)}
           />
@@ -1166,6 +1268,8 @@ export default function ProjectRequirementsPage() {
                 ? pendingPaths
                 : new Set([...pendingPaths, ...chatBusyPaths])
             }
+            chatModifiedPaths={chatModifiedCounts}
+            getFileRenderer={renderChatModifiedFile}
             editorProps={{
               readOnly:
                 viewingHistorical ||
@@ -1184,20 +1288,6 @@ export default function ProjectRequirementsPage() {
         </Box>
       </Box>
 
-      {baselineDialog?.open && (
-        <BaselineContentDialog
-          open={baselineDialog.open}
-          filename={baselineDialog.filename}
-          state={baselineDialog.state}
-          baseline={baselineDialog.baseline}
-          current={
-            liveContents[baselineDialog.filename] ??
-            savedFiles[baselineDialog.filename] ??
-            ''
-          }
-          onClose={() => setBaselineDialog(null)}
-        />
-      )}
     </PageContent>
   );
 }

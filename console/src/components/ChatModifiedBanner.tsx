@@ -2,10 +2,7 @@
  * Banner shown above the requirements editor when the active file has
  * been modified by the chat agent during the current session.
  *
- * The banner pins three actions:
- *  - View original: opens a dialog showing the file's content as it was
- *    captured in the chat-session baseline (or a tombstone if the file
- *    didn't exist at baseline).
+ * The banner pins two actions:
  *  - Accept: clears the file from the modified set, leaving the
  *    current on-disk content as-is. When the last modified file is
  *    accepted the page drops the baseline snapshot via the BFF.
@@ -14,7 +11,9 @@
  *    lock so it serialises with chat / manual edits.
  *
  * The banner stays out of the editor's keyboard / mouse surface — it's
- * a passive strip that does not block typing or selection.
+ * a passive strip that does not block typing or selection. The diff
+ * itself is rendered inline (via `MdDiffViewer`) in place of the
+ * editor, so a separate "View original" affordance is no longer needed.
  */
 
 import { useState } from 'react';
@@ -27,7 +26,7 @@ import {
   Typography,
   useTheme,
 } from '@wso2/oxygen-ui';
-import { Check, Eye, RotateCcw, Sparkles } from '@wso2/oxygen-ui-icons-react';
+import { Check, RotateCcw, Sparkles } from '@wso2/oxygen-ui-icons-react';
 
 export interface ChatModifiedBannerProps {
   filename: string;
@@ -35,7 +34,8 @@ export interface ChatModifiedBannerProps {
   busy?: boolean;
   /** Set true while Revert or Accept is in flight to prevent double-clicks. */
   pending?: boolean;
-  onViewOriginal: () => void;
+  /** Line-diff counts surfaced as a "+N / -M" chip next to the title. */
+  counts?: { added: number; removed: number };
   onAccept: () => void;
   onRevert: () => void;
 }
@@ -44,7 +44,7 @@ export default function ChatModifiedBanner({
   filename,
   busy,
   pending,
-  onViewOriginal,
+  counts,
   onAccept,
   onRevert,
 }: ChatModifiedBannerProps) {
@@ -65,6 +65,7 @@ export default function ChatModifiedBanner({
       : 'rgba(99, 102, 241, 0.32)';
 
   const actionsDisabled = busy || pending;
+  const hasCounts = !!counts && (counts.added > 0 || counts.removed > 0);
 
   return (
     <Box
@@ -102,6 +103,27 @@ export default function ChatModifiedBanner({
         <Typography variant="body2" sx={{ fontWeight: 600, fontSize: '0.8125rem', color: accent }}>
           Modified by chat
         </Typography>
+        {hasCounts && (
+          <Stack
+            direction="row"
+            alignItems="center"
+            spacing={0.5}
+            data-testid="chat-modified-banner-counts"
+            sx={{
+              fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+              fontSize: '0.75rem',
+              fontWeight: 600,
+              lineHeight: 1,
+            }}
+          >
+            {counts!.added > 0 && (
+              <Box component="span" sx={{ color: '#16a34a' }}>{`+${counts!.added}`}</Box>
+            )}
+            {counts!.removed > 0 && (
+              <Box component="span" sx={{ color: '#dc2626' }}>{`-${counts!.removed}`}</Box>
+            )}
+          </Stack>
+        )}
         <Typography
           variant="body2"
           sx={{
@@ -112,26 +134,11 @@ export default function ChatModifiedBanner({
             whiteSpace: 'nowrap',
           }}
         >
-          Pending review · use Accept to keep, Revert to roll this file back to the start of the session.
+          Pending review · the diff below shows what changed since the session started.
         </Typography>
       </Stack>
 
       <Stack direction="row" alignItems="center" gap={0.75}>
-        <Tooltip title="See the file's content as it was when the chat session started">
-          <span>
-            <Button
-              size="small"
-              variant="text"
-              startIcon={<Eye size={14} />}
-              onClick={onViewOriginal}
-              disabled={busy}
-              data-testid="chat-modified-view-original"
-              sx={{ minWidth: 'auto', textTransform: 'none', fontSize: '0.75rem' }}
-            >
-              View original
-            </Button>
-          </span>
-        </Tooltip>
         <Tooltip
           title={
             hoverRevert

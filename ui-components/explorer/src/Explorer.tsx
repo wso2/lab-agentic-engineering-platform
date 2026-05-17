@@ -32,6 +32,7 @@ export function Explorer({
   onDelete,
   customViews,
   pendingPaths,
+  chatModifiedPaths,
   transparentFolders,
   getFolderIcon,
   showHeadings = true,
@@ -247,6 +248,7 @@ export function Explorer({
           activePath={activePath ?? null}
           dirtyPaths={dirtyPaths}
           pendingPaths={pendingPaths}
+          chatModifiedPaths={chatModifiedPaths}
           transparentFolders={transparentFolders}
           getFolderIcon={getFolderIcon}
           showHeadings={showHeadings}

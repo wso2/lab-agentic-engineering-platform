@@ -114,6 +114,12 @@ export interface SidebarProps {
   dirtyPaths: Set<string>;
   /** Paths in this set render a spinner instead of their file/folder icon. */
   pendingPaths?: Set<string>;
+  /**
+   * Per-path line-diff summary for files that the chat agent has modified in
+   * the current session. When present, the row tints indigo and shows a
+   * compact "+N / -M" chip. Active selection style still wins on top.
+   */
+  chatModifiedPaths?: Map<string, { added: number; removed: number }>;
   /** Folder paths that should not appear in the tree (children promote up). */
   transparentFolders?: Set<string>;
   /** Override the folder icon per-path. Return undefined to use the default. */
@@ -168,6 +174,7 @@ export function Sidebar({
   activePath,
   dirtyPaths,
   pendingPaths,
+  chatModifiedPaths,
   transparentFolders,
   getFolderIcon,
   showHeadings = true,
@@ -549,6 +556,8 @@ export function Sidebar({
               const path = row.path;
               const isActive = path === activePath;
               const isDirty = dirtyPaths.has(path);
+              const chatDiff = chatModifiedPaths?.get(path);
+              const isChatModified = !!chatDiff;
               const isRenaming = renamingPath === path;
               const info = docInfoByPath.get(path);
               const fallbackLabel = usesTree ? stripExtension(lastSegment(path)) : stripExtension(path);
@@ -573,6 +582,7 @@ export function Sidebar({
                       else rowRefs.current.delete(path);
                     }}
                     onClick={() => onActivate(path)}
+                    data-chat-modified={isChatModified ? 'true' : undefined}
                     sx={{
                       display: 'flex',
                       alignItems: 'center',
@@ -584,16 +594,24 @@ export function Sidebar({
                       py: 0.75,
                       borderRadius: 999,
                       cursor: 'pointer',
-                      color: isActive ? 'primary.main' : 'text.primary',
+                      color: isActive
+                        ? 'primary.main'
+                        : isChatModified
+                          ? '#4f46e5'
+                          : 'text.primary',
                       bgcolor: isActive
                         ? 'color-mix(in srgb, currentColor 12%, transparent)'
-                        : 'transparent',
-                      fontWeight: isActive ? 500 : 400,
+                        : isChatModified
+                          ? 'rgba(99, 102, 241, 0.10)'
+                          : 'transparent',
+                      fontWeight: isActive || isChatModified ? 500 : 400,
                       transition: 'background-color 80ms ease',
                       '&:hover': {
                         bgcolor: isActive
                           ? 'color-mix(in srgb, currentColor 18%, transparent)'
-                          : 'action.hover',
+                          : isChatModified
+                            ? 'rgba(99, 102, 241, 0.18)'
+                            : 'action.hover',
                       },
                     }}
                   >
@@ -646,6 +664,35 @@ export function Sidebar({
                       >
                         {displayTitle}
                       </Typography>
+                    )}
+                    {chatDiff && !isRenaming && (chatDiff.added > 0 || chatDiff.removed > 0) && (
+                      <Tooltip title="Modified by chat this session">
+                        <Stack
+                          direction="row"
+                          alignItems="center"
+                          spacing={0.5}
+                          data-testid="chat-modified-counts"
+                          data-filename={path}
+                          sx={{
+                            flexShrink: 0,
+                            fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace',
+                            fontSize: 10.5,
+                            fontWeight: 600,
+                            lineHeight: 1,
+                          }}
+                        >
+                          {chatDiff.added > 0 && (
+                            <Box component="span" sx={{ color: '#16a34a' }}>
+                              {`+${chatDiff.added}`}
+                            </Box>
+                          )}
+                          {chatDiff.removed > 0 && (
+                            <Box component="span" sx={{ color: '#dc2626' }}>
+                              {`-${chatDiff.removed}`}
+                            </Box>
+                          )}
+                        </Stack>
+                      </Tooltip>
                     )}
                     {isDirty && !isRenaming && (
                       <Tooltip title="Unsaved changes">
