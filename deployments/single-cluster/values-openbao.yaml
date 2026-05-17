@@ -1,0 +1,85 @@
+# OpenBao helm values for App Factory v1 local setup.
+#
+# Extends the OpenChoreo defaults
+# (https://raw.githubusercontent.com/openchoreo/openchoreo/v1.0.1-hotfix.1/install/k3d/common/values-openbao.yaml)
+# with the App Factory-specific `asdlc-secret-reader` policy + role so
+# git-service's ExternalSecret reconciler can resolve per-repo build
+# tokens written by mint-build. Mirrors agent-manager's
+# single-cluster/values-openbao.yaml pattern — declarative postStart,
+# no kubectl-exec follow-up.
+#
+# Service.type=NodePort + nodePort=30820 are still passed via --set in
+# setup-prerequisites.sh so the value is co-located with k3d-local-config.yaml's
+# port mapping (8200:30820 → loadbalancer → openbao-0).
+
+injector:
+  enabled: false
+
+server:
+  dev:
+    enabled: true
+    devRootToken: root
+
+  postStart:
+    - /bin/sh
+    - -c
+    - |
+      sleep 5
+      export BAO_ADDR=http://127.0.0.1:8200
+      export BAO_TOKEN=root
+
+      bao auth enable kubernetes 2>/dev/null || true
+      bao write auth/kubernetes/config \
+        kubernetes_host="https://$KUBERNETES_PORT_443_TCP_ADDR:443" \
+        disable_iss_validation=true
+
+      # ── OpenChoreo defaults — reader + writer over secret/* ──────────
+      bao policy write openchoreo-secret-reader-policy - <<POLICY
+      path "secret/data/*" { capabilities = ["read"] }
+      path "secret/metadata/*" { capabilities = ["list", "read"] }
+      POLICY
+
+      bao policy write openchoreo-secret-writer-policy - <<POLICY
+      path "secret/data/*" { capabilities = ["create", "read", "update", "delete"] }
+      path "secret/metadata/*" { capabilities = ["create", "read", "update", "delete", "list"] }
+      POLICY
+
+      bao write auth/kubernetes/role/openchoreo-secret-reader-role \
+        bound_service_account_names=default \
+        bound_service_account_namespaces="dp*" \
+        policies=openchoreo-secret-reader-policy ttl=20m
+
+      bao write auth/kubernetes/role/openchoreo-secret-writer-role \
+        bound_service_account_names="*" \
+        bound_service_account_namespaces="openbao,openchoreo-workflow-plane" \
+        policies=openchoreo-secret-writer-policy ttl=20m
+
+      # ── App Factory — narrow reader over secret/asdlc/* ─────────────
+      # Used by git-service's ExternalSecret for per-org / per-repo
+      # build tokens that mint-build writes (Phase 2 PR C).
+      bao policy write asdlc-secret-reader - <<POLICY
+      path "secret/data/asdlc/*" { capabilities = ["read", "list"] }
+      path "secret/metadata/asdlc/*" { capabilities = ["read", "list"] }
+      POLICY
+
+      # Re-bind the existing openchoreo-secret-writer-role to also carry
+      # the asdlc-secret-reader policy. ESO's default ServiceAccount
+      # (external-secrets-openbao in `openbao` ns) maps to this role.
+      bao write auth/kubernetes/role/openchoreo-secret-writer-role \
+        bound_service_account_names=external-secrets-openbao \
+        bound_service_account_namespaces=openbao \
+        policies=openchoreo-secret-writer-policy,asdlc-secret-reader \
+        ttl=1h
+
+      # ── OC platform seed values (carry-over from OC defaults) ───────
+      bao kv put secret/backstage-backend-secret value="local-dev-backend-secret"
+      bao kv put secret/backstage-client-secret value="backstage-portal-secret"
+      bao kv put secret/backstage-jenkins-api-key value="placeholder-not-in-use"
+      bao kv put secret/observer-oauth-client-secret value="openchoreo-observer-resource-reader-client-secret"
+
+      # ── Observability plane (Observer + OpenSearch + Fluent Bit) ─────
+      # Pulled by the ExternalSecrets opensearch-admin-credentials and
+      # observer-secret in openchoreo-observability-plane. Values mirror
+      # v2's deployments-v2/wso2cloud-deployment/.../layer-0/tools/openbao.yaml.
+      bao kv put secret/opensearch-username value="admin"
+      bao kv put secret/opensearch-password value="ThisIsTheOpenSearchPassword1"

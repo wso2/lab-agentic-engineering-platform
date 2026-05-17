@@ -50,56 +50,30 @@ echo "✅ Kgateway installed"
 
 echo ""
 echo "5️⃣  OpenBao"
+# Auth + policy + role seeding is now baked into the postStart hook in
+# single-cluster/values-openbao.yaml (mirrors agent-manager's
+# single-cluster/values-openbao.yaml pattern — declarative, no
+# kubectl-exec follow-up). NodePort 30820 is exposed on host port 8200
+# by k3d-local-config.yaml, so docker-compose services reach OpenBao via
+# host.docker.internal:8200; in-cluster consumers use openbao.openbao.svc:8200.
 helm_install_if_not_exists "openbao" "openbao" \
     "oci://ghcr.io/openbao/charts/openbao" --version ${OPENBAO_VERSION} \
-    --values "https://raw.githubusercontent.com/openchoreo/openchoreo/v${OPENCHOREO_VERSION}/install/k3d/common/values-openbao.yaml" \
+    --values "${SCRIPT_DIR}/../single-cluster/values-openbao.yaml" \
     --set "server.service.type=NodePort" \
     --set "server.service.nodePort=30820"
-# NodePort 30820 is exposed on host port 8200 by k3d-local-config.yaml,
-# so docker-compose services reach OpenBao via host.docker.internal:8200.
-# In-cluster consumers continue to use openbao.openbao.svc:8200.
 kubectl wait --for=condition=Ready pod -l app.kubernetes.io/name=openbao -n openbao --context ${CLUSTER_CONTEXT} --timeout=120s
-# Wait for OpenBao's postStart hook to finish configuring Kubernetes auth,
-# policies, and seeding secrets. The pod is Ready before postStart completes.
-echo "⏳ Waiting for OpenBao postStart hook to configure auth..."
+# The pod is Ready before postStart finishes — wait for the auth/kubernetes
+# mount to appear before any downstream caller (External Secrets) tries to
+# resolve a role.
+echo "⏳ Waiting for OpenBao postStart hook to finish..."
 for i in $(seq 1 30); do
     if kubectl exec -n openbao --context ${CLUSTER_CONTEXT} openbao-0 -- \
         sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao auth list 2>/dev/null | grep -q kubernetes'; then
+        echo "✅ OpenBao ready (kubernetes auth + policies seeded by postStart)"
         break
     fi
     sleep 2
 done
-
-# Phase 2 PR C — configure kubernetes auth role + read policy on the
-# `secret/asdlc/*` prefix so the build pipeline's ExternalSecret can resolve
-# per-repo build tokens written by `mint-build`. Idempotent — `bao write`
-# overwrites the existing policy/role without complaint.
-if ! kubectl exec -n openbao --context ${CLUSTER_CONTEXT} openbao-0 -- \
-    sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao auth list 2>/dev/null | grep -q kubernetes'; then
-    kubectl exec -n openbao --context ${CLUSTER_CONTEXT} openbao-0 -- \
-        sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao auth enable kubernetes' || true
-fi
-kubectl exec -n openbao --context ${CLUSTER_CONTEXT} openbao-0 -- \
-    sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao write auth/kubernetes/config \
-      kubernetes_host="https://kubernetes.default.svc" \
-      disable_iss_validation=true' || true
-kubectl exec -n openbao --context ${CLUSTER_CONTEXT} openbao-0 -- \
-    sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao policy write asdlc-secret-reader - <<EOF
-path "secret/data/asdlc/*" {
-  capabilities = ["read", "list"]
-}
-path "secret/metadata/asdlc/*" {
-  capabilities = ["read", "list"]
-}
-EOF
-'
-kubectl exec -n openbao --context ${CLUSTER_CONTEXT} openbao-0 -- \
-    sh -c 'BAO_ADDR=http://127.0.0.1:8200 BAO_TOKEN=root bao write auth/kubernetes/role/openchoreo-secret-writer-role \
-      bound_service_account_names=external-secrets-openbao \
-      bound_service_account_namespaces=openbao \
-      policies=asdlc-secret-reader \
-      ttl=1h'
-echo "✅ OpenBao ready (kubernetes auth + asdlc-secret-reader policy)"
 
 echo ""
 echo "🔧 Configuring External Secrets ClusterSecretStore..."

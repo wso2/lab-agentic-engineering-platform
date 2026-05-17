@@ -49,9 +49,13 @@ kubectl apply --context "${CLUSTER_CONTEXT}" \
     -f "https://raw.githubusercontent.com/openchoreo/openchoreo/v${OPENCHOREO_VERSION}/install/k3d/common/coredns-custom.yaml"
 echo "✅ CoreDNS configured"
 
-# Fix node-level DNS and ensure CoreDNS can resolve host.k3d.internal
+# Fix node-level DNS (8.8.8.8 fallback for external image pulls).
 fix_node_dns
-patch_coredns_host_k3d_internal
+
+# Ensure pods can resolve host.k3d.internal (k3d only sets it as a TLS SAN;
+# the CoreDNS NodeHosts entry is on us). Paired with OC's coredns-custom.yaml
+# rewrite for *.openchoreo.localhost above.
+ensure_host_k3d_internal_in_coredns
 
 generate_machine_ids "$CLUSTER_NAME"
 echo ""

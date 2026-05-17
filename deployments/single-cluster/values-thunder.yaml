@@ -79,98 +79,158 @@ setup:
   preserveJob: true
   ttlSecondsAfterFinished: 86400
 
-# Bootstrap scripts — only ASDLC-specific applications. Each script follows
-# the agent-manager pattern: source common.sh (provided by the Thunder image
-# at /opt/thunder/bootstrap/common.sh) for log_* and thunder_api_call helpers.
-# The built-in 01-default-resources.sh and 02-sample-resources.sh run first
-# (they're shipped with the Thunder image); these add ASDLC's own apps.
+# Bootstrap scripts — run inside the Thunder setup Job after the built-in
+# 01-default-resources.sh / 02-sample-resources.sh (which ship with the
+# image). Each script sources `common.sh` for log_* helpers + thunder_api_call.
+#
+# We currently rely on the default Thunder admin (`admin` / `admin`, in the
+# `Administrators` group) which the ClusterAuthzRoleBinding installed by
+# setup-asdlc.sh maps to the `admin` ClusterAuthzRole. No platform-users
+# bootstrap script is needed for v1 dev.
+#
+# 59-asdlc-oauth-apps.sh registers ALL six OAuth applications the platform
+# needs in a single pass: workload-publisher (consumed by OC dockerfile-builder
+# ClusterWorkflow), asdlc-api (BFF service principal), asdlc-bff-to-{git,
+# agents,remote-worker} (BFF outbound Service JWT clients), and asdlc-console
+# (public PKCE client for the React app). Adding a new client = one line in
+# CONFIDENTIAL_APPS or PUBLIC_APPS at the top of the script.
 bootstrap:
   scripts:
-    60-asdlc-console-app.sh: |
+    59-asdlc-oauth-apps.sh: |
       #!/bin/bash
       set -e
       SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
       source "${SCRIPT_DIR}/common.sh"
 
-      log_info "Looking up default OU + auth flow..."
-      RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
-      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
-      if [ "$HTTP_CODE" != "200" ]; then log_error "Failed to fetch OU (HTTP $HTTP_CODE): $BODY"; exit 1; fi
-      OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      # ──────────────────────────────────────────────────────────────────
+      # App registry. Each row is pipe-delimited.
+      #   CONFIDENTIAL_APPS: name|description|clientId|clientSecret
+      #     → client_credentials grant, no auth flow, no redirects.
+      #   PUBLIC_APPS:        name|description|clientId|redirectUris(CSV)|userAttributes(CSV)
+      #     → authorization_code + refresh_token, PKCE, public, uses
+      #       default-basic-flow.
+      # Adding a new OAuth client = add one row below.
+      # ──────────────────────────────────────────────────────────────────
 
-      RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
-      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
-      AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-      log_info "Checking if 'ASDLC Console' application exists..."
-      RESPONSE=$(thunder_api_call GET "/applications")
-      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
-      if [ "$HTTP_CODE" != "200" ]; then log_error "Failed to fetch apps (HTTP $HTTP_CODE)"; exit 1; fi
-
-      APP_PAYLOAD=$(cat <<JSON
-      {
-        "name": "ASDLC Console",
-        "description": "ASDLC Platform Console",
-        "ouId": "${OU_ID}",
-        "authFlowId": "${AUTH_FLOW_ID}",
-        "inboundAuthConfig": [{
-          "type": "oauth2",
-          "config": {
-            "clientId": "asdlc-console-client",
-            "redirectUris": ["http://localhost:8090", "${PUBLIC_CONSOLE_URL}"],
-            "grantTypes": ["authorization_code", "refresh_token"],
-            "responseTypes": ["code"],
-            "tokenEndpointAuthMethod": "none",
-            "pkceRequired": true,
-            "publicClient": true,
-            "token": {
-              "accessToken": {"validityPeriod": 86400, "userAttributes": ["given_name","family_name","username","groups"]},
-              "idToken": {"validityPeriod": 86400, "userAttributes": ["given_name","family_name","username","groups"]}
-            }
-          }
-        }]
-      }
-      JSON
+      CONFIDENTIAL_APPS=(
+        "Workload Publisher|OpenChoreo Workload Publisher Client (used by dockerfile-builder generate-workload-cr step)|openchoreo-workload-publisher-client|openchoreo-workload-publisher-secret"
+        "OpenChoreo Observer Resource Reader|Client used by the BFF to fetch tokens for the OC Observer service (live workflow logs). Bound by the openchoreo-observer-resource-reader-client-binding ClusterAuthzRoleBinding.|openchoreo-observer-resource-reader-client|openchoreo-observer-resource-reader-client-secret"
+        "ASDLC API Service|ASDLC API Service - service-to-service client for OpenChoreo|asdlc-api-client|asdlc-api-client-secret"
+        "ASDLC BFF to git-service|BFF outbound Service JWT, audience: git-service|asdlc-bff-to-git-service|asdlc-bff-to-git-service-secret"
+        "ASDLC BFF to agents-service|BFF outbound Service JWT, audience: agents-service|asdlc-bff-to-agents-service|asdlc-bff-to-agents-service-secret"
+        "ASDLC BFF to remote-worker|BFF outbound Service JWT, audience: remote-worker|asdlc-bff-to-remote-worker|asdlc-bff-to-remote-worker-secret"
+        "ASDLC Local Dev Seeder|Local-dev convenience client used by scripts/seed-dev.sh to POST GitHub PAT + Anthropic key to the default org. Not used by any platform code path.|asdlc-local-dev-seeder|asdlc-local-dev-seeder-secret"
       )
 
-      if echo "$BODY" | grep -q '"clientId":"asdlc-console-client"'; then
-        APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"asdlc-console-client"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-        log_info "ASDLC Console exists ($APP_ID), updating..."
-        RESPONSE=$(thunder_api_call PUT "/applications/$APP_ID" "$APP_PAYLOAD")
-        HTTP_CODE="${RESPONSE: -3}"
-        if [ "$HTTP_CODE" != "200" ]; then log_error "Update failed: ${RESPONSE%???}"; exit 1; fi
-      else
-        log_info "Creating ASDLC Console..."
-        RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
-        HTTP_CODE="${RESPONSE: -3}"
-        if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then log_error "Create failed: ${RESPONSE%???}"; exit 1; fi
-      fi
-      log_success "ASDLC Console application configured"
+      PUBLIC_APPS=(
+        "ASDLC Console|ASDLC Platform Console|asdlc-console-client|http://localhost:8090,${PUBLIC_CONSOLE_URL}|given_name,family_name,username,groups,ouId,ouName,ouHandle"
+      )
 
-    61-asdlc-api-app.sh: |
-      #!/bin/bash
-      set -e
-      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
-      source "${SCRIPT_DIR}/common.sh"
+      # ──────────────────────────────────────────────────────────────────
+      # Fetch OU_ID once. AUTH_FLOW_ID is fetched lazily only when
+      # PUBLIC_APPS is non-empty — confidential clients don't need it.
+      # Hard-exit (not silent skip) if either lookup fails.
+      # ──────────────────────────────────────────────────────────────────
 
+      log_info "Fetching default organization unit..."
       RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
-      BODY="${RESPONSE%???}"
+      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
+      if [ "$HTTP_CODE" != "200" ]; then
+        log_error "Failed to fetch default OU (HTTP $HTTP_CODE): $BODY"; exit 1
+      fi
       OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      if [ -z "$OU_ID" ]; then
+        log_error "Could not extract default OU ID from response: $BODY"; exit 1
+      fi
+      log_info "Using OU ID: $OU_ID"
 
-      log_info "Checking if 'ASDLC API Service' application exists..."
-      RESPONSE=$(thunder_api_call GET "/applications")
-      BODY="${RESPONSE%???}"
+      AUTH_FLOW_ID=""
+      if [ ${#PUBLIC_APPS[@]} -gt 0 ]; then
+        log_info "Fetching default-basic-flow authentication flow ID..."
+        RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+        HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
+        if [ "$HTTP_CODE" != "200" ]; then
+          log_error "Failed to fetch auth flows (HTTP $HTTP_CODE): $BODY"; exit 1
+        fi
+        AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        if [ -z "$AUTH_FLOW_ID" ]; then
+          log_error "Could not find default-basic-flow auth flow"; exit 1
+        fi
+        log_info "Using auth flow ID: $AUTH_FLOW_ID"
+      fi
 
-      APP_PAYLOAD=$(cat <<JSON
+      # ──────────────────────────────────────────────────────────────────
+      # csv_to_json_array "a,b,c" → ["a","b","c"]
+      # ──────────────────────────────────────────────────────────────────
+
+      csv_to_json_array() {
+        local input="$1"
+        local IFS=','
+        local arr=()
+        local item
+        for item in $input; do
+          arr+=("\"${item}\"")
+        done
+        local out
+        IFS=','
+        out="${arr[*]}"
+        echo "[${out}]"
+      }
+
+      # ──────────────────────────────────────────────────────────────────
+      # upsert_app CLIENT_ID PAYLOAD
+      #   Shared GET-check-PUT-or-POST tail. Returns 1 on HTTP failure.
+      # ──────────────────────────────────────────────────────────────────
+
+      upsert_app() {
+        local client_id="$1"
+        local payload="$2"
+
+        local response
+        response=$(thunder_api_call GET "/applications")
+        local body="${response%???}"
+
+        if echo "$body" | grep -q "\"clientId\":\"${client_id}\""; then
+          local app_id
+          app_id=$(echo "$body" | sed 's/},{/}\n{/g' | grep "\"clientId\":\"${client_id}\"" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+          log_info "App '${client_id}' exists (${app_id}), updating..."
+          response=$(thunder_api_call PUT "/applications/${app_id}" "$payload")
+          local http_code="${response: -3}"
+          if [ "$http_code" != "200" ]; then
+            log_error "Update failed (HTTP $http_code): ${response%???}"; return 1
+          fi
+        else
+          log_info "App '${client_id}' does not exist, creating..."
+          response=$(thunder_api_call POST "/applications" "$payload")
+          local http_code="${response: -3}"
+          if ! { [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; }; then
+            log_error "Create failed (HTTP $http_code): ${response%???}"; return 1
+          fi
+        fi
+        log_success "App '${client_id}' configured"
+      }
+
+      # ──────────────────────────────────────────────────────────────────
+      # ensure_confidential_app NAME DESC CLIENT_ID CLIENT_SECRET
+      # ──────────────────────────────────────────────────────────────────
+
+      ensure_confidential_app() {
+        local name="$1"
+        local description="$2"
+        local client_id="$3"
+        local client_secret="$4"
+
+        local payload
+        payload=$(cat <<JSON
       {
-        "name": "ASDLC API Service",
-        "description": "ASDLC API Service - service-to-service client for OpenChoreo",
+        "name": "${name}",
+        "description": "${description}",
         "ouId": "${OU_ID}",
         "inboundAuthConfig": [{
           "type": "oauth2",
           "config": {
-            "clientId": "asdlc-api-client",
-            "clientSecret": "asdlc-api-client-secret",
+            "clientId": "${client_id}",
+            "clientSecret": "${client_secret}",
             "grantTypes": ["client_credentials"],
             "tokenEndpointAuthMethod": "client_secret_post",
             "pkceRequired": false,
@@ -181,78 +241,67 @@ bootstrap:
       }
       JSON
       )
-
-      if echo "$BODY" | grep -q '"clientId":"asdlc-api-client"'; then
-        APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"clientId":"asdlc-api-client"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-        log_info "ASDLC API exists ($APP_ID), updating..."
-        RESPONSE=$(thunder_api_call PUT "/applications/$APP_ID" "$APP_PAYLOAD")
-        HTTP_CODE="${RESPONSE: -3}"
-        if [ "$HTTP_CODE" != "200" ]; then log_error "Update failed: ${RESPONSE%???}"; exit 1; fi
-      else
-        log_info "Creating ASDLC API Service..."
-        RESPONSE=$(thunder_api_call POST "/applications" "$APP_PAYLOAD")
-        HTTP_CODE="${RESPONSE: -3}"
-        if [ "$HTTP_CODE" != "201" ] && [ "$HTTP_CODE" != "200" ]; then log_error "Create failed: ${RESPONSE%???}"; exit 1; fi
-      fi
-      log_success "ASDLC API Service configured"
-
-    # Auth-model refactor: per-target Service JWT clients used by the BFF
-    # for outbound calls to git-service / agents-service / remote-worker.
-    # Each client_credentials principal mints a token with audience pinned
-    # to its target — the receiving service only accepts tokens addressed
-    # to it, so a leaked git-service token can't be replayed at agents.
-    62-asdlc-bff-to-services-app.sh: |
-      #!/bin/bash
-      set -e
-      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
-      source "${SCRIPT_DIR}/common.sh"
-
-      RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
-      BODY="${RESPONSE%???}"
-      OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-
-      ensure_app() {
-        local NAME="$1"; local DESC="$2"; local CLIENT_ID="$3"; local CLIENT_SECRET="$4"
-        log_info "Checking if '$NAME' exists..."
-        RESPONSE=$(thunder_api_call GET "/applications")
-        BODY="${RESPONSE%???}"
-
-        local PAYLOAD=$(cat <<JSON
-        {
-          "name": "$NAME",
-          "description": "$DESC",
-          "ouId": "${OU_ID}",
-          "inboundAuthConfig": [{
-            "type": "oauth2",
-            "config": {
-              "clientId": "$CLIENT_ID",
-              "clientSecret": "$CLIENT_SECRET",
-              "grantTypes": ["client_credentials"],
-              "tokenEndpointAuthMethod": "client_secret_post",
-              "pkceRequired": false,
-              "publicClient": false,
-              "token": {"accessToken": {"validityPeriod": 3600}}
-            }
-          }]
-        }
-      JSON
-        )
-
-        if echo "$BODY" | grep -q "\"clientId\":\"$CLIENT_ID\""; then
-          local APP_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep "\"clientId\":\"$CLIENT_ID\"" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
-          log_info "$NAME exists ($APP_ID), updating..."
-          RESPONSE=$(thunder_api_call PUT "/applications/$APP_ID" "$PAYLOAD")
-          HTTP_CODE="${RESPONSE: -3}"
-          [ "$HTTP_CODE" = "200" ] || { log_error "Update failed: ${RESPONSE%???}"; return 1; }
-        else
-          log_info "Creating $NAME..."
-          RESPONSE=$(thunder_api_call POST "/applications" "$PAYLOAD")
-          HTTP_CODE="${RESPONSE: -3}"
-          [ "$HTTP_CODE" = "201" ] || [ "$HTTP_CODE" = "200" ] || { log_error "Create failed: ${RESPONSE%???}"; return 1; }
-        fi
-        log_success "$NAME configured"
+        upsert_app "${client_id}" "${payload}"
       }
 
-      ensure_app "ASDLC BFF to git-service"     "BFF outbound Service JWT, audience: git-service"     "asdlc-bff-to-git-service"     "asdlc-bff-to-git-service-secret"
-      ensure_app "ASDLC BFF to agents-service"  "BFF outbound Service JWT, audience: agents-service"  "asdlc-bff-to-agents-service"  "asdlc-bff-to-agents-service-secret"
-      ensure_app "ASDLC BFF to remote-worker"   "BFF outbound Service JWT, audience: remote-worker"   "asdlc-bff-to-remote-worker"   "asdlc-bff-to-remote-worker-secret"
+      # ──────────────────────────────────────────────────────────────────
+      # ensure_public_app NAME DESC CLIENT_ID REDIRECT_URIS_CSV USER_ATTRS_CSV
+      #   Public PKCE client (authorization_code + refresh_token).
+      # ──────────────────────────────────────────────────────────────────
+
+      ensure_public_app() {
+        local name="$1"
+        local description="$2"
+        local client_id="$3"
+        local redirect_uris_csv="$4"
+        local user_attrs_csv="$5"
+
+        local redirect_uris_json
+        redirect_uris_json=$(csv_to_json_array "${redirect_uris_csv}")
+        local user_attrs_json
+        user_attrs_json=$(csv_to_json_array "${user_attrs_csv}")
+
+        local payload
+        payload=$(cat <<JSON
+      {
+        "name": "${name}",
+        "description": "${description}",
+        "ouId": "${OU_ID}",
+        "authFlowId": "${AUTH_FLOW_ID}",
+        "inboundAuthConfig": [{
+          "type": "oauth2",
+          "config": {
+            "clientId": "${client_id}",
+            "redirectUris": ${redirect_uris_json},
+            "grantTypes": ["authorization_code", "refresh_token"],
+            "responseTypes": ["code"],
+            "tokenEndpointAuthMethod": "none",
+            "pkceRequired": true,
+            "publicClient": true,
+            "token": {
+              "accessToken": {"validityPeriod": 86400, "userAttributes": ${user_attrs_json}},
+              "idToken":     {"validityPeriod": 86400, "userAttributes": ${user_attrs_json}}
+            }
+          }
+        }]
+      }
+      JSON
+      )
+        upsert_app "${client_id}" "${payload}"
+      }
+
+      # ──────────────────────────────────────────────────────────────────
+      # Run.
+      # ──────────────────────────────────────────────────────────────────
+
+      for row in "${CONFIDENTIAL_APPS[@]}"; do
+        IFS='|' read -r _name _desc _client_id _client_secret <<<"$row"
+        ensure_confidential_app "$_name" "$_desc" "$_client_id" "$_client_secret"
+      done
+
+      for row in "${PUBLIC_APPS[@]}"; do
+        IFS='|' read -r _name _desc _client_id _redirect_uris _user_attrs <<<"$row"
+        ensure_public_app "$_name" "$_desc" "$_client_id" "$_redirect_uris" "$_user_attrs"
+      done
+
+      log_success "All OAuth applications configured"

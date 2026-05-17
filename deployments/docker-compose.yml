@@ -1,4 +1,7 @@
 services:
+  # ---------------------------------------------------------------------------
+  # PostgreSQL — shared by asdlc-api (BFF) and git-service.
+  # ---------------------------------------------------------------------------
   postgres:
     image: postgres:16-alpine
     container_name: asdlc-db
@@ -18,26 +21,11 @@ services:
     networks:
       - asdlc
 
-  mysql:
-    image: mysql:8.0
-    container_name: mysql-db
-    ports:
-      - "3306:3306"
-    environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: asdlc
-      MYSQL_USER: asdlc
-      MYSQL_PASSWORD: asdlc
-    volumes:
-      - mysqldata:/var/lib/mysql
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks:
-      - asdlc
-
+  # ---------------------------------------------------------------------------
+  # asdlc-api — Go BFF + GitHub webhook receiver. Reaches OC via the k3d
+  # docker network (k3d-openchoreo-serverlb) and Thunder via the same
+  # loadbalancer routed by Host header.
+  # ---------------------------------------------------------------------------
   asdlc-api:
     build:
       context: ../asdlc-service
@@ -51,46 +39,50 @@ services:
         condition: service_started
       agents-service:
         condition: service_started
-      database-service:
-        condition: service_started
     environment:
       SERVER_HOST: "0.0.0.0"
       SERVER_PORT: "9090"
       LOG_LEVEL: "debug"
       DATABASE_URL: "postgres://asdlc:asdlc@postgres:5432/asdlc?sslmode=disable"
+      DEPLOYMENT_TIER: "${DEPLOYMENT_TIER:-dev}"
+      TEST_MODE: "true"
+
+      # ── OpenChoreo platform API (reached via k3d loadbalancer + Host header)
       PLATFORM_API_SERVICE_BASE_URL: "${PLATFORM_API_SERVICE_BASE_URL}"
-      PLATFORM_API_SERVICE_HOST: "${PLATFORM_API_SERVICE_HOST:-}"
-      OBSERVABILITY_SERVICE_BASE_URL: "${OBSERVABILITY_SERVICE_BASE_URL:-}"
+      PLATFORM_API_SERVICE_HOST: "${PLATFORM_API_SERVICE_HOST:-api.openchoreo.localhost}"
+
+      # ── Sister services on the asdlc compose network
       AGENTS_SERVICE_BASE_URL: "http://agents-service:3400"
       GIT_SERVICE_BASE_URL: "http://git-service:3300"
-      DATABASE_SERVICE_BASE_URL: "http://database-service:3500"
-      # Defaults target container mode (compose service `remote-worker`,
-      # in-network `git-service`). In host mode, scripts/start.sh exports
-      # both vars to host.docker.internal:3200 / localhost:3300 before
-      # `docker compose up`, overriding these defaults.
-      REMOTE_WORKER_BASE_URL: "${REMOTE_WORKER_BASE_URL:-http://remote-worker:3200}"
-      GIT_SERVICE_HOST_URL: "${GIT_SERVICE_HOST_URL:-http://git-service:3300}"
+
+      # ── Coding-agent runner reach-back URLs. These are passed verbatim to
+      # the WorkflowRun parameter the runner pod reads. The pod runs in
+      # `workflows-<orgID>` inside the cluster, so it must reach the
+      # compose services through k3d's host bridge.
+      AGENT_GIT_SERVICE_URL: "http://host.k3d.internal:3300"
+      AGENT_PLATFORM_URL: "http://host.k3d.internal:9090"
+
+      # ── GitHub webhook validation + connect-state HMAC.
       GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET}"
       GITHUB_WEBHOOK_PROXY_URL: "${GITHUB_WEBHOOK_PROXY_URL}"
-      # OAuth state HMAC key — signs the GitHub App connect callback's
-      # `state` query param (CSRF protection). Internal to the BFF; not
-      # used by any other service.
       OAUTH_STATE_SIGNING_KEY: "${OAUTH_STATE_SIGNING_KEY}"
-      DEPLOYMENT_TIER: "${DEPLOYMENT_TIER:-dev}"
       GIT_COMMITTER_NAME: "${GIT_COMMITTER_NAME:-ASDLC Bot}"
       GIT_COMMITTER_EMAIL: "${GIT_COMMITTER_EMAIL:-bot@asdlc.dev}"
+
+      # ── App OAuth bind path: BFF builds /login/oauth/authorize with this client_id.
       GITHUB_APP_SLUG: "${GITHUB_APP_SLUG:-asdlc-platform}"
-      BFF_PUBLIC_URL: "${BFF_PUBLIC_URL:-http://localhost:8090}"
-      # App OAuth bind path: BFF builds the /login/oauth/authorize URL with this client_id.
       GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
-      # Inbound JWT verification (User + Service JWTs) — Thunder JWKS.
-      # Using the host-routed URL (works inside containers via extra_hosts).
-      # Audience prefix asdlc-* accepts both console-client (User JWT) and
-      # api-client (Service JWT) without listing each one explicitly.
+      BFF_PUBLIC_URL: "${BFF_PUBLIC_URL:-http://localhost:8090}"
+
+      # ── Inbound JWT verification (Thunder JWKS, audience prefix asdlc-*).
       JWKS_URL: "http://thunder.openchoreo.localhost:8080/oauth2/jwks"
       JWT_ISSUER: "${JWT_ISSUER:-http://thunder.openchoreo.localhost:8080}"
       JWT_AUDIENCE: "${BFF_AUDIENCE:-asdlc-*}"
-      # Outbound Service JWTs — one client_credentials principal per target audience.
+
+      # ── Outbound Service JWTs — one client_credentials principal per
+      # target audience (git-service, agents-service). The remote-worker
+      # audience is gone — coding-agent runs as a ClusterWorkflow pod
+      # and authenticates back to git-service with a per-task Task JWT.
       SERVICE_AUTH_TOKEN_URL: "http://k3d-openchoreo-serverlb:8080/oauth2/token"
       SERVICE_AUTH_CLIENT_ID: "asdlc-api-client"
       SERVICE_AUTH_CLIENT_SECRET: "asdlc-api-client-secret"
@@ -103,60 +95,47 @@ services:
       SERVICE_AUTH_AGENTS_CLIENT_ID: "${SERVICE_AUTH_AGENTS_CLIENT_ID:-asdlc-bff-to-agents-service}"
       SERVICE_AUTH_AGENTS_CLIENT_SECRET: "${SERVICE_AUTH_AGENTS_CLIENT_SECRET:-asdlc-bff-to-agents-service-secret}"
       SERVICE_AUTH_AGENTS_HOST_HEADER: "thunder.openchoreo.localhost"
-      SERVICE_AUTH_RW_TOKEN_URL: "http://k3d-openchoreo-serverlb:8080/oauth2/token"
-      SERVICE_AUTH_RW_CLIENT_ID: "${SERVICE_AUTH_RW_CLIENT_ID:-asdlc-bff-to-remote-worker}"
-      SERVICE_AUTH_RW_CLIENT_SECRET: "${SERVICE_AUTH_RW_CLIENT_SECRET:-asdlc-bff-to-remote-worker-secret}"
-      SERVICE_AUTH_RW_HOST_HEADER: "thunder.openchoreo.localhost"
-      # Task JWT signing key — RS256, public half published at /auth/external/jwks.json.
+
+      # ── Task JWT signing — RS256, PEM read from a bind-mounted file.
+      # Docker-compose's `${VAR}` substitution doesn't preserve newlines
+      # cleanly, so we mount the file rather than env-pass the contents.
       BFF_TASK_SIGNING_KEY_PATH: "/app/keys/task-signing.pem"
       BFF_TASK_TOKEN_ISSUER: "asdlc-bff"
       BFF_TASK_TOKEN_AUDIENCE: "git-service"
-      TEST_MODE: "true"
+
+      # ── Observer (task-progress) — reads workflow logs via OC Observer.
+      # Optional: leave empty to disable; the BFF returns 503 on /progress.
+      #
+      # Routing: BFF runs in docker-compose, Observer runs in the k3d
+      # cluster. We can't reach the in-cluster Service DNS, so we route
+      # through the main kgateway at host-port 8080 (k3d serverlb) using
+      # Host: observer.openchoreo.localhost. setup-observability.sh creates
+      # the cross-namespace HTTPRoute on `openchoreo-control-plane/gateway-default`
+      # that resolves that hostname → the Observer Service. The extra_hosts
+      # below maps observer.openchoreo.localhost → docker host gateway so
+      # the BFF reaches the k3d serverlb.
+      OBSERVER_URL: "${OBSERVER_URL:-http://observer.openchoreo.localhost:8080}"
+      OBSERVER_OAUTH_TOKEN_URL: "${OBSERVER_OAUTH_TOKEN_URL:-http://k3d-openchoreo-serverlb:8080/oauth2/token}"
+      OBSERVER_OAUTH_CLIENT_ID: "${OBSERVER_OAUTH_CLIENT_ID:-openchoreo-observer-resource-reader-client}"
+      OBSERVER_OAUTH_CLIENT_SECRET: "${OBSERVER_OAUTH_CLIENT_SECRET:-openchoreo-observer-resource-reader-client-secret}"
+      OBSERVER_OAUTH_HOST_HEADER: "${OBSERVER_OAUTH_HOST_HEADER:-thunder.openchoreo.localhost}"
+    volumes:
+      - ./keys/task-signing.pem:/app/keys/task-signing.pem:ro
     networks:
       - asdlc
       - k3d-openchoreo
-    volumes:
-      # PR 3 of repo-storage-ownership: the BFF no longer mounts /data/repos.
-      # git-service is the sole owner of repo working trees and serves them
-      # over HTTP via the artifact endpoints.
-      - ./keys/task-signing.pem:/app/keys/task-signing.pem:ro
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "api.openchoreo.localhost:host-gateway"
       - "thunder.openchoreo.localhost:host-gateway"
+      - "observer.openchoreo.localhost:host-gateway"
 
-  # remote-worker — runs the Claude Agent SDK per dispatched task.
-  # Default deployment is this container, authed via ANTHROPIC_API_KEY.
-  # For OAuth-based dev (Claude Code session on the host), set
-  # REMOTE_WORKER_MODE=host in .env; scripts/start.sh will scale this
-  # service to 0 and spawn the host process instead.
-  remote-worker:
-    build:
-      context: ../remote-worker
-    container_name: asdlc-remote-worker
-    ports:
-      - "3200:3200"
-    depends_on:
-      git-service:
-        condition: service_started
-    environment:
-      PORT: "3200"
-      BIND_HOST: "0.0.0.0"
-      LOG_LEVEL: "debug"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
-      # WORKSPACE_BASE_PATH defaults to /home/asdlc/asdlc-workspace inside
-      # the container (remote-worker/src/config.ts). No volume — workspaces
-      # live inside the container and are wiped on restart by design.
-      REMOTE_WORKER_MAX_CONCURRENT_TASKS: "${REMOTE_WORKER_MAX_CONCURRENT_TASKS:-8}"
-      # Inbound Service JWT verification — Thunder JWKS.
-      JWKS_URL: "http://thunder.openchoreo.localhost:8080/oauth2/jwks"
-      JWT_ISSUER: "${JWT_ISSUER:-http://thunder.openchoreo.localhost:8080}"
-      JWT_AUDIENCE: "${RW_AUDIENCE:-asdlc-bff-to-remote-worker}"
-    networks:
-      - asdlc
-    extra_hosts:
-      - "thunder.openchoreo.localhost:host-gateway"
-
+  # ---------------------------------------------------------------------------
+  # agents-service — AI BA/Architect/TaskGen/Wireframe agents (Vercel AI SDK).
+  # No ANTHROPIC_API_KEY env: the key is resolved per-call via git-service
+  # (org key if configured, platform fallback otherwise). See
+  # docs/design/anthropic-key-dual-token.md §6.4.
+  # ---------------------------------------------------------------------------
   agents-service:
     build:
       context: ../agents
@@ -166,17 +145,30 @@ services:
     environment:
       PORT: "3400"
       LOG_LEVEL: "debug"
-      ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}"
       AGENT_MODEL: "${AGENT_MODEL:-claude-sonnet-4-5}"
-      # Inbound Service JWT verification — Thunder JWKS.
+      # Inbound Service JWT verification.
       JWKS_URL: "http://thunder.openchoreo.localhost:8080/oauth2/jwks"
       JWT_ISSUER: "${JWT_ISSUER:-http://thunder.openchoreo.localhost:8080}"
       JWT_AUDIENCE: "${AGENTS_AUDIENCE:-asdlc-bff-to-agents-service}"
+      # Resolve the per-org Anthropic key (or platform fallback) on each call.
+      # The agents-service has no outbound Service-JWT client wired (mirrors
+      # agent-manager-service); git-service's internal/credentials path must
+      # therefore stay unauthenticated in this compose-only setup.
+      GIT_SERVICE_URL: "http://git-service:3300"
     networks:
       - asdlc
     extra_hosts:
       - "thunder.openchoreo.localhost:host-gateway"
 
+  # ---------------------------------------------------------------------------
+  # git-service — Git operations + org-credential store. Needs K8s API access
+  # to write per-WorkflowRun Secrets into `workflows-<orgID>` namespaces
+  # (build credential + Anthropic key). KUBECONFIG points at the host
+  # kubeconfig mounted at /app/.kube/config; start.sh seeds an internal
+  # kubeconfig (server URL rewritten to the k3d server container name) so
+  # the API is reachable from inside the asdlc/k3d-openchoreo networks.
+  # See agent-manager-service's compose for the same pattern.
+  # ---------------------------------------------------------------------------
   git-service:
     build:
       context: ../git-service
@@ -191,85 +183,80 @@ services:
       LOG_LEVEL: "debug"
       DATABASE_URL: "postgres://asdlc:asdlc@postgres:5432/asdlc?sslmode=disable"
       REPO_BASE_PATH: "/data/repos"
+      DEPLOYMENT_TIER: "${DEPLOYMENT_TIER:-dev}"
+      TEST_MODE: "true"
+
+      # ── Committer attribution + repo defaults.
       GITHUB_REPO_VISIBILITY: "${GITHUB_REPO_VISIBILITY:-private}"
       GIT_COMMITTER_NAME: "${GIT_COMMITTER_NAME:-ASDLC Bot}"
       GIT_COMMITTER_EMAIL: "${GIT_COMMITTER_EMAIL:-bot@asdlc.dev}"
-      # No platform-wide PAT, owner, or seed list — the binary is org-agnostic.
-      # Each org connects via the console (Settings → GitHub Integration).
+
+      # ── Webhook surface — git-service registers webhooks against each
+      # repo pointing at the smee.io URL, then smee-client forwards them
+      # to asdlc-api/webhooks/github.
+      GITHUB_WEBHOOK_DELIVERY_URL: "${GITHUB_WEBHOOK_PROXY_URL}"
       GITHUB_WEBHOOK_SECRET: "${GITHUB_WEBHOOK_SECRET}"
-      GITHUB_WEBHOOK_PROXY_URL: "${GITHUB_WEBHOOK_PROXY_URL}"
-      DEPLOYMENT_TIER: "${DEPLOYMENT_TIER:-dev}"
+
+      # ── OpenBao — credentials store (per-org GitHub PAT / App secrets).
+      # In-cluster Service exposed on host port 8200 via k3d NodePort
+      # (see k3d-local-config.yaml :8200 → :30820 → openbao).
       OPENBAO_ADDR: "${OPENBAO_ADDR:-http://host.docker.internal:8200}"
       OPENBAO_TOKEN: "${OPENBAO_TOKEN:-root}"
-      # Phase 2 PR B — GitHub App + internal credential routes.
+
+      # ── GitHub App (optional — only needed for App-mode connect).
       GITHUB_APP_ID: "${GITHUB_APP_ID:-}"
       GITHUB_CLIENT_ID: "${GITHUB_CLIENT_ID:-}"
-      # PR D-followup §6.4 — App OAuth bind path: git-service exchanges
-      # OAuth codes via /login/oauth/access_token using this secret.
-      # Seeded into OpenBao at _platform/github/app/client_secret on first boot.
       GITHUB_CLIENT_SECRET: "${GITHUB_CLIENT_SECRET:-}"
       GITHUB_APP_SLUG: "${GITHUB_APP_SLUG:-asdlc-platform}"
       GITHUB_APP_PRIVATE_KEY_PATH: "${GITHUB_APP_PRIVATE_KEY_PATH:-/etc/github-app/private-key.pem}"
-      # Inbound Service JWT verification — Thunder JWKS.
-      JWKS_URL: "http://thunder.openchoreo.localhost:8080/oauth2/jwks"
-      JWT_ISSUER: "${JWT_ISSUER:-http://thunder.openchoreo.localhost:8080}"
-      JWT_AUDIENCE: "${GIT_SERVICE_AUDIENCE:-asdlc-bff-to-git-service}"
-      # Task JWT verification (RS256, BFF-signed) on /api/v1/credentials/refresh.
+
+      # ── Inbound Service JWT verification — intentionally NOT set in v1.
+      # With JWKS_URL unset, git-service's /api/v1/repos/* and
+      # /internal/credentials/* fall through to its dev-mode "no auth"
+      # handler (cmd/git-service/main.go), so agents-service can call the
+      # effective-key resolver without a bearer (it has no service-auth
+      # client). The BFF still mints + sends Service JWTs to git-service —
+      # they are simply not verified in v1. Mirrors agent-manager's
+      # docker-compose pattern (IS_LOCAL_DEV_ENV=true).
+      # JWKS_URL: "http://thunder.openchoreo.localhost:8080/oauth2/jwks"
+      # JWT_AUDIENCE: "asdlc-bff-to-git-service"
+      # ── Task JWT verification on /api/v1/credentials/refresh (RS256, BFF-signed).
       BFF_JWKS_URL: "http://asdlc-api:9090/auth/external/jwks.json"
       TASK_JWT_ISSUER: "asdlc-bff"
       TASK_JWT_AUDIENCE: "git-service"
-      TEST_MODE: "true"
+
+      # ── Anthropic platform fallback. agents-service calls
+      # /internal/anthropic/effective-key on every dispatch; this is the
+      # value returned when an org hasn't connected its own key.
+      ANTHROPIC_PLATFORM_KEY: "${ANTHROPIC_API_KEY}"
+      AGENTS_SERVICE_URL: "http://agents-service:3400"
+
+      # ── K8s access — controller-runtime config.GetConfig() reads KUBECONFIG.
+      # Required for mint-build (per-org build secret SSA into workflows-<orgID>)
+      # and for apply-wp-secret (per-org Anthropic secret SSA). Without it,
+      # git-service degrades: builds fail at clone, coding-agent dispatch
+      # fails on the pre-flight.
+      KUBECONFIG: "/app/.kube/config"
     volumes:
       - ${HOME}/.asdlc/repos:/data/repos
-      # GitHub App private key — read at startup and seeded into OpenBao.
-      # File may not exist in fresh environments; the seed skips cleanly.
+      # GitHub App private key — read at startup, contents seeded into OpenBao.
+      # Touched by start.sh if absent so the mount always exists.
       - ./github-app-private-key.pem:/etc/github-app/private-key.pem:ro
+      # Internal kubeconfig — server URL points at k3d-openchoreo-server-0:6443
+      # over the k3d-openchoreo docker network. Seeded by start.sh.
+      - ./.kube/config:/app/.kube/config:ro
     networks:
       - asdlc
+      - k3d-openchoreo
     extra_hosts:
       - "host.docker.internal:host-gateway"
       - "thunder.openchoreo.localhost:host-gateway"
 
-  collab-server:
-    build:
-      context: ../collab-server
-      network: host
-    container_name: asdlc-collab-server
-    ports:
-      - "3450:3400"
-    environment:
-      BFF_URL: "http://asdlc-api:9090"
-      PORT: "3400"
-      STATE_DIR: "/data/collab-state"
-    volumes:
-      - collab-state:/data/collab-state
-    depends_on:
-      - asdlc-api
-    networks:
-      - asdlc
-
-  database-service:
-    build:
-      context: ../database-service
-    container_name: asdlc-database-service
-    ports:
-      - "3500:3500"
-    depends_on:
-      mysql:
-        condition: service_healthy
-    environment:
-      SERVER_HOST: "0.0.0.0"
-      SERVER_PORT: "3500"
-      LOG_LEVEL: "debug"
-      MYSQL_ROOT_URL: "root:root@tcp(mysql:3306)/"
-      MYSQL_HOST: "mysql"
-      MYSQL_PORT: "3306"
-    networks:
-      - asdlc
-
-  # Local-dev webhook proxy: forwards events from a smee.io channel to the
-  # BFF's /webhooks/github endpoint. In production, swap for an ingress
-  # configured to terminate at the BFF directly.
+  # ---------------------------------------------------------------------------
+  # smee-client — forwards GitHub webhook events from the public smee.io
+  # channel to asdlc-api/webhooks/github. In production this would be
+  # replaced by a real ingress to the BFF.
+  # ---------------------------------------------------------------------------
   smee-client:
     image: deltaprojects/smee-client:latest
     container_name: asdlc-smee-client
@@ -280,6 +267,12 @@ services:
       - asdlc
     restart: unless-stopped
 
+  # ---------------------------------------------------------------------------
+  # console — React SPA served by nginx. The browser hits Thunder directly
+  # via thunder.openchoreo.localhost (resolved by /etc/hosts → 127.0.0.1
+  # → k3d loadbalancer). All API requests go through the same-origin
+  # /asdlc-api-service/ nginx proxy → asdlc-api:9090.
+  # ---------------------------------------------------------------------------
   console:
     build:
       context: ..
@@ -291,34 +284,16 @@ services:
       - asdlc-api
     environment:
       ASDLC_API_PROXY_URL: "http://asdlc-api:9090"
-      # Without this the entrypoint sed-deletes the /collab/ nginx location
-      # block, so WebSocket upgrades fall through to the SPA's catch-all
-      # (HTTP 200 to a WS handshake) and the spec/architecture editors hang
-      # on "Loading...".
-      COLLAB_SERVER_URL: "${COLLAB_SERVER_URL:-http://collab-server:3400}"
-      THUNDER_PROXY_URL: "${THUNDER_PROXY_URL:-http://k3d-openchoreo-serverlb:8080}"
-      THUNDER_HOST: "${THUNDER_HOST:-thunder.openchoreo.localhost}"
       VITE_THUNDER_URL: "${PUBLIC_THUNDER_URL}"
       VITE_THUNDER_CLIENT_ID: "${VITE_THUNDER_CLIENT_ID:-asdlc-console-client}"
-      VITE_THUNDER_CLIENT_SECRET: "${VITE_THUNDER_CLIENT_SECRET:-}"
-      VITE_THUNDER_REDIRECT_URI: "${PUBLIC_CONSOLE_URL}"
       VITE_THUNDER_SCOPES: "${VITE_THUNDER_SCOPES:-openid profile email}"
-      VITE_THUNDER_AFTER_SIGN_IN_URL: "${PUBLIC_CONSOLE_URL}"
-      VITE_THUNDER_AFTER_SIGN_OUT_URL: "${PUBLIC_CONSOLE_URL}/login"
-      # Names the runtime env-config.js (and thus the SPA bundle) actually reads.
-      # Docker-compose previously set only the legacy `*_AFTER_*` names which
-      # the entrypoint doesn't pick up, leaving the redirect URI empty and
-      # causing Thunder to reject /authorize with "Invalid redirect URI".
       VITE_SIGN_IN_REDIRECT_URL: "${PUBLIC_CONSOLE_URL}"
       VITE_SIGN_OUT_REDIRECT_URL: "${PUBLIC_CONSOLE_URL}/login"
     networks:
       - asdlc
-      - k3d-openchoreo
 
 volumes:
   pgdata:
-  mysqldata:
-  collab-state:
 
 networks:
   asdlc:

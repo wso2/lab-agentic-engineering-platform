@@ -25,7 +25,7 @@ asdlc/
 │   │   ├── components.sh   → Component registry (single source of truth)
 │   │   └── lib/            → env / submodule / cluster / platform / asdlc / images / workload / ui
 │   └── wso2cloud-deployment/  → Git submodule: wso2-enterprise/wso2cloud-deployment @ local-app-factory
-├── deployments/            → DEPRECATED — Docker Compose + k3d setup. Being removed; do not extend.
+├── deployments/            → ALTERNATIVE local setup — pure OpenChoreo + Docker Compose (lighter than v2; no Flux/kustomize). Long-lived services run in compose; coding-agent runs as one-shot pods via the same `app-factory-coding-agent` ClusterWorkflow as v2.
 ├── tests/                  → E2E (Playwright) + API integration tests
 ├── docs/design/            → Architecture and component design docs
 ├── requirements/           → User scenario specifications

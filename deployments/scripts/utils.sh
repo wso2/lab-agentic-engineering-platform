@@ -134,45 +134,66 @@ EOF
     echo "✅ WorkflowPlane registered"
 }
 
-# Ensure CoreDNS can resolve host.k3d.internal for the *.openchoreo.localhost rewrite rule.
-# On Colima, Docker's embedded DNS (127.0.0.11) doesn't resolve host.k3d.internal,
-# so we add the k3d loadbalancer IP to CoreDNS's NodeHosts as a fallback.
-# This is idempotent and handles stale entries after Docker/Colima restarts (IP changes).
-patch_coredns_host_k3d_internal() {
-    echo "🔧 Ensuring host.k3d.internal resolves in CoreDNS..."
-    local lb_ip
-    lb_ip=$(docker inspect k3d-${CLUSTER_NAME}-serverlb \
-        --format "{{(index .NetworkSettings.Networks \"k3d-${CLUSTER_NAME}\").IPAddress}}" 2>/dev/null)
-    if [ -z "$lb_ip" ]; then
-        echo "⚠️  Could not determine loadbalancer IP — skipping"
+# Ensure CoreDNS resolves host.k3d.internal to the docker bridge gateway.
+# k3d exposes host.k3d.internal as a TLS SAN on the k3s server cert but
+# does NOT inject a CoreDNS NodeHosts entry — pods can't resolve the name
+# without help. We add the entry once at cluster creation (the bridge
+# gateway IP is stable for the cluster's lifetime). Pairs with OC's
+# coredns-custom.yaml rewrite rule (*.openchoreo.localhost → host.k3d.internal)
+# so both the kgateway hostnames AND the bare host.k3d.internal name
+# resolve correctly from inside pods.
+ensure_host_k3d_internal_in_coredns() {
+    local gw_ip
+    gw_ip=$(docker network inspect "k3d-${CLUSTER_NAME}" \
+        --format "{{(index .IPAM.Config 0).Gateway}}" 2>/dev/null)
+    if [ -z "$gw_ip" ]; then
+        echo "⚠️  Could not determine bridge gateway IP — skipping host.k3d.internal CoreDNS patch"
         return
     fi
-
-    local current_hosts
-    current_hosts=$(kubectl get cm coredns -n kube-system --context "${CLUSTER_CONTEXT}" -o jsonpath='{.data.NodeHosts}')
-    if echo "$current_hosts" | grep -q "^${lb_ip} host.k3d.internal$"; then
-        echo "✅ host.k3d.internal already in CoreDNS NodeHosts with correct IP (${lb_ip})"
+    # We register a dedicated CoreDNS Server Block in `coredns-custom`
+    # (imported via `import /etc/coredns/custom/*.server`, OUTSIDE the
+    # main `.:53` block) rather than patching `coredns.NodeHosts`,
+    # because k3s' Rancher addon controller periodically re-applies its
+    # own coredns ConfigMap and wipes any custom NodeHosts entries — but
+    # it does NOT touch coredns-custom. A separate server block (rather
+    # than an `.override` fragment) is required because the main `.:53`
+    # block already uses the `hosts` plugin once for NodeHosts; CoreDNS
+    # forbids two `hosts` plugins in the same Server Block.
+    local key="host-k3d-internal.server"
+    local desired="host.k3d.internal:53 {
+  hosts {
+    ${gw_ip} host.k3d.internal
+    fallthrough
+  }
+}
+"
+    local current
+    current=$(kubectl get cm coredns-custom -n kube-system --context "${CLUSTER_CONTEXT}" \
+        -o jsonpath="{.data.${key}}" 2>/dev/null)
+    if [ "$current" = "$desired" ]; then
+        echo "✅ host.k3d.internal already in coredns-custom (${gw_ip})"
         return
     fi
-
-    kubectl get cm coredns -n kube-system --context "${CLUSTER_CONTEXT}" -o json | \
-        python3 -c "
-import json, sys, re
+    kubectl get cm coredns-custom -n kube-system --context "${CLUSTER_CONTEXT}" -o json 2>/dev/null \
+        | GW_IP="$gw_ip" KEY="$key" python3 -c "
+import json, os, sys
 cm = json.load(sys.stdin)
-hosts = cm['data']['NodeHosts']
-hosts = re.sub(r'\n?[^\n]*host\.k3d\.internal[^\n]*', '', hosts)
-cm['data']['NodeHosts'] = hosts.rstrip() + '\n${lb_ip} host.k3d.internal\n'
+gw_ip = os.environ['GW_IP']
+key = os.environ['KEY']
+cm.setdefault('data', {})[key] = f'host.k3d.internal:53 {{\n  hosts {{\n    {gw_ip} host.k3d.internal\n    fallthrough\n  }}\n}}\n'
+# Drop the broken .override entry we may have written in a prior attempt.
+cm['data'].pop('host-k3d-internal.override', None)
 cm['metadata'] = {'name': cm['metadata']['name'], 'namespace': cm['metadata']['namespace']}
 json.dump(cm, sys.stdout)
-" | kubectl apply --context "${CLUSTER_CONTEXT}" -f -
-    kubectl rollout restart deployment coredns -n kube-system --context "${CLUSTER_CONTEXT}"
-    kubectl rollout status deployment coredns -n kube-system --context "${CLUSTER_CONTEXT}" --timeout=60s
-    echo "✅ host.k3d.internal added to CoreDNS NodeHosts (${lb_ip})"
+" | kubectl apply --context "${CLUSTER_CONTEXT}" -f - >/dev/null
+    kubectl rollout restart deployment coredns -n kube-system --context "${CLUSTER_CONTEXT}" >/dev/null
+    kubectl rollout status deployment coredns -n kube-system --context "${CLUSTER_CONTEXT}" --timeout=60s >/dev/null
+    echo "✅ host.k3d.internal added to coredns-custom (${gw_ip})"
 }
 
 # Fix DNS on all k3d nodes. Keeps Docker's embedded DNS (127.0.0.11) as primary
-# so that Docker-internal names (host.k3d.internal, container names) still resolve,
-# and adds 8.8.8.8 as a fallback for external domains.
+# so that Docker-internal names (container names) still resolve, and adds
+# 8.8.8.8 as a fallback for external image pulls.
 fix_node_dns() {
     echo "🔧 Fixing k3d node DNS resolution..."
     for node in $(docker ps --filter "name=k3d-${CLUSTER_NAME}" --format '{{.Names}}'); do
@@ -218,7 +239,6 @@ EOF
 
     # DNS fixes are reset after k3s restart — re-apply them
     fix_node_dns
-    patch_coredns_host_k3d_internal
 }
 
 

@@ -1,0 +1,202 @@
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterWorkflow
+metadata:
+  name: app-factory-coding-agent
+  labels:
+    openchoreo.dev/workflow-type: "component"
+  annotations:
+    openchoreo.dev/description: "Runs a Claude Agent SDK session in an ephemeral pod for one App Factory ComponentTask"
+spec:
+  workflowPlaneRef:
+    kind: ClusterWorkflowPlane
+    name: default
+  ttlAfterCompletion: "1d"
+  parameters:
+    openAPIV3Schema:
+      type: object
+      required:
+        - task
+        - repository
+        - bff
+        - gitService
+      properties:
+        task:
+          type: object
+          required: [id, orgId, projectId, componentName, prompt]
+          properties:
+            id:            { type: string }
+            orgId:         { type: string }
+            projectId:     { type: string }
+            componentName: { type: string }
+            prompt:        { type: string }
+            correlationId:
+              type: string
+              default: ""
+        repository:
+          type: object
+          required: [url, identity]
+          properties:
+            url: { type: string }
+            identity:
+              type: object
+              required: [name, email, login]
+              properties:
+                name:  { type: string }
+                email: { type: string }
+                login: { type: string }
+        bff:
+          type: object
+          required: [bearer]
+          properties:
+            bearer:      { type: string }
+            platformUrl:
+              type: string
+              default: ""
+        gitService:
+          type: object
+          required: [url]
+          properties:
+            url: { type: string }
+        anthropic:
+          type: object
+          required: [secretRef]
+          properties:
+            # Name of the per-org K8s Secret in workflows-<orgID> that
+            # carries ANTHROPIC_API_KEY. Materialised by git-service in
+            # the dispatch pre-flight (ApplyAnthropicWPSecret).
+            # See docs/design/anthropic-key-dual-token.md §5.
+            secretRef: { type: string }
+  runTemplate:
+    apiVersion: argoproj.io/v1alpha1
+    kind: Workflow
+    metadata:
+      name: ${metadata.workflowRunName}
+      namespace: ${metadata.namespace}
+    spec:
+      activeDeadlineSeconds: 3600
+      ttlStrategy:
+        secondsAfterCompletion: 86400
+      arguments:
+        parameters:
+          - name: workflowrun-name
+            value: ${metadata.workflowRunName}
+          - name: task-id
+            value: ${parameters.task.id}
+          - name: org-id
+            value: ${parameters.task.orgId}
+          - name: project-id
+            value: ${parameters.task.projectId}
+          - name: component-name
+            value: ${parameters.task.componentName}
+          - name: prompt
+            value: ${parameters.task.prompt}
+          - name: correlation-id
+            value: ${parameters.task.correlationId}
+          - name: repo-url
+            value: ${parameters.repository.url}
+          - name: identity-name
+            value: ${parameters.repository.identity.name}
+          - name: identity-email
+            value: ${parameters.repository.identity.email}
+          - name: identity-login
+            value: ${parameters.repository.identity.login}
+          - name: bearer
+            value: ${parameters.bff.bearer}
+          - name: platform-url
+            value: ${parameters.bff.platformUrl}
+          - name: git-service-url
+            value: ${parameters.gitService.url}
+          # Per-org K8s Secret in workflows-<orgID> that carries
+          # ANTHROPIC_API_KEY. Materialised by git-service in the dispatch
+          # pre-flight (no per-WorkflowRun ESO sync).
+          - name: anthropic-secret-ref
+            value: ${parameters.anthropic.secretRef}
+      entrypoint: run-agent
+      templates:
+        - name: run-agent
+          metadata:
+            labels:
+              # Required for OC's auto-generated NetworkPolicy on git-service
+              # (visibility: internal) to admit this pod from a different
+              # namespace. OC checks for `openchoreo.dev/system-component`
+              # Exists on the source pod (internal/networkpolicy/networkpolicy.go).
+              openchoreo.dev/system-component: app-factory-coding-agent
+          # No retryStrategy: the agent has side effects (commits, gh pr ready),
+          # auto-retry would push duplicate work or open duplicate PRs. Retries
+          # are managed at the dispatch-service layer, where idempotency holds.
+          container:
+            # Published from remote-worker/ via `docker buildx --platform linux/amd64 --push`.
+            # `:latest` + Always pulls a fresh image on every pod start so dev
+            # iteration is just push-and-redispatch — no YAML bump per change.
+            # Trade-off: every dispatch pulls from Docker Hub (slower cold-start,
+            # counts against the registry's pull rate limits). When stabilising
+            # for a long-lived dev/stage, pin to an immutable SHA tag and switch
+            # to `imagePullPolicy: IfNotPresent`.
+            image: docker.io/xlight05/app-factory-coding-agent-runner:latest
+            imagePullPolicy: Always
+            # Explicit command/args is the OC convention — every ClusterWorkflow
+            # in this directory and Agent-Manager's amp-monitor-evaluation set
+            # them even with a stable Dockerfile ENTRYPOINT, because Argo's
+            # emissary executor otherwise probes the registry for the
+            # entrypoint at pod start.
+            command: ["npx"]
+            args: ["tsx", "src/oneshot.ts"]
+            workingDir: /app
+            env:
+              - name: ASDLC_TASK_ID
+                value: '{{workflow.parameters.task-id}}'
+              - name: ASDLC_ORG_ID
+                value: '{{workflow.parameters.org-id}}'
+              - name: ASDLC_PROJECT_ID
+                value: '{{workflow.parameters.project-id}}'
+              - name: ASDLC_COMPONENT_NAME
+                value: '{{workflow.parameters.component-name}}'
+              - name: ASDLC_REPO_URL
+                value: '{{workflow.parameters.repo-url}}'
+              - name: ASDLC_IDENTITY_NAME
+                value: '{{workflow.parameters.identity-name}}'
+              - name: ASDLC_IDENTITY_EMAIL
+                value: '{{workflow.parameters.identity-email}}'
+              - name: ASDLC_IDENTITY_LOGIN
+                value: '{{workflow.parameters.identity-login}}'
+              - name: ASDLC_GIT_SERVICE_URL
+                value: '{{workflow.parameters.git-service-url}}'
+              - name: ASDLC_PROMPT
+                value: '{{workflow.parameters.prompt}}'
+              - name: ASDLC_BEARER
+                value: '{{workflow.parameters.bearer}}'
+              - name: ASDLC_PLATFORM_URL
+                value: '{{workflow.parameters.platform-url}}'
+              - name: ASDLC_CORRELATION_ID
+                value: '{{workflow.parameters.correlation-id}}'
+              - name: WORKSPACE_BASE_PATH
+                value: /home/asdlc/asdlc-workspace
+              - name: LOG_LEVEL
+                value: debug
+              - name: ANTHROPIC_API_KEY
+                valueFrom:
+                  secretKeyRef:
+                    name: '{{workflow.parameters.anthropic-secret-ref}}'
+                    key: ANTHROPIC_API_KEY
+            resources:
+              requests:
+                cpu: "500m"
+                memory: "1Gi"
+              limits:
+                cpu: "2"
+                memory: "4Gi"
+            securityContext:
+              runAsNonRoot: true
+              runAsUser: 1000
+            volumeMounts:
+              - name: workspace
+                mountPath: /home/asdlc/asdlc-workspace
+      volumes:
+        - name: workspace
+          emptyDir: {}
+  # Per-WorkflowRun ExternalSecret for the Anthropic key is gone. The key
+  # now lives in the per-org Secret git-service materialises into
+  # workflows-<orgID>/anthropic-credentials on each dispatch (parity with
+  # the post-d4d309f build-credential Secret). See
+  # docs/design/anthropic-key-dual-token.md §4.3.
+  resources: []

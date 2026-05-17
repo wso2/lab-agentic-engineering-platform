@@ -40,7 +40,7 @@ func Load() (Config, error) {
 		GithubAppClientID:      r.readOptionalString("GITHUB_CLIENT_ID", ""),
 		BFFPublicURL:           r.readOptionalString("BFF_PUBLIC_URL", "http://localhost:8090"),
 		BuildAuthRetryBudget:   r.readOptionalInt("BUILD_AUTH_RETRY_BUDGET", 3),
-		TaskTokenSigningKey:    r.readOptionalString("BFF_TASK_SIGNING_KEY", ""),
+		TaskTokenSigningKey:    r.taskSigningKey(),
 		TaskTokenIssuer:        r.readOptionalString("BFF_TASK_TOKEN_ISSUER", "asdlc-bff"),
 		TaskTokenAudience:      r.readOptionalString("BFF_TASK_TOKEN_AUDIENCE", "git-service"),
 		JWKSURL:                r.readOptionalString("JWKS_URL", ""),
@@ -122,6 +122,26 @@ func (r *configReader) databaseURL() string {
 		RawQuery: params.Encode(),
 	}
 	return u.String()
+}
+
+// taskSigningKey reads the BFF Task JWT signing PEM. BFF_TASK_SIGNING_KEY
+// takes precedence; BFF_TASK_SIGNING_KEY_PATH is the file-mount fallback
+// docker-compose deployments use (multi-line PEM survives a bind mount
+// cleanly; env-var passing across compose `${VAR}` substitution does not).
+func (r *configReader) taskSigningKey() string {
+	if v := os.Getenv("BFF_TASK_SIGNING_KEY"); v != "" {
+		return v
+	}
+	path := os.Getenv("BFF_TASK_SIGNING_KEY_PATH")
+	if path == "" {
+		return ""
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		r.errors = append(r.errors, fmt.Errorf("read BFF_TASK_SIGNING_KEY_PATH %s: %w", path, err))
+		return ""
+	}
+	return string(b)
 }
 
 func (r *configReader) readRequiredString(key string) string {

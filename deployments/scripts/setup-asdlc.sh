@@ -13,7 +13,8 @@ kubectl get deployment thunder-deployment -n thunder &>/dev/null || {
     exit 1
 }
 echo "✅ Thunder is running"
-echo "   ASDLC OAuth2 client is bootstrapped via Thunder helm values (60-asdlc-console-app.sh)"
+echo "   ASDLC OAuth2 clients are bootstrapped via Thunder helm values"
+echo "   (59-asdlc-oauth-apps.sh — registers console / api / workload-publisher / 3x bff→service clients)"
 
 # ============================================================================
 # Registry mirror for Docker builds
@@ -27,10 +28,10 @@ echo "🐳 Configuring container registry for Docker builds..."
 configure_registry_mirror
 
 # ============================================================================
-# Docker build workflow (Argo ClusterWorkflowTemplates + OC ClusterWorkflow)
+# OpenChoreo workflows (dockerfile-builder + app-factory-coding-agent)
 # ============================================================================
 echo ""
-echo "🔨 Installing Docker build workflow..."
+echo "🔨 Installing OpenChoreo workflows..."
 
 # The ClusterWorkflow CR requires the OC controller-manager webhook to be ready.
 # Wait for the controller-manager deployment to be available first.
@@ -38,19 +39,26 @@ echo "⏳ Waiting for controller-manager webhook to be ready..."
 kubectl wait -n openchoreo-control-plane --for=condition=available --timeout=300s \
     deployment/controller-manager
 
-# Retry loop — webhook endpoint registration can lag behind pod readiness
-for attempt in 1 2 3 4 5; do
-    if kubectl apply -f "${SCRIPT_DIR}/../manifests/docker-build-workflow.yaml" 2>/dev/null; then
-        break
-    fi
-    if [ "$attempt" -eq 5 ]; then
-        echo "❌ Failed to apply docker-build-workflow after 5 attempts"
-        exit 1
-    fi
-    echo "   Webhook not ready yet, retrying in 10s (attempt $attempt/5)..."
-    sleep 10
-done
-echo "✅ Docker build workflow installed (dockerfile-builder)"
+apply_with_retry() {
+    local manifest="$1" label="$2"
+    for attempt in 1 2 3 4 5; do
+        if kubectl apply -f "$manifest" 2>/dev/null; then
+            return 0
+        fi
+        if [ "$attempt" -eq 5 ]; then
+            echo "❌ Failed to apply $label after 5 attempts"
+            return 1
+        fi
+        echo "   Webhook not ready yet, retrying $label in 10s (attempt $attempt/5)..."
+        sleep 10
+    done
+}
+
+apply_with_retry "${SCRIPT_DIR}/../manifests/docker-build-workflow.yaml" "docker-build-workflow"
+echo "✅ ClusterWorkflow 'dockerfile-builder' installed"
+
+apply_with_retry "${SCRIPT_DIR}/../manifests/app-factory-coding-agent.yaml" "app-factory-coding-agent"
+echo "✅ ClusterWorkflow 'app-factory-coding-agent' installed (one-shot coding-agent pod)"
 
 # ============================================================================
 # OpenChoreo infrastructure resources
@@ -63,13 +71,13 @@ echo "📦 Setting up OpenChoreo infrastructure resources..."
 kubectl label namespace default openchoreo.dev/control-plane=true --overwrite
 echo "✅ Namespace 'default' labeled for OpenChoreo control plane"
 
-# Trial-tenant namespace — invited users (Platform IDP OU
-# `demo-app-factory`) drop their Project CRs here. The git-service auto-seeds
-# the platform PAT into this org so trial users get GitHub access without
-# the Settings → GitHub Integration flow.
-kubectl create namespace demo-app-factory --dry-run=client -o yaml | kubectl apply -f -
-kubectl label namespace demo-app-factory openchoreo.dev/control-plane=true --overwrite
-echo "✅ Namespace 'demo-app-factory' created and labeled for OpenChoreo control plane"
+# Workflow-plane namespace for the `default` org. git-service writes the
+# per-org build credential Secret and per-org Anthropic key Secret here on
+# each dispatch (single-tenant local dev — one org → one workflows-* ns).
+# Onboarding more orgs would provision a `workflows-<ouHandle>` per org.
+kubectl create namespace workflows-default --dry-run=client -o yaml | kubectl apply -f -
+kubectl label namespace workflows-default openchoreo.dev/workflow-plane-name=default --overwrite
+echo "✅ Namespace 'workflows-default' created (per-org build + anthropic Secrets land here)"
 
 # ClusterComponentType: deployment/service — backend APIs with path-prefix routing
 kubectl apply -f - <<'OCEOF'
@@ -328,9 +336,11 @@ spec:
 OCEOF
 echo "✅ DeploymentPipeline 'default' created"
 
-# RBAC: grant the asdlc-api-client service account admin access to OC API.
-# This allows the BFF to create/deploy resources via client_credentials tokens
-# (e.g., deploy triggered from MCP after submit_implementation).
+# RBAC: bind both the BFF service account AND human admin users to the
+# OC admin role. The first is what the BFF presents on its outbound
+# client_credentials calls; the second binds Thunder's default
+# `Administrators` group (which `admin/admin` is a member of) so an
+# operator logging into the console immediately has admin rights.
 kubectl apply -f - <<'OCEOF'
 apiVersion: openchoreo.dev/v1alpha1
 kind: ClusterAuthzRoleBinding
@@ -345,8 +355,22 @@ spec:
   - roleRef:
       kind: ClusterAuthzRole
       name: admin
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterAuthzRoleBinding
+metadata:
+  name: administrators-group-binding
+spec:
+  effect: allow
+  entitlement:
+    claim: groups
+    value: Administrators
+  roleMappings:
+  - roleRef:
+      kind: ClusterAuthzRole
+      name: admin
 OCEOF
-echo "✅ ASDLC API service account authorized (admin)"
+echo "✅ ASDLC API service account + Administrators group authorized"
 
 # ============================================================================
 # Generate .env file
@@ -359,9 +383,23 @@ ENV_FILE="${SCRIPT_DIR}/../.env"
 # Generate Phase 0 secrets and a smee.io channel for local webhook delivery.
 # The webhook secret lives only in this file; smee.io is the public callback
 # URL we register on each repo's GitHub webhook.
-WEBHOOK_SECRET="$(openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))')"
-OAUTH_STATE_KEY="$(openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))')"
-echo "🔐 Generated GITHUB_WEBHOOK_SECRET (32 bytes) and OAUTH_STATE_SIGNING_KEY (32 bytes; GitHub App connect CSRF state only)"
+gen_hex32() {
+    openssl rand -hex 32 2>/dev/null || python3 -c 'import secrets; print(secrets.token_hex(32))'
+}
+
+# Preserve existing secret values across re-runs so already-registered webhooks
+# don't suddenly fail HMAC validation (and the BFF's task signing key keeps the
+# same JWKS so in-flight Task JWTs still verify).
+existing_val() {
+    [ -f "$ENV_FILE" ] || return
+    grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-
+}
+
+WEBHOOK_SECRET="$(existing_val GITHUB_WEBHOOK_SECRET)"
+[ -z "$WEBHOOK_SECRET" ] && WEBHOOK_SECRET="$(gen_hex32)"
+OAUTH_STATE_KEY="$(existing_val OAUTH_STATE_SIGNING_KEY)"
+[ -z "$OAUTH_STATE_KEY" ] && OAUTH_STATE_KEY="$(gen_hex32)"
+echo "🔐 Using GITHUB_WEBHOOK_SECRET (preserved) and OAUTH_STATE_SIGNING_KEY (preserved)"
 
 # Generate the BFF Task JWT signing keypair if it doesn't already exist.
 # Idempotent — on re-runs the existing key is left untouched so existing
@@ -380,93 +418,100 @@ else
     echo "🔐 BFF Task JWT signing key already present at $TASK_KEY_PATH (re-using)"
 fi
 
-# Provision a fresh smee.io channel. We read the Location header from the
-# 307 redirect rather than following it (-L would chase the redirect target
-# and leave us with an empty redirect_url at the end). Avoid reusing across
-# runs so a left-over channel from another developer's machine never
-# proxies events to this one.
-SMEE_URL="$(curl -fsS -D - -o /dev/null https://smee.io/new 2>/dev/null | awk '/^location:/ {print $2}' | tr -d '\r')"
+# Provision a fresh smee.io channel only if we don't already have one — reusing
+# the existing URL keeps any GitHub webhook registrations valid across re-runs.
+SMEE_URL="$(existing_val GITHUB_WEBHOOK_PROXY_URL)"
 if [ -z "$SMEE_URL" ]; then
-    echo "⚠️  Could not auto-create smee.io channel — set GITHUB_WEBHOOK_PROXY_URL manually"
-    SMEE_URL=""
+    SMEE_URL="$(curl -fsS -D - -o /dev/null https://smee.io/new 2>/dev/null | awk '/^location:/ {print $2}' | tr -d '\r')"
+    if [ -z "$SMEE_URL" ]; then
+        echo "⚠️  Could not auto-create smee.io channel — set GITHUB_WEBHOOK_PROXY_URL manually"
+        SMEE_URL=""
+    else
+        echo "🌐 Provisioned smee.io channel: $SMEE_URL"
+    fi
 else
-    echo "🌐 Provisioned smee.io channel: $SMEE_URL"
+    echo "🌐 Reusing existing smee.io channel: $SMEE_URL"
 fi
+
+# Preserve any operator-supplied values across re-runs.
+ANTHROPIC_KEY="$(existing_val ANTHROPIC_API_KEY)"
+GITHUB_APP_ID_VAL="$(existing_val GITHUB_APP_ID)"
+GITHUB_CLIENT_ID_VAL="$(existing_val GITHUB_CLIENT_ID)"
+GITHUB_CLIENT_SECRET_VAL="$(existing_val GITHUB_CLIENT_SECRET)"
+GITHUB_APP_SLUG_VAL="$(existing_val GITHUB_APP_SLUG)"
+[ -z "$GITHUB_APP_SLUG_VAL" ] && GITHUB_APP_SLUG_VAL="asdlc-platform"
+
+# Local-dev seed convenience — consumed exclusively by scripts/seed-dev.sh.
+# Preserved across re-runs so the operator doesn't have to re-append them
+# every time setup-asdlc.sh regenerates the .env from scratch.
+LOCAL_DEV_ADMIN_GITHUB_PAT_VAL="$(existing_val LOCAL_DEV_ADMIN_GITHUB_PAT)"
+LOCAL_DEV_ADMIN_GITHUB_OWNER_VAL="$(existing_val LOCAL_DEV_ADMIN_GITHUB_OWNER)"
 
 cat > "$ENV_FILE" <<EOF
 # Auto-generated by setup-asdlc.sh — $(date -u +"%Y-%m-%dT%H:%M:%SZ")
+#
+# Re-running setup-asdlc.sh preserves secrets, the smee.io channel, and any
+# values you've hand-edited (ANTHROPIC_API_KEY, GitHub App credentials).
 
-# OpenChoreo Platform API
-# Backend reaches OC via the k3d Docker network
+# ── OpenChoreo Platform API ────────────────────────────────────────────────
+# asdlc-api (in compose) reaches OC via the k3d Docker network. The Host
+# header is what kgateway routes on.
 PLATFORM_API_SERVICE_BASE_URL=http://k3d-${CLUSTER_NAME}-serverlb:8080
 PLATFORM_API_SERVICE_HOST=api.openchoreo.localhost
 
-# Public URLs — single source of truth for Thunder + console addresses.
-# - Local-only mode: keep these as the localhost defaults below.
-# - Collaborative mode: change them to your ngrok / public hostnames.
-# After editing, re-run scripts/start.sh to propagate to the cluster.
+# ── Public URLs ─────────────────────────────────────────────────────────────
+# Single source of truth for the browser-facing Thunder + console hostnames.
+# Change these (and re-run start.sh) to expose over ngrok / a public URL.
 PUBLIC_THUNDER_URL=http://thunder.openchoreo.localhost:8080
 PUBLIC_CONSOLE_URL=http://localhost:8090
 
-# Thunder OAuth client + scopes (consumed by the console Vite build)
+# ── Thunder OAuth client (consumed by the console at runtime) ──────────────
 VITE_THUNDER_CLIENT_ID=asdlc-console-client
 VITE_THUNDER_SCOPES=openid profile email
 
-# Thunder proxy (console nginx proxies to Thunder via k3d network)
-THUNDER_PROXY_URL=http://k3d-${CLUSTER_NAME}-serverlb:8080
-THUNDER_HOST=thunder.openchoreo.localhost
-
-# Agents service (BusinessAnalyst / Architect / TechLead / Developer)
-# Uses the Anthropic API directly (not the Claude CLI OAuth session).
-# Fill this in before starting the agents service.
-ANTHROPIC_API_KEY=
+# ── Agents service ─────────────────────────────────────────────────────────
+# Anthropic key used as the platform fallback (returned by git-service to
+# agents-service when an org has not connected its own key). Required for
+# any AI flow to work in dev.
+ANTHROPIC_API_KEY=${ANTHROPIC_KEY}
 AGENT_MODEL=claude-sonnet-4-5
 
-# GitHub — repo provisioning
-# Each org connects via the console (Settings → GitHub Integration) using
-# either GitHub App (preferred) or a Personal Access Token. There is no
-# platform-wide PAT — git-service holds per-org credentials and routes
-# every operation through them.
+# ── GitHub App (optional — only for App-mode Connect) ──────────────────────
+# Each org connects via Settings → GitHub Integration using either GitHub
+# App or a Personal Access Token. App credentials are only needed for the
+# App connect flow; PAT mode works without them.
+GITHUB_APP_ID=${GITHUB_APP_ID_VAL}
+GITHUB_CLIENT_ID=${GITHUB_CLIENT_ID_VAL}
+GITHUB_CLIENT_SECRET=${GITHUB_CLIENT_SECRET_VAL}
+GITHUB_APP_SLUG=${GITHUB_APP_SLUG_VAL}
+GITHUB_APP_PRIVATE_KEY_PATH=/etc/github-app/private-key.pem
 GITHUB_REPO_VISIBILITY=private
 
-# GitHub-integration secrets. WEBHOOK_SECRET is the HMAC key the receiver
-# validates events with; OAUTH_STATE_SIGNING_KEY signs the connect-state
-# JWT carried in the GitHub App OAuth state query param (CSRF
-# protection on the connect callback). Both generated once at setup;
-# rotate on demand by editing this file and re-running setup.
+# ── GitHub webhook secrets ─────────────────────────────────────────────────
+# WEBHOOK_SECRET is the HMAC key the receiver validates events with;
+# OAUTH_STATE_SIGNING_KEY signs the GitHub App connect-state JWT
+# (CSRF protection on the connect callback). Generated once at setup;
+# rotate by clearing the values here and re-running setup-asdlc.sh.
 GITHUB_WEBHOOK_SECRET=${WEBHOOK_SECRET}
 OAUTH_STATE_SIGNING_KEY=${OAUTH_STATE_KEY}
 
-# Local-dev webhook delivery: GitHub posts events to this smee.io channel,
-# which forwards to the BFF's /webhooks/github via the smee-client
-# container. Auto-provisioned by setup-asdlc.sh; replace with an ingress
-# URL in production.
+# Local-dev webhook delivery — GitHub posts events to this smee.io channel,
+# which the smee-client compose service forwards to /webhooks/github.
 GITHUB_WEBHOOK_PROXY_URL=${SMEE_URL}
 
-# Committer attribution for platform-driven commits + tags. Phase 0 uses
-# the configured PAT owner's identity by default; override here for a
-# bot identity if you have one.
+# ── Committer identity (for platform-driven commits + tags) ────────────────
 GIT_COMMITTER_NAME=ASDLC Bot
 GIT_COMMITTER_EMAIL=bot@asdlc.dev
 
-# Phase 0 platform-PAT mode is dev-only. The BFF refuses to start with
-# kind=platform-pat unless DEPLOYMENT_TIER=dev.
+# Dev gate — the BFF refuses some destructive seed paths unless tier=dev.
 DEPLOYMENT_TIER=dev
 
-# How remote-worker runs:
-#   container — as a Docker service in compose, authed via ANTHROPIC_API_KEY (default)
-#   host      — on the host using your Claude Code OAuth session (requires the claude CLI logged in)
-REMOTE_WORKER_MODE=container
-
-# GIT_SERVICE_HOST_URL is intentionally NOT set in this template.
-#   container mode: compose default `http://git-service:3300` (in-network DNS) applies.
-#   host mode:      scripts/start.sh exports `http://localhost:3300` before `docker compose up`.
-# Setting it here would leak the host-mode value into container mode and break
-# the in-container agent's credhelper.
-
-# Cap on concurrent Claude Agent SDK queries the remote-worker accepts.
-# Above this, /dispatch returns 429 so the BFF can backpressure. Default 8.
-REMOTE_WORKER_MAX_CONCURRENT_TASKS=8
+# ── Local-dev seed (scripts/seed-dev.sh) ────────────────────────────────────
+# Optional. When set, scripts/seed-dev.sh pre-connects the default org's
+# GitHub credentials so you don't have to clickthrough Settings → GitHub
+# after every fresh setup. Not read by any platform code path.
+LOCAL_DEV_ADMIN_GITHUB_PAT=${LOCAL_DEV_ADMIN_GITHUB_PAT_VAL}
+LOCAL_DEV_ADMIN_GITHUB_OWNER=${LOCAL_DEV_ADMIN_GITHUB_OWNER_VAL}
 EOF
 
 echo "✅ .env file generated at $(realpath "$ENV_FILE")"
