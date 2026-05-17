@@ -16,9 +16,9 @@ import (
 //     Backfill `body` from `agent_instructions` on existing rows so dispatch
 //     keeps working through the cutover.
 //
-//  2. DROP snapshot fields. Dispatch path now reads design fresh from
-//     `.asdlc/design.json` via ArtifactStore on every dispatch — design
-//     changes propagate without re-snapshotting per task. Dropped:
+//  2. DROP snapshot fields. Dispatch path now reads design fresh from the
+//     multi-file `.asdlc/design/` tree via ArtifactStore on every dispatch
+//     — design changes propagate without re-snapshotting per task. Dropped:
 //     component_type, language, responsibilities, architecture_context,
 //     key_considerations, api_contract, dependencies, open_api_spec,
 //     app_path, buildpack, entrypoint, agent_instructions.

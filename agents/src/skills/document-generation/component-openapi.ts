@@ -4,8 +4,7 @@ import type { DocumentGenerationSkill } from "./types.js";
  * Regenerate `components/<name>/openapi.yaml` from the matching component's
  * `design.md`. The BFF passes the design.md content as the source and the
  * component name in the prompt. Only meaningful for `type: service`
- * components — the BFF should not invoke this skill for web-apps or
- * scheduled-tasks.
+ * components — the BFF should not invoke this skill for web-apps.
  */
 export const componentOpenApi: DocumentGenerationSkill = {
   id: "component-openapi",

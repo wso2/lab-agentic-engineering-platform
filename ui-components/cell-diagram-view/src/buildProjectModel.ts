@@ -14,7 +14,6 @@ export interface CellDiagramComponent {
 const TYPE_MAP: Record<string, ComponentType> = {
   'web-app': 'web-app' as ComponentType,
   service: 'service' as ComponentType,
-  'scheduled-task': 'scheduled-task' as ComponentType,
 };
 
 export function buildProjectModel(components: CellDiagramComponent[]): Project {

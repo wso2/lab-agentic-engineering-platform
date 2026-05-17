@@ -12,7 +12,6 @@ export type ValidationIssue = {
 const ENTRYPOINT_BY_TYPE: Record<string, string> = {
   service: "deployment/service",
   "web-app": "deployment/web-application",
-  "scheduled-task": "cronjob/scheduled-task",
 };
 
 const HTTP_METHODS = new Set([
@@ -43,7 +42,56 @@ export function validate(doc: DesignDoc): ValidationIssue[] {
   validatePerComponent(doc, issues);
   validatePerOpenApi(doc, issues);
   validateCrossComponent(doc, issues);
+  validateWebUpstreamWiring(doc, issues);
   return issues;
+}
+
+// V1-hardened: every web-app whose dependsOn is non-empty MUST mention each
+// upstream's expected env var name in componentAgentInstructions so the
+// coding agent knows which VITE_<UPSTREAM>_URL key to write into .env at
+// build time. This catches the silent-fallback bug class at design time
+// rather than at user-discovery time.
+//
+// Pattern enforced: for each upstream `<name>` in dependsOn (when the
+// upstream is itself a `service` component — web-apps don't expose URLs to
+// other web-apps), componentAgentInstructions must contain a literal
+// `VITE_<NAME_UPPER_SNAKE>_URL` substring. The match is intentionally loose
+// (substring, not regex on surrounding context) — the architect's prompt
+// gives the exact phrasing; this validator just confirms the env var name
+// landed somewhere the coding agent will see.
+function validateWebUpstreamWiring(
+  doc: DesignDoc,
+  issues: ValidationIssue[],
+): void {
+  for (const [name, entry] of doc.components) {
+    const slim = entry.slim;
+    if (slim.componentType !== "web-app") continue;
+    if (slim.dependsOn.length === 0) continue;
+
+    const instructions = slim.componentAgentInstructions ?? "";
+    for (const upstream of slim.dependsOn) {
+      const upstreamEntry = doc.components.get(upstream);
+      // Skip non-existent deps (dangling-dep is already flagged elsewhere)
+      // and skip web-app-on-web-app deps (no URL to wire).
+      if (!upstreamEntry) continue;
+      if (upstreamEntry.slim.componentType !== "service") continue;
+
+      const envVarName = `VITE_${toUpperSnake(upstream)}_URL`;
+      if (!instructions.includes(envVarName)) {
+        issues.push({
+          component: name,
+          code: "missing-upstream-env-binding",
+          upstream,
+          envVar: envVarName,
+          hint: `web-app '${name}' depends on service '${upstream}' but componentAgentInstructions does not mention '${envVarName}'. Add a line like "Upstream ${upstream}: env var ${envVarName} — fill in .env at build time from the issue's '## Dependency endpoint resolved' comment for ${upstream}." so the coding agent writes the .env key correctly.`,
+        });
+      }
+    }
+  }
+}
+
+function toUpperSnake(s: string): string {
+  return s.replace(/-/g, "_").toUpperCase();
 }
 
 function validatePerComponent(doc: DesignDoc, issues: ValidationIssue[]): void {
@@ -133,10 +181,7 @@ function validatePerOpenApi(doc: DesignDoc, issues: ValidationIssue[]): void {
 
     const slim = entry.slim;
     const paths = (spec.paths ?? {}) as Record<string, unknown>;
-    const requiresPathOps =
-      slim.componentType === "service" ||
-      slim.componentType === "scheduled-task";
-    if (requiresPathOps && Object.keys(paths).length === 0) {
+    if (slim.componentType === "service" && Object.keys(paths).length === 0) {
       issues.push({ component: name, code: "no-path-operations" });
     }
 

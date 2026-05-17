@@ -9,6 +9,8 @@ import {
   registerTechLeadPlan,
   registerTechLeadDetail,
 } from "./routes/tech-lead.js";
+import { registerRequirementsChat } from "./routes/requirements-chat.js";
+import { registerInternalDslRender } from "./routes/internal-dsl.js";
 
 const port = parseInt(process.env.PORT || "3400", 10);
 
@@ -72,6 +74,8 @@ registerDocumentGeneration(app);
 registerArchitect(app);
 registerTechLeadPlan(app);
 registerTechLeadDetail(app);
+registerRequirementsChat(app);
+registerInternalDslRender(app);
 
 app.listen(port, () => {
   console.log(`agents-service listening on :${port}`);

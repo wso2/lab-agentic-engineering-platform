@@ -17,18 +17,14 @@ type DesignComponent struct {
 // DesignComponents is a slice of DesignComponent.
 type DesignComponents []DesignComponent
 
-// Requirements is a slice of requirement strings.
-type Requirements []string
-
 type Design struct {
-	ProjectID         string           `json:"projectId"`
-	OrgID             string           `json:"-"`
-	Overview          string           `json:"overview"`
-	Requirements      Requirements     `json:"requirements"`
-	Components        DesignComponents `json:"components"`
-	Status            string           `json:"status"`
-	Version           int              `json:"version"`
+	ProjectID         string            `json:"projectId"`
+	OrgID             string            `json:"-"`
+	Overview          string            `json:"overview"`
+	Components        DesignComponents  `json:"components"`
+	Status            string            `json:"status"`
+	Version           int               `json:"version"`
 	Versions          []ArtifactVersion `json:"versions,omitempty"`
-	HasUnsavedChanges bool             `json:"hasUnsavedChanges"`
-	SourceSpec        string           `json:"sourceSpec,omitempty"`
+	HasUnsavedChanges bool              `json:"hasUnsavedChanges"`
+	SourceSpec        string            `json:"sourceSpec,omitempty"`
 }

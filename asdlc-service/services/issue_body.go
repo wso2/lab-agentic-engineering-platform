@@ -28,13 +28,29 @@ func issueTitle(task *models.ComponentTask) string {
 //  3. Component Reference card (name, type, language, app path,
 //     OpenAPI pointer).
 //
-// F3b — the legacy "Component Dependencies" block (consumer-side
-// `dependencies.endpoints` env-binding wiring) has been removed. Under
-// the deploy-gating + URL-as-constant model, the dispatcher injects each
-// upstream URL directly into the agent prompt; the agent bakes it in as
-// a build-time constant. Service components still declare their *own*
-// `spec.endpoints` with `visibility: external` so the deployed URL is
-// reachable — that lives in the `asdlc` skill, not this issue body.
+// Under the URL-as-constant model, the dispatcher posts each upstream's
+// external URL via `## Dependency endpoint resolved` comments on this
+// issue, and the agent bakes them into the SPA bundle at `npm run build`
+// time. CORS is handled at the gateway via the ClusterComponentType's
+// Envoy filter — backends MUST NOT ship CORS middleware. The
+// empty-URL silent-fallback bug (a `?? ""` default that turned every
+// fetch into a relative URL and produced `405 Method Not Allowed` from
+// the SPA's own nginx) is guarded against by:
+//   1. SKILL.md mandating `throw` on missing env var in `src/api.ts`
+//      (no silent same-origin fallback);
+//   2. tech-lead's per-task issue body Setup subsection listing each
+//      upstream's verbatim `.env=URL` line; and
+//   3. architect validator rule that every web-app's `dependsOn` is
+//      matched in `componentAgentInstructions` with the upstream's
+//      expected env var name.
+// All of this lives in the `asdlc` skill and the architect/tech-lead
+// prompts; the issue body remains task-specific.
+//
+// envBindings caveat: OC's `dependencies.endpoints.visibility` enum is
+// `{project, namespace}` only. An external URL CANNOT be injected via
+// envBindings — the only externally-reachable URL is the gateway's
+// HTTPRoute hostname, and that comes from the dispatcher's comment.
+// Do not be tempted to "migrate to runtime env injection" for SPAs.
 //
 // The agent owns branch + PR creation. The PR body MUST contain
 // `Closes #<this-issue>` so the platform's pull_request webhook can link
@@ -64,8 +80,8 @@ func buildIssueBody(task *models.ComponentTask, comp *models.DesignComponent, _r
 
 	sb.WriteString("---\n\n")
 
-	// Component reference card — points the agent at .asdlc/design.json for
-	// the canonical OpenAPI / appPath / buildpack rather than inlining them.
+	// Component reference card — points the agent at the multi-file design
+	// tree under `.asdlc/design/` rather than inlining contracts/specs.
 	sb.WriteString("## Component Reference\n")
 	sb.WriteString(fmt.Sprintf("- **Name:** %s\n", task.ComponentName))
 	if comp != nil {
@@ -74,11 +90,11 @@ func buildIssueBody(task *models.ComponentTask, comp *models.DesignComponent, _r
 		if comp.AppPath != "" {
 			sb.WriteString(fmt.Sprintf("- **App Path (within repo):** `%s`\n", normalizeAppPath(comp.AppPath)))
 		}
+		sb.WriteString(fmt.Sprintf("- **Design:** `.asdlc/design/components/%s/design.md`\n", task.ComponentName))
 		if comp.OpenAPISpec != "" {
-			sb.WriteString("- **Contract:** see `.asdlc/design.json` → `components[name=\"")
-			sb.WriteString(task.ComponentName)
-			sb.WriteString("\"].openAPISpec`\n")
+			sb.WriteString(fmt.Sprintf("- **Contract:** `.asdlc/design/components/%s/openapi.yaml`\n", task.ComponentName))
 		}
+		sb.WriteString("- **System overview:** `.asdlc/design/design.md`\n")
 	}
 	sb.WriteString("\n")
 

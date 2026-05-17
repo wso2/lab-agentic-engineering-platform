@@ -139,16 +139,12 @@ export function componentOpenApiPath(name: string): string {
  */
 export function defaultComponentDesignMd(opts: {
   name: string;
-  type: 'service' | 'web-app' | 'scheduled-task';
+  type: 'service' | 'web-app';
   language: string;
 }): string {
   const { name, type, language } = opts;
   const entrypoint =
-    type === 'web-app'
-      ? 'deployment/web-application'
-      : type === 'scheduled-task'
-        ? 'cronjob/scheduled-task'
-        : 'deployment/service';
+    type === 'web-app' ? 'deployment/web-application' : 'deployment/service';
   return `---
 type: ${type}
 language: ${language}

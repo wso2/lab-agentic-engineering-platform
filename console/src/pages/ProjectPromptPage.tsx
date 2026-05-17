@@ -18,15 +18,15 @@ const PROMPT_TEMPLATES = [
   {
     id: 'hello-world',
     title: 'Hello World',
-    description: 'A simple starter application to get up and running quickly',
-    prompt: 'Build a simple hello world web application',
+    description: 'A simple starter API to get up and running quickly',
+    prompt: 'Build a simple hello world api',
     Icon: Rocket,
   },
   {
-    id: 'leave-management',
-    title: 'Leave Management',
-    description: 'An internal WSO2 employee app for managing leave requests',
-    prompt: 'Build a leave management application for a internal employee app for wso2',
+    id: 'expense-claim-app',
+    title: 'Expense Claim App',
+    description: 'An internal WSO2 employee app for managing expense claims',
+    prompt: 'Build an expense claim management application for internal WSO2 employees',
     Icon: Check,
   },
   {

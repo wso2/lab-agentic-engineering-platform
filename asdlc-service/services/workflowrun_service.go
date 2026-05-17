@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 
 	"gorm.io/gorm"
 
@@ -26,17 +25,12 @@ import (
 // if a task already has LastBuildSHA == sha, the trigger is skipped. This
 // makes pessimistic-fallback rebuilds and admin re-pushes safe.
 type WorkflowRunService interface {
-	// TriggerForPush creates a WorkflowRun for every component in the project
-	// whose AppPath matches at least one of changedPaths and whose merged
-	// task's LastBuildSHA != sha. Returns the list of (componentName, runName)
-	// pairs created.
-	TriggerForPush(ctx context.Context, orgID, projectID, sha string, changedPaths []string) ([]TriggeredRun, error)
 	// DispatchTaskBuild fires an OC WorkflowRun for one specific task's
-	// component at the given SHA, skipping the design.json path filter.
-	// Used by the PullRequestClosed rendezvous handler (the task's own
-	// merge — by definition this push will include code under its
-	// component, so the filter is redundant). Idempotent on
-	// (task.LastBuildSHA, task.LastBuildRunName).
+	// component at the given SHA. Called from the `pull_request.closed
+	// merged=true` webhook handler — the single source of truth for "code
+	// just landed on main". Idempotent on (task.LastBuildSHA,
+	// task.LastBuildRunName): a second call with the same SHA after the
+	// first has committed is a no-op that returns the existing run name.
 	DispatchTaskBuild(ctx context.Context, task *models.ComponentTask, sha string) (runName string, err error)
 	// RetryAuthFailedBuild — Phase 2 PR D §9.3. Mints a fresh build token
 	// and recreates the task's WorkflowRun for the same SHA without
@@ -76,13 +70,6 @@ type CodingAgentTrigger struct {
 	// in the dispatch pre-flight (see ApplyAnthropicWPSecret). The
 	// ClusterWorkflow wires it into the pod's env via secretKeyRef.
 	AnthropicSecretRef string
-}
-
-// TriggeredRun is the (component, runName) pair returned per build created.
-type TriggeredRun struct {
-	ComponentName string
-	RunName       string
-	TaskID        string
 }
 
 // TaskStateProjector is the subset of webhook.Projector that WorkflowRunService
@@ -135,114 +122,6 @@ func NewWorkflowRunService(
 		projector:   projector,
 		tokenInject: tokenInject,
 	}
-}
-
-func (s *workflowRunService) TriggerForPush(ctx context.Context, orgID, projectID, sha string, changedPaths []string) ([]TriggeredRun, error) {
-	if s.tokenInject != nil {
-		ctx = s.tokenInject(ctx)
-	}
-
-	// Resolve the project's repo once — every component shares the same
-	// (ocOrgId, repoSlug) tuple. The slug is the input to MintBuildToken.
-	var repoSlug string
-	if s.gitClient != nil {
-		repo, err := s.gitClient.GetRepo(ctx, orgID, projectID)
-		if err != nil {
-			return nil, fmt.Errorf("get repo for slug: %w", err)
-		}
-		if repo == nil {
-			return nil, fmt.Errorf("project repo not provisioned for %s", projectID)
-		}
-		repoSlug = repo.RepoSlug
-		if repoSlug == "" {
-			return nil, fmt.Errorf("repo %s has no repo_slug; rerun the migration or trigger lazy backfill", projectID)
-		}
-	}
-
-	// All merged tasks for the project — these own the (component, sha) pair.
-	var merged []models.ComponentTask
-	if err := s.db.WithContext(ctx).
-		Where("org_id = ? AND project_id = ?", orgID, projectID).
-		Where("status IN ?", []string{
-			string(models.TaskStatusMerged),
-			string(models.TaskStatusBuilding),
-			string(models.TaskStatusDeployed),
-		}).
-		Find(&merged).Error; err != nil {
-		return nil, fmt.Errorf("scan tasks: %w", err)
-	}
-
-	// Decide which components to (re)build. AppPath empty means "matches any
-	// path" — covers root-level monolithic components. AppPath is resolved
-	// from the current design.json (tasks no longer snapshot it).
-	appPathByComponent := make(map[string]string)
-	if s.store != nil {
-		if design, derr := s.store.ReadDesign(ctx, orgID, projectID); derr == nil && design != nil {
-			for _, c := range design.Components {
-				appPathByComponent[strings.ToLower(c.Name)] = c.AppPath
-			}
-		} else if derr != nil && !IsNotFound(derr) {
-			slog.WarnContext(ctx, "design lookup failed for workflow trigger; treating all components as root-level",
-				"orgId", orgID, "projectId", projectID, "error", derr)
-		}
-	}
-
-	var runs []TriggeredRun
-	seen := map[string]bool{}
-	for i := range merged {
-		t := &merged[i]
-		key := strings.ToLower(t.ComponentName)
-		if seen[key] {
-			continue
-		}
-		seen[key] = true
-
-		if t.LastBuildSHA == sha && t.LastBuildRunName != "" {
-			continue // already built this exact SHA
-		}
-		appPath := appPathByComponent[key]
-		isOwnMerge := t.MergeCommitSHA == sha
-		if !pathsMatchComponent(appPath, changedPaths) {
-			if isOwnMerge {
-				// Contract violation: this push contains the task's own
-				// merge commit, but no file in the push lives under the
-				// component's appPath. Either the architect emitted an
-				// appPath that doesn't match what the coding-agent
-				// committed, or the agent strayed outside its component
-				// folder. Fail loudly so the orphan is visible — the
-				// previous silent skip stranded tasks in `building`.
-				errMsg := fmt.Sprintf(
-					"build dispatch skipped: appPath %q matched no file in merge %s (%d changed paths)",
-					appPath, shortSHA(sha), len(changedPaths))
-				slog.WarnContext(ctx, "build dispatch contract violation: own-merge path mismatch",
-					"task", t.ID, "component", t.ComponentName,
-					"appPath", appPath, "sha", sha,
-					"changedPathsSample", samplePaths(changedPaths, 5))
-				if s.projector != nil {
-					if perr := s.projector.ApplyBuildResult(ctx, t.ID, TaskEventBuildPathMismatch, errMsg); perr != nil {
-						slog.WarnContext(ctx, "mark path mismatch failed",
-							"task", t.ID, "error", perr)
-					}
-				}
-			} else {
-				slog.DebugContext(ctx, "path filter skipped task",
-					"task", t.ID, "component", t.ComponentName, "appPath", appPath)
-			}
-			continue
-		}
-
-		runName, err := s.dispatchBuild(ctx, t, orgID, projectID, repoSlug, sha)
-		if err != nil {
-			// dispatchBuild has already logged with appropriate detail.
-			continue
-		}
-		runs = append(runs, TriggeredRun{
-			ComponentName: t.ComponentName,
-			RunName:       runName,
-			TaskID:        t.ID,
-		})
-	}
-	return runs, nil
 }
 
 // DispatchTaskBuild is the per-task entry point used by the
@@ -337,42 +216,6 @@ func (s *workflowRunService) dispatchBuild(
 		}
 	}
 	return run.Name, nil
-}
-
-func shortSHA(sha string) string {
-	if len(sha) <= 12 {
-		return sha
-	}
-	return sha[:12]
-}
-
-func samplePaths(paths []string, n int) []string {
-	if len(paths) <= n {
-		return paths
-	}
-	return paths[:n]
-}
-
-// pathsMatchComponent returns true when at least one path matches the
-// component's app path prefix. Empty appPath matches everything (root-level
-// component). appPath is normalised by stripping a leading/trailing slash —
-// the architect emits paths like "/greeting-api" while GitHub push payloads
-// carry file paths like "greeting-api/main.go".
-func pathsMatchComponent(appPath string, paths []string) bool {
-	if len(paths) == 0 {
-		// pessimistic: rebuild everything if we have no path data
-		return true
-	}
-	prefix := strings.Trim(appPath, "/")
-	if prefix == "" {
-		return true
-	}
-	for _, p := range paths {
-		if strings.HasPrefix(p, prefix+"/") || p == prefix {
-			return true
-		}
-	}
-	return false
 }
 
 // RetryAuthFailedBuild mints a fresh build token + creates a new

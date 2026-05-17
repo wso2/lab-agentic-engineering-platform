@@ -37,9 +37,10 @@ type ComponentService interface {
 	// Deploy (read-only — autoDeploy on the Component drives the chain)
 	ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error)
 
-	// OpenAPI for the Test tab. Reads the spec from .asdlc/design.json.
-	// The Test tab's swagger-ui invokes the deployed endpoint directly;
-	// CORS is enabled on the service ClusterComponentType's HTTPRoute.
+	// OpenAPI for the Test tab. Reads the spec from
+	// `.asdlc/design/components/<name>/openapi.yaml`. The Test tab's
+	// swagger-ui invokes the deployed endpoint directly; CORS is enabled
+	// on the service ClusterComponentType's HTTPRoute.
 	GetComponentOpenAPI(ctx context.Context, orgName, projectName, componentName string) (*models.ComponentOpenAPI, error)
 
 	// Build (workflow runs)
@@ -113,11 +114,12 @@ func (s *componentService) UpdateWorkflowEnvVars(ctx context.Context, orgName, p
 	return nil
 }
 
-// GetComponentOpenAPI reads .asdlc/design.json via the ArtifactStore and
-// returns the OpenAPI spec for the named component. The URL param is the
-// k8s-shaped slug; we match it against toK8sName(design.Name) so callers
-// can use the same identifier they use everywhere else (build, deploy,
-// configs). Returns ErrComponentNotFound when design.json is missing or
+// GetComponentOpenAPI reads the `.asdlc/design/` tree via the ArtifactStore
+// (assembling per-component design.md + openapi.yaml into the in-memory
+// design) and returns the OpenAPI spec for the named component. The URL
+// param is the k8s-shaped slug; we match it against toK8sName(design.Name)
+// so callers can use the same identifier they use everywhere else (build,
+// deploy, configs). Returns ErrComponentNotFound when no design exists or
 // no component matches, ErrComponentNotService when the component exists
 // but isn't a "service".
 func (s *componentService) GetComponentOpenAPI(ctx context.Context, orgName, projectName, componentName string) (*models.ComponentOpenAPI, error) {

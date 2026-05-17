@@ -26,8 +26,6 @@ func ocEntrypoint(componentType string) string {
 	switch strings.ToLower(componentType) {
 	case "web-app":
 		return "deployment/web-application"
-	case "scheduled-task":
-		return "cronjob/scheduled-task"
 	default:
 		return "deployment/service"
 	}
@@ -160,7 +158,6 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 		ProjectID:         projectID,
 		OrgID:             orgID,
 		Overview:          designFile.Overview,
-		Requirements:      designFile.Requirements,
 		Components:        designFile.Components,
 		Status:            status,
 		Version:           revision,
@@ -192,13 +189,12 @@ func (s *designService) GetDesignAtTag(ctx context.Context, orgID, projectID, ta
 	}
 
 	return &models.Design{
-		ProjectID:    projectID,
-		OrgID:        orgID,
-		Overview:     designFile.Overview,
-		Requirements: designFile.Requirements,
-		Components:   designFile.Components,
-		Status:       "approved",
-		SourceSpec:   parent,
+		ProjectID:  projectID,
+		OrgID:      orgID,
+		Overview:   designFile.Overview,
+		Components: designFile.Components,
+		Status:     "approved",
+		SourceSpec: parent,
 	}, nil
 }
 
@@ -206,9 +202,8 @@ func (s *designService) GetDesignAtTag(ctx context.Context, orgID, projectID, ta
 // data-finish event emitted by the agents service.
 type streamArchitectFinishData struct {
 	Design struct {
-		Overview     string                   `json:"overview"`
-		Requirements []string                 `json:"requirements"`
-		Components   []models.DesignComponent `json:"components"`
+		Overview   string                   `json:"overview"`
+		Components []models.DesignComponent `json:"components"`
 	} `json:"design"`
 }
 
@@ -246,9 +241,8 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 		slog.WarnContext(ctx, "failed to read existing design for incremental regen", "error", err)
 	} else if existingDesign != nil {
 		previousDesign = &agents.ArchitectDesign{
-			Overview:     existingDesign.Overview,
-			Requirements: existingDesign.Requirements,
-			Components:   existingDesign.Components,
+			Overview:   existingDesign.Overview,
+			Components: existingDesign.Components,
 		}
 	}
 
@@ -330,10 +324,9 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 	}
 
 	designFile := &DesignFile{
-		Overview:     finalDesign.Design.Overview,
-		Requirements: finalDesign.Design.Requirements,
-		Components:   finalDesign.Design.Components,
-		SourceSpec:   sourceTag,
+		Overview:   finalDesign.Design.Overview,
+		Components: finalDesign.Design.Components,
+		SourceSpec: sourceTag,
 	}
 
 	// Identify components that existed in the working tree before this
@@ -436,10 +429,10 @@ func (s *designService) DeleteComponent(ctx context.Context, orgID, projectID, c
 	return s.GetDesignBundle(ctx, orgID, projectID)
 }
 
-// SaveAndProceed persists the working-tree design.json as the next
-// `v<N>-<M>` tag where N is the latest requirements version. Surfaces
-// ErrSpecNotApproved (rendered as 409 by the controller) when no
-// requirements tag exists yet.
+// SaveAndProceed persists the working-tree `.asdlc/design/` directory as
+// the next `v<N>-<M>` tag where N is the latest requirements version.
+// Surfaces ErrSpecNotApproved (rendered as 409 by the controller) when
+// no requirements tag exists yet.
 func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID string) (*models.Design, error) {
 	if s.gitClient == nil {
 		return nil, fmt.Errorf("git client not configured")
@@ -484,15 +477,14 @@ func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID str
 	}
 
 	return &models.Design{
-		ProjectID:    projectID,
-		OrgID:        orgID,
-		Overview:     designFile.Overview,
-		Requirements: designFile.Requirements,
-		Components:   designFile.Components,
-		Status:       "approved",
-		Version:      res.DesignRevision,
-		Versions:     mapDesignVersions(versions),
-		SourceSpec:   fmt.Sprintf("v%d", res.RequirementsVersion),
+		ProjectID:  projectID,
+		OrgID:      orgID,
+		Overview:   designFile.Overview,
+		Components: designFile.Components,
+		Status:     "approved",
+		Version:    res.DesignRevision,
+		Versions:   mapDesignVersions(versions),
+		SourceSpec: fmt.Sprintf("v%d", res.RequirementsVersion),
 	}, nil
 }
 

@@ -20,7 +20,6 @@ export type SetOpenApiResult =
 // canonical ArchitectOutput shipped over the wire.
 export class DesignDoc {
   overview: string = "";
-  requirements: string[] = [];
   // Iteration order is insertion order (Map preserves it).
   components: Map<string, ComponentEntry> = new Map();
 
@@ -28,7 +27,6 @@ export class DesignDoc {
     const doc = new DesignDoc();
     if (!prev) return doc;
     doc.overview = prev.overview;
-    doc.requirements = [...prev.requirements];
     for (const c of prev.components) {
       const { openAPISpec, ...slim } = c;
       doc.components.set(c.name, {
@@ -43,10 +41,6 @@ export class DesignDoc {
 
   setOverview(text: string): void {
     this.overview = text;
-  }
-
-  setRequirements(items: string[]): void {
-    this.requirements = [...items];
   }
 
   // ── Component mutators ────────────────────────────────────────────────
@@ -140,6 +134,9 @@ export class DesignDoc {
   pendingSpecs(): string[] {
     const pending: string[] = [];
     for (const [name, entry] of this.components) {
+      // web-app components do not publish a wire contract; the architect
+      // prompt forbids set_openapi for them, so they are never "pending".
+      if (entry.slim.componentType === "web-app") continue;
       if (entry.openapi === null) pending.push(name);
     }
     return pending;
@@ -160,7 +157,6 @@ export class DesignDoc {
     }
     return {
       overview: this.overview,
-      requirements: [...this.requirements],
       components,
     };
   }

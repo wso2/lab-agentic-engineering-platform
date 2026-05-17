@@ -10,17 +10,17 @@ import (
 )
 
 // ErrComponentRemovedAfterGeneration is returned when a task references a
-// component that no longer exists in the project's design.json. See
-// docs/design/tech-lead-agent.md §10.4 — reconciliation auto-closes pending
-// tasks for removed components on every design save, so this case should be
-// rare. When it does happen, the dispatch / issue-body builder fails fast
-// rather than rendering placeholders.
+// component that no longer exists in the project's `.asdlc/design/` tree.
+// See docs/design/tech-lead-agent.md §10.4 — reconciliation auto-closes
+// pending tasks for removed components on every design save, so this case
+// should be rare. When it does happen, the dispatch / issue-body builder
+// fails fast rather than rendering placeholders.
 var ErrComponentRemovedAfterGeneration = errors.New("component removed after generation")
 
-// resolveDesignComponent reads the project's current .asdlc/design.json and
-// returns the entry whose Name matches task.ComponentName. Per design §12,
-// dispatch reads the *current* design at dispatch time — not a snapshot from
-// when the task was generated — so design edits between generation and
+// resolveDesignComponent reads the project's current `.asdlc/design/` tree
+// and returns the entry whose Name matches task.ComponentName. Per design
+// §12, dispatch reads the *current* design at dispatch time — not a snapshot
+// from when the task was generated — so design edits between generation and
 // dispatch propagate.
 //
 // Lookups are case-insensitive on Name to mirror toposort/lookup behaviour
@@ -38,7 +38,7 @@ func resolveDesignComponentVia(ctx context.Context, store *ArtifactStore, task *
 		return nil, fmt.Errorf("read design for task %s: %w", task.ID, err)
 	}
 	if design == nil {
-		return nil, fmt.Errorf("design.json missing for project %s", task.ProjectID)
+		return nil, fmt.Errorf("design missing for project %s (no .asdlc/design/design.md)", task.ProjectID)
 	}
 	target := strings.ToLower(task.ComponentName)
 	for i := range design.Components {

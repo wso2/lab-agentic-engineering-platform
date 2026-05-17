@@ -29,7 +29,7 @@ The file MUST start with a YAML frontmatter block delimited by \`---\` lines:
 
 \`\`\`
 ---
-type: service                  # one of: service | web-app | scheduled-task
+type: service                  # one of: service | web-app
 language: Go                   # the implementation language
 dependsOn:                     # other component names this depends on
   - auth-service
@@ -55,9 +55,8 @@ Bulleted list of what this component owns (3–8 bullets).
 
 ## Interfaces
 How other components and external clients talk to this component:
-- For services: list the REST endpoints (point at sibling \`openapi.yaml\` for the contract — DO NOT inline OpenAPI here).
+- For services: list the REST endpoints (point at sibling \`openapi.yaml\` for the contract — DO NOT inline OpenAPI here). If the service runs periodic / cron / batch work, describe the trigger and side effects here too.
 - For web-apps: list the user-facing flows and any backend services they call.
-- For scheduled-tasks: list the trigger schedule and any side effects.
 Also list inbound dependencies (which sibling components call this one) and outbound dependencies (which siblings this one calls).
 
 ## Implementation Notes

@@ -112,6 +112,15 @@ type Client interface {
 	ListRequirementsVersions(ctx context.Context, orgID, projectID string) ([]RequirementsVersionInfo, error)
 	GetRequirementsAtTag(ctx context.Context, orgID, projectID, tag string) (map[string]string, error)
 
+	// Chat per-turn snapshots. Snapshot blobs live under
+	// `<clone>/.git/asdlc-reqchat-snapshots/<id>.json` in git-service;
+	// the BFF holds the IDs alongside chat messages so undo can roll back
+	// to the start of a turn.
+	CaptureRequirementsSnapshot(ctx context.Context, orgID, projectID, snapshotID string) (map[string]string, error)
+	RestoreRequirementsSnapshot(ctx context.Context, orgID, projectID, snapshotID string) (map[string]string, error)
+	DeleteRequirementsSnapshot(ctx context.Context, orgID, projectID, snapshotID string) error
+	ReadRequirementsSnapshotFile(ctx context.Context, orgID, projectID, snapshotID, filename string) (*RequirementsSnapshotFile, error)
+
 	// Design (multi-file). `path` is relative to `.asdlc/design/` (e.g.
 	// `design.md` or `components/user-api/design.md`).
 	ListDesign(ctx context.Context, orgID, projectID string) (map[string]string, error)
@@ -149,6 +158,17 @@ type PutResult struct {
 // is read from the working tree (populated via per-file PUTs / DELETEs).
 type SaveArtifactRequest struct {
 	Message string `json:"message,omitempty"`
+}
+
+// RequirementsSnapshotFile is the response of
+// GET /artifacts/requirements/snapshots/{id}/files/{name}.
+// `Existed` distinguishes "file present in snapshot" (Revert = write-back)
+// from "snapshot existed but did not include this file" (Revert = delete).
+type RequirementsSnapshotFile struct {
+	SnapshotID string `json:"snapshotId"`
+	Filename   string `json:"filename"`
+	Existed    bool   `json:"existed"`
+	Content    string `json:"content"`
 }
 
 type RequirementsSaveResult struct {
@@ -1049,6 +1069,47 @@ func (c *client) GetRequirementsAtTag(ctx context.Context, orgID, projectID, tag
 		out.Files = map[string]string{}
 	}
 	return out.Files, nil
+}
+
+func (c *client) CaptureRequirementsSnapshot(ctx context.Context, orgID, projectID, snapshotID string) (map[string]string, error) {
+	url := fmt.Sprintf("%s/snapshots/%s", c.artifactURL(orgID, projectID, "requirements"), snapshotID)
+	var out requirementsListResp
+	if _, err := c.doJSON(ctx, http.MethodPost, url, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
+}
+
+func (c *client) RestoreRequirementsSnapshot(ctx context.Context, orgID, projectID, snapshotID string) (map[string]string, error) {
+	url := fmt.Sprintf("%s/snapshots/%s/restore", c.artifactURL(orgID, projectID, "requirements"), snapshotID)
+	var out requirementsListResp
+	if _, err := c.doJSON(ctx, http.MethodPost, url, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	if out.Files == nil {
+		out.Files = map[string]string{}
+	}
+	return out.Files, nil
+}
+
+func (c *client) DeleteRequirementsSnapshot(ctx context.Context, orgID, projectID, snapshotID string) error {
+	url := fmt.Sprintf("%s/snapshots/%s", c.artifactURL(orgID, projectID, "requirements"), snapshotID)
+	if _, err := c.doJSON(ctx, http.MethodDelete, url, nil, nil, http.StatusNoContent); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (c *client) ReadRequirementsSnapshotFile(ctx context.Context, orgID, projectID, snapshotID, filename string) (*RequirementsSnapshotFile, error) {
+	url := fmt.Sprintf("%s/snapshots/%s/files/%s", c.artifactURL(orgID, projectID, "requirements"), snapshotID, filename)
+	var out RequirementsSnapshotFile
+	if _, err := c.doJSON(ctx, http.MethodGet, url, nil, &out, http.StatusOK); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 // Design (multi-file under .asdlc/design/, tagged v<N>-<M>)

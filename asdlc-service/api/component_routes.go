@@ -25,8 +25,9 @@ func registerComponentRoutes(mux *http.ServeMux, c controllers.ComponentControll
 	// ReleaseBindings for this component.
 	mux.HandleFunc("GET "+prefix+"/{componentName}/deployments", c.ListDeployments)
 
-	// OpenAPI spec (drives the Test tab). Spec is read from .asdlc/design.json
-	// — service components have a guaranteed full OpenAPI 3.0 doc; non-service
+	// OpenAPI spec (drives the Test tab). Spec is read from
+	// .asdlc/design/components/<name>/openapi.yaml — service components have a
+	// guaranteed full OpenAPI 3.0 doc; non-service
 	// components return 409 so the UI can render a typed empty state. The Test
 	// tab's swagger-ui calls the deployed endpoint directly; CORS is enabled
 	// on the service ClusterComponentType so no proxy is needed.

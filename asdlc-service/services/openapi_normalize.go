@@ -28,13 +28,12 @@ import (
 func normalizeDesignJSON(raw []byte) ([]byte, error) {
 	// Unmarshal into a flexible structure. We use json.RawMessage on the
 	// outer envelope because we only care about transforming the OpenAPI
-	// strings inside components — the design.json shape itself is already
-	// stable (struct-tag-deterministic).
+	// strings inside components — the in-memory design shape itself is
+	// already stable (struct-tag-deterministic).
 	var df struct {
-		Overview     string                   `json:"overview"`
-		Requirements []string                 `json:"requirements"`
-		Components   []models.DesignComponent `json:"components"`
-		SourceSpec   string                   `json:"sourceSpec,omitempty"`
+		Overview   string                   `json:"overview"`
+		Components []models.DesignComponent `json:"components"`
+		SourceSpec string                   `json:"sourceSpec,omitempty"`
 	}
 	if err := json.Unmarshal(raw, &df); err != nil {
 		return nil, fmt.Errorf("normalize: parse design json: %w", err)

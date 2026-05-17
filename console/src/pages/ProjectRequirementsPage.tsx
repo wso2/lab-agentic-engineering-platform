@@ -26,6 +26,17 @@ import {
   saveDraft,
 } from '../lib/requirementsDraftStorage';
 import {
+  type ModifiedFileEntry,
+  clearSessionBaseline,
+  getModifiedFiles,
+  getSessionBaseline,
+  removeModifiedFile,
+  subscribeChatStore,
+  subscribeRequirementsPageEvent,
+} from '../services/chatStore';
+import ChatModifiedBanner from '../components/ChatModifiedBanner';
+import BaselineContentDialog from '../components/BaselineContentDialog';
+import {
   DOCUMENT_TYPES,
   documentTypeForFile,
   getDocumentType,
@@ -94,6 +105,20 @@ export default function ProjectRequirementsPage() {
   // Files waiting for their first content delta after the user added them
   // (or clicked Generate). Sidebar surfaces these with a spinner + label.
   const [pendingPaths, setPendingPaths] = useState<Set<string>>(new Set());
+  // Files the chat agent is currently editing this turn. Drives the
+  // soft-lock readOnly state on the editor + a busy dot in the explorer.
+  const [chatBusyPaths, setChatBusyPaths] = useState<Set<string>>(new Set());
+  const [chatTurnInFlight, setChatTurnInFlight] = useState(false);
+  // Files in the chat session's modified set (sourced from chatStore).
+  // Triggers the chat-modified banner on the active file.
+  const [chatModifiedFiles, setChatModifiedFiles] = useState<Record<string, ModifiedFileEntry>>({});
+  // Per-file Revert in flight — used to disable the banner action.
+  const [revertingPaths, setRevertingPaths] = useState<Set<string>>(new Set());
+  // "View original" dialog state.
+  const [baselineDialog, setBaselineDialog] = useState<
+    | { open: true; filename: string; state: 'loading' | 'present' | 'tombstone' | 'missing'; baseline?: string }
+    | null
+  >(null);
   const [showDiff, setShowDiff] = useState(false);
   const [restorePromptFor, setRestorePromptFor] = useState<{
     filename: string;
@@ -137,12 +162,176 @@ export default function ProjectRequirementsPage() {
     onSeedRequested: handleSeedRequested,
     isEditing: true,
     userName,
+    // While a chat turn writes to the working tree, the BFF holds an
+    // advisory lock and any concurrent PUT (the collab save loop's tick)
+    // will 409 anyway — suppress the call.
+    paused: chatTurnInFlight,
   });
 
   const collabConfig: CollabConfig | undefined = useMemo(() => {
     if (!ydoc || !provider || !user) return undefined;
     return { ydoc, provider, user };
   }, [ydoc, provider, user]);
+
+  // -- Chat → page sync ----------------------------------------------------
+  // Subscribe to the requirementsPageEvent bus the chat panel publishes
+  // to. We mirror file writes into savedFiles + liveContents (so the
+  // editor refreshes from BFF-authoritative content), track busy paths
+  // (for the explorer's spinner + the editor's soft lock), and toggle
+  // `chatTurnInFlight` (which pauses the Yjs save loop).
+  useEffect(() => {
+    if (!projectId) return;
+    return subscribeRequirementsPageEvent((event) => {
+      if (event.kind === 'turnStarted') {
+        if (event.orgId !== routeOrgId || event.projectId !== projectId) return;
+        setChatTurnInFlight(true);
+      } else if (event.kind === 'turnEnded') {
+        if (event.orgId !== routeOrgId || event.projectId !== projectId) return;
+        setChatTurnInFlight(false);
+        setChatBusyPaths(new Set());
+      } else if (event.kind === 'busyPathsChanged') {
+        if (event.orgId !== routeOrgId || event.projectId !== projectId) return;
+        setChatBusyPaths(event.paths);
+      } else if (event.kind === 'fileWritten') {
+        // BFF persisted a tool's edit; mirror into both maps so the
+        // active editor refreshes from disk.
+        const update = (prev: Record<string, string>): Record<string, string> => {
+          const next = { ...prev };
+          if (event.content === undefined) {
+            // Delete: drop the key entirely.
+            delete next[event.filename];
+          } else {
+            next[event.filename] = event.content;
+          }
+          if (event.siblings) {
+            for (const [k, v] of Object.entries(event.siblings)) {
+              next[k] = v;
+            }
+          }
+          return next;
+        };
+        setSavedFiles(update);
+        setLiveContents(update);
+        // Reseed the active editor buffer if the active file changed
+        // (otherwise the in-buffer Yjs state would shadow the new disk
+        // content on the next save tick).
+        if (activePath === event.filename && event.content !== undefined) {
+          editorRef.current?.setActiveMarkdown(event.content);
+        }
+      }
+    });
+  }, [routeOrgId, projectId, activePath]);
+
+  // Mirror chatStore's modified-files map so the chat-modified banner
+  // re-renders when the chat agent writes a file or the user
+  // Accepts / Reverts.
+  useEffect(() => {
+    if (!projectId) return;
+    const apply = () => setChatModifiedFiles(getModifiedFiles(routeOrgId, projectId));
+    apply();
+    return subscribeChatStore(apply);
+  }, [routeOrgId, projectId]);
+
+  // ---- Chat-modified banner handlers --------------------------------------
+
+  const handleViewOriginal = useCallback(async (filename: string) => {
+    if (!projectId) return;
+    const baseline = getSessionBaseline(routeOrgId, projectId);
+    if (!baseline) {
+      setBaselineDialog({ open: true, filename, state: 'missing' });
+      return;
+    }
+    setBaselineDialog({ open: true, filename, state: 'loading' });
+    const file = await api.getRequirementsBaselineFile(routeOrgId, projectId, baseline.snapshotId, filename);
+    if (!file) {
+      setBaselineDialog({ open: true, filename, state: 'missing' });
+      return;
+    }
+    setBaselineDialog({
+      open: true,
+      filename,
+      state: file.existed ? 'present' : 'tombstone',
+      baseline: file.content,
+    });
+  }, [routeOrgId, projectId]);
+
+  const handleAcceptChatFile = useCallback((filename: string) => {
+    if (!projectId) return;
+    const key = { orgId: routeOrgId, projectId };
+    removeModifiedFile(key, filename);
+    // If this was the last file in the modified set, drop the baseline
+    // snapshot on the server side too. Read the fresh state after the
+    // remove (cache is updated synchronously inside removeModifiedFile).
+    const remaining = getModifiedFiles(routeOrgId, projectId);
+    if (Object.keys(remaining).length === 0) {
+      const baseline = getSessionBaseline(routeOrgId, projectId);
+      if (baseline) {
+        void api.dropRequirementsBaseline(routeOrgId, projectId, baseline.snapshotId);
+        clearSessionBaseline(key);
+      }
+    }
+  }, [routeOrgId, projectId]);
+
+  const handleRevertChatFile = useCallback(async (filename: string) => {
+    if (!projectId) return;
+    const baseline = getSessionBaseline(routeOrgId, projectId);
+    if (!baseline) {
+      // Without a baseline we can't revert — fall through to Accept-style
+      // clear so the banner doesn't hang.
+      handleAcceptChatFile(filename);
+      return;
+    }
+    setRevertingPaths((prev) => {
+      const next = new Set(prev);
+      next.add(filename);
+      return next;
+    });
+    try {
+      const ok = await api.revertRequirementsBaselineFile(
+        routeOrgId,
+        projectId,
+        baseline.snapshotId,
+        filename,
+      );
+      if (!ok) {
+        setPublishError(`Failed to revert ${filename} — see chat logs.`);
+        return;
+      }
+      // Refresh the bundle so the editor + sidebar reflect the rollback.
+      const bundle = await api.getRequirements(routeOrgId, projectId);
+      if (bundle?.files) {
+        setSavedFiles(bundle.files);
+        setLiveContents(bundle.files);
+        if (bundle.versions) setVersions(bundle.versions);
+        setHasUnsavedChanges(bundle.hasUnsavedChanges ?? false);
+      }
+      // Reseed the editor if the user was viewing the reverted file.
+      if (activePath === filename) {
+        const fresh = bundle?.files?.[filename];
+        if (fresh !== undefined) editorRef.current?.setActiveMarkdown(fresh);
+      }
+      // Clear from modified set; if last, drop baseline.
+      handleAcceptChatFile(filename);
+    } finally {
+      setRevertingPaths((prev) => {
+        if (!prev.has(filename)) return prev;
+        const next = new Set(prev);
+        next.delete(filename);
+        return next;
+      });
+    }
+  }, [routeOrgId, projectId, activePath, handleAcceptChatFile]);
+
+  // After a turn ends, refresh the bundle so version + has-unsaved indicators
+  // re-derive from the new working tree.
+  useEffect(() => {
+    if (chatTurnInFlight) return;
+    if (!projectId) return;
+    // Best-effort: pull the latest bundle on turn end. No-op if nothing
+    // changed.
+    void refreshAll();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatTurnInFlight]);
 
   // -- Initial load + streaming bootstrap ----------------------------------
 
@@ -942,6 +1131,20 @@ export default function ProjectRequirementsPage() {
         </Box>
       )}
 
+      {activePath &&
+        chatModifiedFiles[activePath] &&
+        !viewingHistorical &&
+        !streamingMain && (
+          <ChatModifiedBanner
+            filename={activePath}
+            busy={chatTurnInFlight}
+            pending={revertingPaths.has(activePath)}
+            onViewOriginal={() => void handleViewOriginal(activePath)}
+            onAccept={() => handleAcceptChatFile(activePath)}
+            onRevert={() => void handleRevertChatFile(activePath)}
+          />
+        )}
+
       <Box sx={{ flexGrow: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
         <Box sx={{ flex: 1, minHeight: 0, display: 'flex' }}>
           <Explorer
@@ -958,9 +1161,17 @@ export default function ProjectRequirementsPage() {
             onRename={handleRename}
             getFileLabel={getFileLabel}
             getFileSortKey={getFileSortKey}
-            pendingPaths={pendingPaths}
+            pendingPaths={
+              chatBusyPaths.size === 0
+                ? pendingPaths
+                : new Set([...pendingPaths, ...chatBusyPaths])
+            }
             editorProps={{
-              readOnly: viewingHistorical || streamingMain || generatingFile === activePath,
+              readOnly:
+                viewingHistorical ||
+                streamingMain ||
+                generatingFile === activePath ||
+                (activePath !== null && chatBusyPaths.has(activePath)),
               showToolbar: !viewingHistorical && !streamingMain,
               toolbarRightContent: roomId ? (
                 <CollabAwarenessBar connected={connected} peers={peers} inToolbar />
@@ -972,6 +1183,21 @@ export default function ProjectRequirementsPage() {
           />
         </Box>
       </Box>
+
+      {baselineDialog?.open && (
+        <BaselineContentDialog
+          open={baselineDialog.open}
+          filename={baselineDialog.filename}
+          state={baselineDialog.state}
+          baseline={baselineDialog.baseline}
+          current={
+            liveContents[baselineDialog.filename] ??
+            savedFiles[baselineDialog.filename] ??
+            ''
+          }
+          onClose={() => setBaselineDialog(null)}
+        />
+      )}
     </PageContent>
   );
 }

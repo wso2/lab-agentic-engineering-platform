@@ -49,7 +49,6 @@ func main() {
 		&models.ComponentConfig{},
 		&models.WebhookDelivery{},
 		&models.WebhookPayload{},
-		&models.ProjectDefaultPush{},
 		&models.Organization{},
 	)
 	if err != nil {
@@ -80,8 +79,9 @@ func main() {
 	}
 
 	// Phase 3 — tech-lead agent revamp. Drops snapshot fields from
-	// component_tasks (component shape now read from design.json on
-	// dispatch), adds body + lineage + batch fields. Idempotent.
+	// component_tasks (component shape now read from the multi-file
+	// `.asdlc/design/` tree on dispatch), adds body + lineage + batch
+	// fields. Idempotent.
 	if err := migrations.RunPhase3TechLead(db); err != nil {
 		slog.Error("phase3_tech_lead migration failed", "error", err)
 		os.Exit(1)
@@ -211,7 +211,14 @@ func main() {
 		componentService = cs.WithGitClient(gitClient)
 	}
 	configService := services.NewConfigService(configRepo, componentService)
+	requirementsDirLocker := services.NewRequirementsDirLocker(db)
 	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
+	if locked, ok := requirementsService.(interface {
+		WithLocker(*services.RequirementsDirLocker) services.RequirementsService
+	}); ok {
+		requirementsService = locked.WithLocker(requirementsDirLocker)
+	}
+	requirementsChatService := services.NewRequirementsChatService(artifactStore, agentsClient, gitClient, requirementsDirLocker)
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
 
 	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, gitClient, agentsClient, dbClient)
@@ -368,7 +375,8 @@ func main() {
 		ProjectController:      controllers.NewProjectController(projectService),
 		OrganizationController: controllers.NewOrganizationController(organizationService),
 		ComponentController:    controllers.NewComponentController(componentService, taskService),
-		RequirementsController: controllers.NewRequirementsController(requirementsService),
+		RequirementsController:     controllers.NewRequirementsController(requirementsService),
+		RequirementsChatController: controllers.NewRequirementsChatController(requirementsChatService),
 		DesignController:       controllers.NewDesignController(designService),
 		TaskController: controllers.NewTaskController(
 			taskService,

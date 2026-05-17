@@ -66,21 +66,6 @@ export function buildTools(
         }),
     }),
 
-    set_requirements: tool({
-      description: "Replace the requirements list.",
-      inputSchema: z.object({
-        items: z
-          .array(z.string())
-          .describe("Functional and non-functional requirements"),
-      }),
-      execute: async ({ items }) =>
-        guard(() => {
-          doc.setRequirements(items);
-          sse.send("requirements", { items });
-          return { ok: true };
-        }),
-    }),
-
     add_component: tool({
       description:
         "Add a new component. Fails if a component with the same name already exists.",
@@ -205,7 +190,7 @@ export function buildTools(
 
     set_openapi: tool({
       description:
-        "Set the OpenAPI 3.0.3 YAML for a component. If the new spec is semantically equal to the current one, returns {changed: false} and emits no SSE event — do not retry in that case.",
+        "Set the OpenAPI 3.0.3 YAML for a 'service' component. Rejected with {error:'not-applicable'} for 'web-app' components — frontends have no wire contract. If the new spec is semantically equal to the current one, returns {changed: false} and emits no SSE event — do not retry in that case.",
       inputSchema: z.object({
         name: z.string(),
         contents: z.string().describe("Full OpenAPI 3.0.3 YAML"),
@@ -214,6 +199,14 @@ export function buildTools(
         guard(() => {
           if (!doc.hasComponent(name)) {
             return { error: "not-found" };
+          }
+          const entry = doc.getComponent(name);
+          if (entry.slim.componentType === "web-app") {
+            return {
+              error: "not-applicable",
+              message:
+                "web-app components do not get an OpenAPI spec — describe screens / flows / which services they call in componentAgentInstructions instead.",
+            };
           }
           const result = doc.setOpenApi(name, contents);
           if (result.changed) {

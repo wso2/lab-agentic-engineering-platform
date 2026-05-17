@@ -155,6 +155,16 @@ proxy, no runtime substitution. (Earlier docs described an
 `envsubst`-templated nginx proxy; that pattern is no longer required and
 you should not add it.)
 
+**Empty value / silent-fallback prohibition.** Do NOT write code like
+`const BASE_URL = import.meta.env.VITE_<UPSTREAM>_URL ?? "";` — the
+fallback masks a misconfigured build. A missing or empty env var
+**must** surface as a hard module-load error (throw at module
+top-level) so the SPA visibly fails to mount and the agent's
+verify-before-PR smoke test catches it. The silent same-origin
+fallback was the v0 bug that produced `405 Method Not Allowed` from
+the SPA's own nginx in production. See "Reading the URL" in the SPA
+section below for the canonical pattern.
+
 > **Why not runtime env vars?** Vite (and similar bundlers) freeze env
 > variables into the production JS bundle at `npm run build` time. A pod
 > env variable set at deploy time would have no effect on the served
@@ -241,10 +251,10 @@ dependency URL from your local environment and confirm:
    documented status — e.g. some health endpoints return 200; some root
    paths return 404 and that's fine if `/<spec'd path>` returns 200).
 2. **A happy-path operation** for each resource group described in the
-   upstream's OpenAPI (in `.asdlc/design.json`). For a CRUD api, that's
-   typically `POST` + `GET` + `DELETE` against one resource path. Don't
-   try to enumerate every endpoint — pick one canonical operation per
-   resource.
+   upstream's OpenAPI (`.asdlc/design/components/<upstream>/openapi.yaml`).
+   For a CRUD api, that's typically `POST` + `GET` + `DELETE` against one
+   resource path. Don't try to enumerate every endpoint — pick one
+   canonical operation per resource.
 3. **The response shape loosely matches the OpenAPI**: HTTP status code
    in the right family, top-level JSON fields present.
 
@@ -393,6 +403,13 @@ you.
   browser AND for the platform's `## Dependency endpoint resolved`
   comment that downstream tasks read. Project-visibility-only services
   break the gating path for the v1 platform.
+- **Backend service components MUST NOT include CORS middleware in
+  source code.** The platform's gateway attaches an Envoy CORS filter
+  to every `visibility: external` HTTPRoute via the ClusterComponentType
+  definition. Adding `Access-Control-Allow-*` headers in Go/Node
+  middleware doubles them and breaks browsers (the browser sees two
+  `Access-Control-Allow-Origin` values and rejects the response).
+  No `corsMiddleware` function, no `cors.New(...)`, no manual headers.
 
 ## Do not
 
@@ -406,10 +423,13 @@ you.
 - Add a `dependencies.endpoints` block to `workload.yaml` (the
   consumer-side OC runtime-injection wiring). Bake the dependency URL
   into the artifact as a build-time constant instead — see "Dependency
-  endpoints" above. The platform does not use OC's consumer-side dep
-  wiring in v1; if a future task targets a service-to-service backend
-  call, the platform will re-introduce it under a different skill
-  section.
+  endpoints" above. (OC's `dependencies.endpoints.visibility` enum is
+  `{project, namespace}` only — externally-reachable URLs cannot be
+  injected via envBindings, so the consumer-side wiring is the wrong
+  primitive for a browser-bundled SPA anyway. Keep build-time bake.)
+- Add CORS middleware in any service component. The gateway handles
+  CORS for `visibility: external` HTTPRoutes — adding it in code
+  doubles headers and breaks browsers. See the constraint above.
 - Delete remote branches (`git push --delete`, `git push origin :branch`).
 - Modify branch protection, secrets, repository settings, collaborators,
   or webhooks.
@@ -545,12 +565,22 @@ CMD ["nginx", "-g", "daemon off;"]
 #### Reading the URL (`src/api.ts`)
 
 ```ts
-const BASE_URL = import.meta.env.VITE_TODO_API_URL ?? "";
-// fail loudly in dev if missing — the deploy must have set this
+// Hard fail on missing — the silent same-origin fallback (`?? ""`) shipped a
+// production bug where every fetch became a relative URL and hit the SPA's
+// own nginx with `405 Method Not Allowed`. Throw at module top-level instead
+// so a misconfigured deploy is visible (the SPA fails to mount) rather than
+// silently degraded.
+const BASE_URL = import.meta.env.VITE_TODO_API_URL as string | undefined;
 if (!BASE_URL) {
-  console.error("VITE_TODO_API_URL not set — check .env at build time");
+  throw new Error(
+    "VITE_TODO_API_URL not set. Fill .env with the URL from this issue's `## Dependency endpoint resolved` comment BEFORE `npm run build`.",
+  );
 }
 ```
+
+**Do NOT use `?? ""` or any silent default for these URL env vars.** A
+missing or empty value must surface as a script-load error, not as a
+relative-URL fetch.
 
 ---
 
@@ -558,8 +588,9 @@ if (!BASE_URL) {
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Browser fetches `undefined/todos` | `.env` missing, wrong key, or built before `.env` was written | Confirm `.env` exists at the app-path root with `VITE_<UPSTREAM>_URL=...` BEFORE `npm run build` |
-| CORS error in browser when calling upstream | Upstream lacks CORS headers (`Access-Control-Allow-Origin`) | Add CORS middleware to the upstream component (must be in the upstream's PR) |
-| Issue has no `## Dependency endpoint resolved` comment for an upstream you need | Upstream's `workload.yaml` lacks `visibility: external` on `endpoints[].visibility` (the platform won't post a comment for an upstream with no external URL) | Add `external` to the upstream component's visibility list and re-deploy; the platform re-posts the comment when the upstream lands `deployed` again |
+| SPA throws on load (`VITE_<UPSTREAM>_URL not set`) | `.env` was missing, empty, or built before being filled | Write the URL from the `## Dependency endpoint resolved` comment into `<appPath>/.env` BEFORE `npm run build`. The hard-fail is intentional — silent fallback to a relative URL is what produced the v0 `405` bug. |
+| Browser POST hits the SPA's host and returns `405 Method Not Allowed` | The SPA shipped with the silent `?? ""` fallback so a missing env var produced relative-URL fetches against its own nginx | Replace `?? ""` with `throw new Error(...)` in `src/api.ts` (see SPA section). Then fill `.env` correctly. |
+| CORS error in browser when calling upstream | Backend wrongly ships its own CORS middleware (doubled headers), OR upstream's `workload.yaml` lacks `visibility: external` | **Backends MUST NOT add CORS middleware.** The platform's gateway attaches an Envoy CORS filter to every `visibility: external` HTTPRoute via the ClusterComponentType. Remove the middleware. Confirm `visibility: external` on the upstream. |
+| Issue has no `## Dependency endpoint resolved` comment for an upstream you need | Upstream's `workload.yaml` lacks `visibility: external` (the platform won't post a comment for an upstream with no external URL) | Add `external` to the upstream component's visibility list and re-deploy; the platform re-posts the comment when the upstream lands `deployed` again |
 | Endpoint URL injected by OC but bundle still uses old value | Vite bakes env vars at build time; pod env has no effect | Update `.env`, push, rebuild — runtime injection is not supported for SPA bundles |
-| `workload.yaml` was modified to add `dependencies.endpoints` | Following stale docs | Remove the block. v1 uses build-time constants only |
+| `workload.yaml` was modified to add `dependencies.endpoints` | Following stale docs | Remove the block. v1 uses build-time constants only. OC's `dependencies.endpoints.visibility` enum is `{project, namespace}` only, so envBindings cannot inject an externally-reachable URL into the bundle anyway. |

@@ -90,10 +90,9 @@ func (s *ArtifactStore) DeleteRequirementFile(ctx context.Context, orgID, projec
 //	                                       # (componentAgentInstructions)
 //	components/<name>/openapi.yaml         # OpenAPI 3.0.3 (service components only)
 type DesignFile struct {
-	Overview     string                   `json:"overview"`
-	Requirements []string                 `json:"requirements"`
-	Components   []models.DesignComponent `json:"components"`
-	SourceSpec   string                   `json:"sourceSpec,omitempty"`
+	Overview   string                   `json:"overview"`
+	Components []models.DesignComponent `json:"components"`
+	SourceSpec string                   `json:"sourceSpec,omitempty"`
 }
 
 // DesignRootFile is the canonical root design document. It cannot be deleted

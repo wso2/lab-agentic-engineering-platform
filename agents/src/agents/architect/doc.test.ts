@@ -54,12 +54,10 @@ paths:
 test("DesignDoc.fromPrevious populates components with openapi", () => {
   const prev: ArchitectOutput = {
     overview: "x",
-    requirements: ["r1"],
     components: [{ ...slim(), openAPISpec: yamlA }],
   };
   const doc = DesignDoc.fromPrevious(prev);
   assert.equal(doc.overview, "x");
-  assert.deepEqual(doc.requirements, ["r1"]);
   const entry = doc.getComponent("todo-api");
   assert.equal(entry.openapi, yamlA);
   assert.deepEqual(doc.pendingSpecs(), []);
@@ -76,6 +74,21 @@ test("addComponent — fresh component has openapi=null and is pending", () => {
   doc.addComponent(slim());
   assert.deepEqual(doc.pendingSpecs(), ["todo-api"]);
   assert.equal(doc.getComponent("todo-api").openapi, null);
+});
+
+test("pendingSpecs — web-app components are excluded (no wire contract)", () => {
+  const doc = new DesignDoc();
+  doc.addComponent(
+    slim({
+      name: "ui",
+      componentType: "web-app",
+      entrypoint: "deployment/web-application",
+      appPath: "ui",
+    }),
+  );
+  doc.addComponent(slim({ name: "api", appPath: "api" }));
+  // ui has no openapi but should NOT be pending; api should.
+  assert.deepEqual(doc.pendingSpecs(), ["api"]);
 });
 
 test("setOpenApi — first set returns changed:true", () => {
@@ -146,7 +159,6 @@ test("removeComponent clears the entry", () => {
 test("materialize round-trip stable", () => {
   const prev: ArchitectOutput = {
     overview: "x",
-    requirements: ["r1", "r2"],
     components: [
       { ...slim({ name: "a" }), openAPISpec: yamlA },
       { ...slim({ name: "b" }), openAPISpec: yamlB },
@@ -155,7 +167,6 @@ test("materialize round-trip stable", () => {
   const doc = DesignDoc.fromPrevious(prev);
   const out = doc.materialize();
   assert.equal(out.overview, "x");
-  assert.deepEqual(out.requirements, ["r1", "r2"]);
   assert.equal(out.components.length, 2);
   assert.equal(out.components[0]!.name, "a");
   assert.equal(out.components[0]!.openAPISpec, yamlA);

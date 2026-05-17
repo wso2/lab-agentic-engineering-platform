@@ -8,9 +8,9 @@ export const SlimComponent = z.object({
     .string()
     .describe("Lowercase kebab-case component name, e.g. 'user-api'"),
   componentType: z
-    .enum(["service", "web-app", "scheduled-task"])
+    .enum(["service", "web-app"])
     .describe(
-      "Component type: 'web-app' for frontends, 'service' for backend APIs, 'scheduled-task' for cron/batch jobs",
+      "Component type: 'web-app' for frontends, 'service' for backend APIs.",
     ),
   language: z
     .string()
@@ -23,13 +23,9 @@ export const SlimComponent = z.object({
       "Names of other components this one depends on (must match other components' 'name' values exactly)",
     ),
   entrypoint: z
-    .enum([
-      "deployment/service",
-      "deployment/web-application",
-      "cronjob/scheduled-task",
-    ])
+    .enum(["deployment/service", "deployment/web-application"])
     .describe(
-      "OpenChoreo component type: 'deployment/service' for backend APIs, 'deployment/web-application' for frontends/SPAs, 'cronjob/scheduled-task' for cron jobs",
+      "OpenChoreo component type: 'deployment/service' for backend APIs, 'deployment/web-application' for frontends/SPAs",
     ),
   buildpack: z.literal("docker").describe("Build strategy"),
   appPath: z
@@ -61,11 +57,6 @@ export const ArchitectOutput = z.object({
     .string()
     .describe(
       "A 2-3 sentence architecture overview summarizing the system design, component structure, and communication patterns",
-    ),
-  requirements: z
-    .array(z.string())
-    .describe(
-      "Functional and non-functional requirements derived from the spec",
     ),
   components: z
     .array(DesignComponent)

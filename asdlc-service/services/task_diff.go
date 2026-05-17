@@ -66,7 +66,8 @@ func (d DesignDiff) IsTrivial() bool {
 // delta. Component matching is case-insensitive on Name. OpenAPI op-level
 // diffs come from a parse-and-compare of the canonicalised YAML — the same
 // canonicalisation `openapi_normalize.go::normalizeOpenAPIYAML` produces
-// when writing design.json, so whitespace/ordering noise is stripped.
+// when writing each component's openapi.yaml, so whitespace/ordering noise
+// is stripped.
 //
 // `prev` may be nil → every current component is reported ADDED.
 func computeDesignDiff(prev, curr []models.DesignComponent) DesignDiff {

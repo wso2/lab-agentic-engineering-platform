@@ -26,6 +26,10 @@ type ArtifactController interface {
 	DiscardRequirements(w http.ResponseWriter, r *http.Request)
 	ListRequirementsVersions(w http.ResponseWriter, r *http.Request)
 	GetRequirementsVersion(w http.ResponseWriter, r *http.Request)
+	CaptureRequirementsSnapshot(w http.ResponseWriter, r *http.Request)
+	RestoreRequirementsSnapshot(w http.ResponseWriter, r *http.Request)
+	DeleteRequirementsSnapshot(w http.ResponseWriter, r *http.Request)
+	GetRequirementsSnapshotFile(w http.ResponseWriter, r *http.Request)
 
 	// Design (multi-file)
 	ListDesign(w http.ResponseWriter, r *http.Request)
@@ -185,6 +189,70 @@ func (c *artifactController) GetRequirementsVersion(w http.ResponseWriter, r *ht
 		Tag:   tag,
 		Files: files,
 	})
+}
+
+// CaptureRequirementsSnapshot writes the current requirements directory to
+// `<clone>/.git/asdlc-reqchat-snapshots/<id>.json`. Idempotent.
+func (c *artifactController) CaptureRequirementsSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	files, err := c.svc.CaptureRequirementsSnapshot(r.Context(), projectIDFrom(r), id)
+	if err != nil {
+		writeArtifactError(w, r, err, "capture requirements snapshot")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, services.RequirementsListResult{Files: files})
+}
+
+// RestoreRequirementsSnapshot rewrites the working-tree requirements
+// directory to match the snapshot blob.
+func (c *artifactController) RestoreRequirementsSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	files, err := c.svc.RestoreRequirementsSnapshot(r.Context(), projectIDFrom(r), id)
+	if err != nil {
+		writeArtifactError(w, r, err, "restore requirements snapshot")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, services.RequirementsListResult{Files: files})
+}
+
+// SnapshotFileResult is the response of
+// GET /artifacts/requirements/snapshots/{id}/files/{name}. `existed`
+// distinguishes "file present in snapshot" from "snapshot existed but
+// file did not" — Revert uses it to decide between write-back vs delete.
+type SnapshotFileResult struct {
+	SnapshotID string `json:"snapshotId"`
+	Filename   string `json:"filename"`
+	Existed    bool   `json:"existed"`
+	Content    string `json:"content"`
+}
+
+// GetRequirementsSnapshotFile reads a single file's content from a stored
+// snapshot blob. Returns 404 only when the snapshot itself is missing.
+func (c *artifactController) GetRequirementsSnapshotFile(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	name := r.PathValue("name")
+	content, existed, err := c.svc.ReadFileFromRequirementsSnapshot(r.Context(), projectIDFrom(r), id, name)
+	if err != nil {
+		writeArtifactError(w, r, err, "get requirements snapshot file")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, SnapshotFileResult{
+		SnapshotID: id,
+		Filename:   name,
+		Existed:    existed,
+		Content:    content,
+	})
+}
+
+// DeleteRequirementsSnapshot removes a stored snapshot. 204 even if it
+// didn't exist (idempotent).
+func (c *artifactController) DeleteRequirementsSnapshot(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if err := c.svc.DeleteRequirementsSnapshot(r.Context(), projectIDFrom(r), id); err != nil {
+		writeArtifactError(w, r, err, "delete requirements snapshot")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // requirementsRelPath validates a requirement file basename and returns its
