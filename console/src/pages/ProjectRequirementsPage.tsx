@@ -321,9 +321,11 @@ export default function ProjectRequirementsPage() {
       const entry = chatModifiedFiles[path];
       if (!entry) return undefined;
       if (/\.excalidraw$/i.test(path)) return undefined;
-      // Don't render the diff view while a chat turn is still writing
-      // to this file — the live stream would fight the diff state.
-      if (chatBusyPaths.has(path)) return undefined;
+      // Render the diff live: every subsequent tool result re-fires
+      // `fileWritten`, which updates `liveContents[path]`, which flows
+      // into MdDiffViewer's `newMarkdown` and recomputes the diff doc.
+      // Each tool inside a turn lands atomically (no mid-write content),
+      // so the user sees the cumulative diff grow as the agent works.
       const baseline = baselineContents[path];
       const current = liveContents[path] ?? savedFiles[path] ?? '';
       if (baseline === undefined) {
@@ -354,7 +356,7 @@ export default function ProjectRequirementsPage() {
         </Box>
       );
     },
-    [chatModifiedFiles, baselineContents, liveContents, savedFiles, chatBusyPaths],
+    [chatModifiedFiles, baselineContents, liveContents, savedFiles],
   );
 
   const handleAcceptChatFile = useCallback((filename: string) => {
