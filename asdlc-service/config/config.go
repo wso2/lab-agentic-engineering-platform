@@ -49,6 +49,37 @@ type Config struct {
 	// set to 0 to force exhaustion on the first auth failure.
 	BuildAuthRetryBudget int
 
+	// FeatureEmitAPITrait gates Phase 2 of the api-platform-integration
+	// plan (docs/design/api-platform-integration.md §6 Phase 2). When
+	// true: dispatch emits the `api-configuration` ClusterTrait based on
+	// design.md `api.security`, design PUT triggers trait_sync, and the
+	// drift watcher reconciles. When false: every code path behaves like
+	// pre-Phase-2 — no trait emission, no watcher reconcile. Per §14
+	// Rollout, default is on in dev / off in prod until a corpus of
+	// existing components passes baseline-diff.
+	FeatureEmitAPITrait bool
+
+	// Phase 3 (api-platform-integration) — Thunder admin client config
+	// for per-org publisher OAuth app lifecycle. Loaded from env vars
+	// THUNDER_ADMIN_URL / THUNDER_SYSTEM_CLIENT_ID / THUNDER_SYSTEM_CLIENT_SECRET.
+	// When ClientID is empty the BFF logs a warning and the IDP service
+	// returns ErrIDPThunderUnavailable (non-fatal — protected components
+	// still deploy, just without per-org publishers).
+	ThunderAdmin ThunderAdminConfig
+
+	// Platform IDP defaults seeded into organization_idp_profiles rows
+	// on first access. Loaded from PLATFORM_IDP_ISSUER /
+	// PLATFORM_IDP_JWKS_URL — should match the cluster's Thunder
+	// keymanager in gateway-config.yaml.
+	PlatformIDP PlatformIDPDefaults
+
+	// UserAppsOIDC is the OIDC config the BFF hands to every user web-app
+	// component with design.auth.kind == "oidc-spa". One shared OAuth
+	// client (`ASDLC_USER_APPS` in Thunder, pre-seeded by setup-prerequisites)
+	// is used for all user webapps in v1 — per-project clients are a v2
+	// follow-up tracked in docs/design/oauth-protected-webapp.md.
+	UserAppsOIDC UserAppsOIDCConfig
+
 	Observability   ObservabilityConfig
 	AgentsService   AgentsServiceConfig
 	ServiceAuth     ServiceAuthConfig
@@ -84,6 +115,45 @@ type Config struct {
 	// pinned to the target service.
 	ServiceAuthGitService    ServiceAuthConfig
 	ServiceAuthAgentsService ServiceAuthConfig
+}
+
+// ThunderAdminConfig holds the asdlc-system-client OAuth2 credentials
+// + base URL the BFF uses to manage Thunder applications (per-org
+// publisher lifecycle). The same Thunder instance that fronts user
+// PKCE login — see deployments/single-cluster/values-thunder.yaml's
+// CONFIDENTIAL_APPS for the row that ships these credentials.
+type ThunderAdminConfig struct {
+	BaseURL      string
+	ClientID     string
+	ClientSecret string
+}
+
+// PlatformIDPDefaults are the issuer + JWKS URL of the cluster's
+// platform IDP (Thunder in v1). Seeded into every new
+// organization_idp_profiles row.
+type PlatformIDPDefaults struct {
+	Issuer  string
+	JWKSURL string
+}
+
+// UserAppsOIDCConfig is the OIDC client config the BFF hands to user
+// web-apps. Loaded from env vars USER_APPS_OIDC_ISSUER /
+// USER_APPS_OIDC_CLIENT_ID / USER_APPS_OIDC_SCOPES /
+// USER_APPS_OIDC_INTERNAL_PROXY_PASS. When ClientID is empty the
+// dispatch path skips the `## OIDC client provisioned` comment and
+// logs a warning — user apps with auth.kind=oidc-spa will deploy but
+// fail at sign-in.
+//
+// InternalProxyPass is the URL the SPA's own nginx `/oidc/` block uses
+// to proxy `POST /oidc/token` back to Thunder. It MUST be reachable
+// from a pod inside the cluster (the public Issuer hostname isn't —
+// `*.openchoreo.localhost` doesn't resolve from pod DNS). Default is
+// the in-cluster Thunder Service FQDN + the `/oauth2/` path prefix.
+type UserAppsOIDCConfig struct {
+	Issuer            string
+	ClientID          string
+	Scopes            string // space-separated, e.g. "openid profile"
+	InternalProxyPass string
 }
 
 // ServiceAuthConfig holds OAuth2 client_credentials settings for

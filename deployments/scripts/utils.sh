@@ -222,6 +222,16 @@ mirrors:
   \"registry.openchoreo-workflow-plane.svc.cluster.local:10082\":
     endpoint:
       - \"http://${registry_ip}:10082\"
+  # dockerfile-builder's publish-image step tags images with
+  # host.k3d.internal:10082/<image>:<tag> (the registry is exposed on the
+  # host's port 10082 via k3d-local-config.yaml). Kubelet inside the
+  # cluster cannot reach that host:port — but the actual registry pod
+  # listens on the cluster-IP below. Mirror the host.k3d.internal:10082
+  # name to the registry service IP so kubelet can pull without leaving
+  # the cluster network.
+  \"host.k3d.internal:10082\":
+    endpoint:
+      - \"http://${registry_ip}:10082\"
 EOF
 " 2>/dev/null || true
     done

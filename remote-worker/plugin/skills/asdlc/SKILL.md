@@ -197,6 +197,28 @@ After `go mod tidy` succeeds, COMMIT the updated `go.sum` along with
 your source. Without it, the build pipeline will fail on the next
 `go mod download` step because lockfile entries are missing.
 
+**SQLite driver — use `modernc.org/sqlite` (pure-Go), NOT `mattn/go-sqlite3` (CGO).**
+
+The coding-agent pod and the build pod ship Go + alpine but the build path
+is CPU-throttled. CGO compilation of the SQLite amalgamation
+(`sqlite3-binding.c`, ~3 MB of C) takes 10–20 minutes on a throttled core
+and frequently blocks the agent's verification step. The pure-Go driver
+compiles in ~30 seconds and has the same `database/sql` interface:
+
+```go
+import (
+    "database/sql"
+    _ "modernc.org/sqlite"
+)
+
+db, err := sql.Open("sqlite", "/data/todos.db")
+```
+
+Use the literal driver name `"sqlite"` (not `"sqlite3"`) when calling
+`sql.Open`. Performance is comparable to `mattn` for typical CRUD
+workloads; the only loss is FTS3/FTS5 which the platform's todo-shaped
+services don't need.
+
 ### React / Node SPAs
 
 ```bash
@@ -581,6 +603,331 @@ if (!BASE_URL) {
 **Do NOT use `?? ""` or any silent default for these URL env vars.** A
 missing or empty value must surface as a script-load error, not as a
 relative-URL fetch.
+
+---
+
+### SPA with OIDC sign-in (`auth.kind: oidc-spa`)
+
+When the component's `design.md` frontmatter has `auth.kind: oidc-spa`,
+the SPA is an OIDC relying party. The platform posts a comment on this
+issue with the OIDC client config:
+
+```
+## OIDC client provisioned
+
+- **issuer**: http://thunder.openchoreo.localhost:8080
+- **clientId**: asdlc-console-client
+- **scopes**: openid profile
+- **host**: thunder.openchoreo.localhost:8080
+- **internalProxyPass**: http://thunder-service.thunder.svc.cluster.local:8090/oauth2/
+```
+
+**All values are baked at build time** — same pattern as the
+dependency-URL section above. The first four values plus `API_BASE_URL`
+from the upstream's `## Dependency endpoint resolved` comment go into
+`<appPath>/.env` BEFORE `npm run build`. The `internalProxyPass` value
+goes into `nginx/default.conf` as the literal `proxy_pass` target at
+PR time. There is NO runtime substitution: no envsubst, no
+`/etc/nginx/templates/`, no `/env-config.js`, no `window.__ENV__`, and
+NO `configurations.env` in `workload.yaml`. The Docker image carries
+the final config; `workload.yaml` only declares the `endpoints` block.
+
+> **Why two URLs?** The `issuer` is the public hostname the browser
+> uses for the cross-origin `authorize` redirect (it MUST be the same
+> URL Thunder is registered at, so JS-side PKCE works). The
+> `internalProxyPass` is what the SPA's own nginx uses to reach
+> Thunder *from inside the cluster* — the public hostname
+> `*.openchoreo.localhost` does NOT resolve from pod DNS, so using it
+> in `proxy_pass` makes nginx fail to start with "host not found in
+> upstream". The two values point at the same Thunder; the difference
+> is who's doing the lookup (browser vs. pod).
+
+> **Why a same-origin proxy?** Posting `POST /oauth2/token` directly to
+> Thunder is cross-origin, and kgateway's CORS filter currently drops
+> the response body even on a 200. Routing the POST through the SPA's
+> own nginx (`/oidc/token` → Thunder's `/oauth2/token`) keeps it
+> same-origin. The browser still does the `authorize` redirect
+> cross-origin (no CORS — it's a top-level navigation).
+
+#### workload.yaml (SPA with OIDC) — no env block
+
+```yaml
+apiVersion: openchoreo.dev/v1alpha1
+metadata:
+  name: <web-component-name>
+
+endpoints:
+  - name: http
+    type: HTTP
+    port: 9090
+    visibility:
+      - external
+```
+
+The `configurations.env` block is **deliberately absent**. All OIDC and
+API values are bundled at build time. If you find yourself wanting to
+add `configurations.env`, re-read this section — runtime env injection
+is not supported on SPAs in v1.
+
+#### `.env` (at the SPA's app-path root) — fill BEFORE `npm run build`
+
+Five values, all from issue comments. The `VITE_` prefix is required so
+Vite exposes them via `import.meta.env.VITE_*` in the bundle. Other
+frameworks: CRA uses `REACT_APP_*`, Next.js uses `NEXT_PUBLIC_*`; the
+substance is identical.
+
+```ini
+# from `## OIDC client provisioned` comment on this issue
+VITE_OIDC_ISSUER=http://thunder.openchoreo.localhost:8080
+VITE_OIDC_CLIENT_ID=asdlc-console-client
+VITE_OIDC_SCOPES=openid profile
+VITE_OIDC_HOST=thunder.openchoreo.localhost:8080
+
+# from `## Dependency endpoint resolved` comment for the upstream service
+VITE_API_BASE_URL=http://development-default.openchoreoapis.localhost:19080/<upstream-component-slug>
+```
+
+The token-exchange URL (`/oidc/token`) is a SAME-ORIGIN relative path
+and lives in `src/auth.ts` as a constant — it does NOT need an env var
+because every SPA serves it from its own nginx.
+
+#### `nginx/default.conf` (static — no template, no envsubst)
+
+```nginx
+server {
+    listen 9090;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    location /health {
+        access_log off;
+        return 200 'OK';
+        add_header Content-Type text/plain;
+    }
+
+    # Same-origin proxy for OIDC token / userinfo / etc.
+    # Browser POST /oidc/token → nginx → Thunder /oauth2/token.
+    # The proxy_pass URL below is the LITERAL `internalProxyPass` value
+    # from the `## OIDC client provisioned` comment — an in-cluster
+    # Service FQDN. DO NOT substitute the public `issuer` hostname here:
+    # `*.openchoreo.localhost` does not resolve from pod DNS and nginx
+    # will fail to start with "host not found in upstream".
+    # NO envsubst, NO ${OIDC_*} placeholders.
+    location /oidc/ {
+        proxy_pass http://thunder-service.thunder.svc.cluster.local:8090/oauth2/;
+        proxy_pass_request_headers on;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}
+```
+
+#### Dockerfile (SPA with OIDC) — same as the plain SPA Dockerfile
+
+```dockerfile
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm i
+COPY . .
+RUN npm run build
+
+FROM nginx:alpine
+COPY --from=builder /app/dist /usr/share/nginx/html
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
+EXPOSE 9090
+CMD ["nginx", "-g", "daemon off;"]
+```
+
+No `/etc/nginx/templates/`, no envsubst step. The bundle has the OIDC
+values baked in; nginx has the issuer URL baked in.
+
+#### `index.html` — standard, no `/env-config.js`
+
+```html
+<!doctype html>
+<html>
+  <head><title>App</title></head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+```
+
+#### Reference: PKCE flow (`src/auth.ts`)
+
+The SPA does Authorization Code + PKCE directly. Minimal, no
+heavyweight library required — but `oidc-client-ts` is a reasonable
+choice if the spec asks for refresh tokens / silent renew.
+
+```ts
+// Values baked into the bundle at `npm run build` time from .env.
+// Hard-fail at module top-level if any is missing — silent fallback is
+// what produced the v0 405-Method-Not-Allowed bug.
+const OIDC_ISSUER = import.meta.env.VITE_OIDC_ISSUER as string | undefined;
+const OIDC_CLIENT_ID = import.meta.env.VITE_OIDC_CLIENT_ID as string | undefined;
+const OIDC_SCOPES = import.meta.env.VITE_OIDC_SCOPES as string | undefined;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL as string | undefined;
+
+if (!OIDC_ISSUER || !OIDC_CLIENT_ID || !OIDC_SCOPES || !API_BASE_URL) {
+  throw new Error(
+    "OIDC config missing. Ensure VITE_OIDC_ISSUER, VITE_OIDC_CLIENT_ID, " +
+    "VITE_OIDC_SCOPES, and VITE_API_BASE_URL are set in `.env` BEFORE " +
+    "`npm run build` (values from the issue's `## OIDC client provisioned` " +
+    "and `## Dependency endpoint resolved` comments).",
+  );
+}
+
+// Same-origin proxy path — served by the SPA's own nginx (see
+// nginx/default.conf). This is a constant, NOT an env var: every SPA
+// forwards /oidc/* to its own Thunder regardless of the cluster.
+const OIDC_TOKEN_URL = "/oidc/token";
+
+const REDIRECT_URI = window.location.origin + "/callback";
+
+// 1. Kick off login: generate PKCE code_verifier, store in sessionStorage,
+//    redirect to `${OIDC_ISSUER}/oauth2/authorize?response_type=code&...`.
+//    (Top-level navigation — cross-origin, no CORS.)
+// 2. /callback: read ?code=, exchange via OIDC_TOKEN_URL (same-origin
+//    /oidc/token proxy) with code_verifier, store access_token in
+//    sessionStorage.
+// 3. fetch wrapper attaches Authorization: Bearer <access_token>.
+// 4. On 401 from any upstream, clear token + restart step 1.
+
+export async function startLogin() {
+  const verifier = randomBase64Url(64);
+  const challenge = await sha256Base64Url(verifier);
+  sessionStorage.setItem("pkce_verifier", verifier);
+  const params = new URLSearchParams({
+    response_type: "code",
+    client_id: OIDC_CLIENT_ID!,
+    redirect_uri: REDIRECT_URI,
+    scope: OIDC_SCOPES || "openid profile",
+    code_challenge: challenge,
+    code_challenge_method: "S256",
+  });
+  window.location.assign(`${OIDC_ISSUER}/oauth2/authorize?${params}`);
+}
+
+export async function completeLogin(code: string) {
+  const verifier = sessionStorage.getItem("pkce_verifier")!;
+  // MUST go through OIDC_TOKEN_URL (same-origin /oidc/token proxy).
+  // POSTing directly to `${OIDC_ISSUER}/oauth2/token` triggers the
+  // kgateway CORS bug — the browser sees an empty response body.
+  const res = await fetch(OIDC_TOKEN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({
+      grant_type: "authorization_code",
+      code,
+      redirect_uri: REDIRECT_URI,
+      client_id: OIDC_CLIENT_ID!,
+      code_verifier: verifier,
+    }),
+  });
+  const json = await res.json();
+  sessionStorage.setItem("access_token", json.access_token);
+}
+
+// Helpers: randomBase64Url, sha256Base64Url — standard PKCE crypto.
+// fetch wrapper — attach Bearer to every upstream call:
+export async function authFetch(path: string, init: RequestInit = {}) {
+  const token = sessionStorage.getItem("access_token");
+  const headers = new Headers(init.headers);
+  if (token) headers.set("Authorization", `Bearer ${token}`);
+  const res = await fetch(API_BASE_URL + path, { ...init, headers });
+  if (res.status === 401) {
+    sessionStorage.removeItem("access_token");
+    startLogin();
+  }
+  return res;
+}
+```
+
+**Do NOT** add a username/password form that POSTs to the API. The API
+has no `/auth/*` endpoints when this pattern is used — Thunder owns
+token issuance.
+
+> **Why no runtime env injection?** Vite (and similar bundlers) freeze
+> `import.meta.env.VITE_*` at `npm run build` time. A pod env var set
+> at deploy time would have no effect on the served bundle. Baking at
+> build time is the only correct option for SPA components in v1, and
+> it eliminates a whole class of platform bugs (env not propagated to
+> pod, envsubst variable typos, missing `/env-config.js`, etc.). When
+> the platform adds multi-environment promotion, this section will be
+> revisited.
+
+---
+
+### Backend service with `api.security: required`
+
+When the component's `design.md` frontmatter has `api.security: required`:
+
+- The API Platform gateway validates the JWT before requests reach
+  your service. **Do not validate JWTs yourself; do not implement
+  `/auth/login` or `/auth/register`.**
+- The gateway maps three JWT claims into request headers via the
+  `api-configuration` trait's `jwt-auth` `claimMappings`:
+  - `sub` → `X-User-Id` (the canonical caller identifier — REQUIRED)
+  - `username` → `X-User-Name` (display; OPTIONAL)
+  - `ouHandle` → `X-User-Ou` (multi-tenant scoping; OPTIONAL)
+- Read `X-User-Id` on every request and reject (401) when missing.
+  Treat `X-User-Name`/`X-User-Ou` as informational only.
+- Per-user data MUST be keyed on `X-User-Id`. For a todo service,
+  every row stores `user_id = X-User-Id` and every query filters by it.
+- You do NOT need the JWT itself, the OIDC issuer, or any signing
+  keys — the gateway has already validated the token and the
+  Authorization header may not be forwarded.
+
+Reference (Go) — every protected handler reads `X-User-Id` and every
+SQL statement gates on it. Forgetting either filter leaks data between
+users:
+
+```go
+func mustUserID(w http.ResponseWriter, r *http.Request) (string, bool) {
+    uid := r.Header.Get("X-User-Id")
+    if uid == "" {
+        http.Error(w, `{"error":"missing X-User-Id"}`, http.StatusUnauthorized)
+        return "", false
+    }
+    return uid, true
+}
+
+func listTodos(w http.ResponseWriter, r *http.Request) {
+    uid, ok := mustUserID(w, r); if !ok { return }
+    rows, err := db.QueryContext(r.Context(),
+        `SELECT id, title, done FROM todos WHERE user_id = ? ORDER BY id DESC`, uid)
+    /* ... */
+}
+
+func updateTodo(w http.ResponseWriter, r *http.Request) {
+    uid, ok := mustUserID(w, r); if !ok { return }
+    id := r.PathValue("id")
+    // AND user_id = ? — both filters are mandatory. A bare `WHERE id = ?`
+    // would let a caller toggle any user's row by guessing its id.
+    res, _ := db.ExecContext(r.Context(),
+        `UPDATE todos SET done = 1 - done WHERE id = ? AND user_id = ?`, id, uid)
+    if n, _ := res.RowsAffected(); n == 0 {
+        http.NotFound(w, r); return // returns 404 for both "not found" and "not yours"
+    }
+    w.WriteHeader(http.StatusNoContent)
+}
+```
+
+`/health` should remain exempt (no `mustUserID` call) so the platform's
+readiness probe can reach it without auth.
+
+Storage: an embedded SQLite database is the canonical choice for per-user
+data on a `service` component. **Use the pure-Go `modernc.org/sqlite`
+driver, not `mattn/go-sqlite3`** — see the "Go services" build-verification
+section above for the rationale. Keep the DB file under `/data/` so the
+container's persistent volume (if any) captures it; every per-user row
+must carry a `user_id TEXT NOT NULL` column populated from `X-User-Id`
+and every query must filter on it.
 
 ---
 

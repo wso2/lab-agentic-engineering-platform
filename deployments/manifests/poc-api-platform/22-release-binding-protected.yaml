@@ -1,0 +1,25 @@
+# ReleaseBinding for the protected hello-world.
+# jwtAuth.enabled: true → AP router enforces JWT validation against the
+# cluster's configured keymanagers (PlatformIDPKeyManager — Thunder JWKS).
+# Any token with issuer "http://thunder.openchoreo.localhost:8080" signed
+# by a Thunder-resident key is accepted (no audience filter at v0).
+apiVersion: openchoreo.dev/v1alpha1
+kind: ReleaseBinding
+metadata:
+  name: poc-protected-development
+  namespace: default
+spec:
+  environment: development
+  owner:
+    projectName: poc-api-platform
+    componentName: poc-protected
+  traitEnvironmentConfigs:
+    poc-protected-http:
+      cors:
+        enabled: true
+        allowedOrigins: ["*"]
+        allowedMethods: ["*"]
+        allowedHeaders: ["*"]
+        allowCredentials: false
+      jwtAuth:
+        enabled: true

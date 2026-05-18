@@ -65,6 +65,14 @@ func (h *DispatchCascadeHook) OnTaskDeployed(ctx context.Context, orgID, project
 	// enforces the §1.3 URL invariant.
 	h.dispatch.AnnounceDependencyDeployed(ctx, orgID, projectID, componentName)
 
+	// For OIDC-SPA web-apps: register the deployed origin (+ /callback)
+	// on the platform IDP's redirect_uris set so browser sign-in
+	// actually works. No-op on non-web-app or non-oidc-spa components.
+	// Order doesn't matter relative to DispatchTasks below; the user
+	// only hits the OIDC redirect at browser sign-in time, by which
+	// point the pod is already up.
+	h.dispatch.RegisterUserAppRedirectURI(ctx, orgID, projectID, componentName)
+
 	results, err := h.dispatch.DispatchTasks(ctx, orgID, projectID)
 	if err != nil {
 		slog.WarnContext(ctx, "dispatch cascade: DispatchTasks failed",

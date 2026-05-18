@@ -48,6 +48,13 @@ kubectl cluster-info --context $CLUSTER_CONTEXT &>/dev/null || {
 echo ""
 echo "1️⃣  Namespace + ExternalSecrets"
 kubectl --context "$CLUSTER_CONTEXT" create namespace "$NS" --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+# The observability-plane chart mounts the cluster-gateway-ca ConfigMap into
+# its cluster-agent pod but does not create it (same as the DP/WF charts).
+# Without this the cluster-agent pod sits in ContainerCreating forever with
+# `MountVolume.SetUp failed for volume "server-ca" : configmap "cluster-gateway-ca" not found`.
+# Mirrors create_plane_cert_resources calls for openchoreo-{data,workflow}-plane
+# in setup-openchoreo.sh.
+create_plane_cert_resources "$NS"
 kubectl --context "$CLUSTER_CONTEXT" apply -f - <<EOF
 apiVersion: external-secrets.io/v1
 kind: ExternalSecret
@@ -113,14 +120,20 @@ rca:
   http:
     hostnames:
       - rca-agent.openchoreo.localhost
+# Disable the chart's standalone Gateway on :11080. k3d-openchoreo-serverlb
+# doesn't expose 11080, and step 4 below adds a cross-NS HTTPRoute on the
+# main kgateway (:8080) which is what the BFF reaches via
+# Host: observer.openchoreo.localhost. The bundled Gateway is dead weight.
 gateway:
-  httpPort: 11080
-  httpsPort: 11085
-  tls:
-    enabled: false
+  enabled: false
 EOF
-helm_install_if_not_exists "observability-plane" "$NS" \
+# Use `upgrade --install` (not the shared helm_install_if_not_exists helper)
+# so re-runs pick up value changes from /tmp/obs-plane-values.yaml. The
+# helper skips already-installed releases, which would silently bypass any
+# future tuning here.
+helm upgrade --install observability-plane \
     "oci://ghcr.io/openchoreo/helm-charts/openchoreo-observability-plane" \
+    --namespace "$NS" --create-namespace --kube-context "${CLUSTER_CONTEXT}" \
     --version "$OBS_PLANE_VERSION" \
     --values /tmp/obs-plane-values.yaml \
     --timeout 10m
@@ -135,13 +148,29 @@ echo "3️⃣  observability-logs-opensearch chart (v${OBS_LOGS_VERSION})"
 cat > /tmp/obs-logs-values.yaml <<EOF
 openSearchSetup:
   openSearchSecretName: opensearch-admin-credentials
+# Local-dev sizing — default heap is -Xmx512M, which resolves to ~980 MiB
+# resident with JVM overhead. 256M heap is enough for one developer's log
+# volume and brings resident usage to ~500-600 MiB. Subchart key is
+# openSearch (camelCase) — confirmed via
+# 'helm get values observability-logs-opensearch --all'.
+# (Backticks avoided here — this heredoc is unquoted to allow ${VAR}
+# substitution elsewhere, so backticks would trigger command substitution.)
+openSearch:
+  opensearchJavaOpts: "-Xmx256M -Xms256M"
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 768Mi
 # Enable Fluent Bit immediately so log collection is active from first install
 # (avoids a second helm-upgrade pass).
 fluent-bit:
   enabled: true
 EOF
-helm_install_if_not_exists "observability-logs-opensearch" "$NS" \
+helm upgrade --install observability-logs-opensearch \
     "oci://ghcr.io/openchoreo/helm-charts/observability-logs-opensearch" \
+    --namespace "$NS" --create-namespace --kube-context "${CLUSTER_CONTEXT}" \
     --version "$OBS_LOGS_VERSION" \
     --values /tmp/obs-logs-values.yaml \
     --timeout 15m

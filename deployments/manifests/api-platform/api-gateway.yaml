@@ -1,0 +1,22 @@
+# APIGateway CR: deploys WSO2 API Platform gateway in openchoreo-data-plane
+apiVersion: gateway.api-platform.wso2.com/v1alpha1
+kind: APIGateway
+metadata:
+  name: api-platform-default
+  namespace: openchoreo-data-plane
+spec:
+  apiSelector:
+    scope: Cluster
+  infrastructure:
+    replicas: 1
+    resources:
+      requests:
+        cpu: "500m"
+        memory: "1Gi"
+      limits:
+        cpu: "2"
+        memory: "4Gi"
+  storage:
+    type: sqlite
+  configRef:
+    name: api-platform-operator-gateway-values

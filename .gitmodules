@@ -1,4 +1,0 @@
-[submodule "deployments-v2/wso2cloud-deployment"]
-	path = deployments-v2/wso2cloud-deployment
-	url = https://github.com/wso2-enterprise/wso2cloud-deployment.git
-	branch = local-app-factory

@@ -42,6 +42,36 @@ type ComponentClient interface {
 	// the first build has produced RBs.
 	UpdateComponentWorkflowEnvVars(ctx context.Context, orgName, projectName, componentName string, envVars []models.WorkflowEnvVarRef) error
 
+	// DeleteComponent removes the Component CR. OC's controller GCs the
+	// chain (Component → ReleaseBinding → RenderedRelease → Deployment /
+	// Service / HTTPRoute) via k8s ownerReferences. NOTE: trait-emitted
+	// resources (Backend, RestApi) DO NOT carry owner refs back to the
+	// Component (the canonical `api-configuration` trait template's
+	// `creates` block omits them — see deployments/manifests/api-platform/
+	// api-configuration-trait.yaml). Cascade is therefore PARTIAL; the
+	// dp-namespace may retain orphaned Backend/RestApi resources. The
+	// caller (designService.DeleteComponent) emits an audit log entry
+	// reflecting that gap and a follow-up sweep is required to clean
+	// them up. Returns ErrComponentNotFound when the Component does not
+	// exist (idempotent — 404 is treated as success).
+	DeleteComponent(ctx context.Context, orgName, projectName, componentName string) error
+
+	// UpdateComponentTraits replaces `spec.traits` on an existing Component
+	// with the supplied slice. Passing an empty slice clears traits.
+	// Returns ErrComponentNotFound when the Component does not exist (the
+	// caller decides whether to recreate or no-op). Used by trait_sync.go
+	// when a user toggles `api.security` on `design.md` after first deploy.
+	UpdateComponentTraits(ctx context.Context, orgName, projectName, componentName string, traits []models.ComponentTrait) error
+
+	// UpdateComponentTraitEnvironmentConfigs writes per-environment trait
+	// configs onto each of the component's ReleaseBindings at
+	// `spec.traitEnvironmentConfigs`. Configs is keyed by trait instance
+	// name; the value is the parameters block (e.g. `{"jwtAuth": {"enabled": true}}`).
+	// Passing an empty map clears the field. When no RBs exist yet (pre-
+	// first-deploy) the call is a soft no-op — the caller retries via the
+	// trait-sync watcher once the deploy chain catches up.
+	UpdateComponentTraitEnvironmentConfigs(ctx context.Context, orgName, projectName, componentName string, configs map[string]map[string]interface{}) error
+
 	// Deploy (read-only — auto-deploy on the Component drives the chain)
 	ListDeployments(ctx context.Context, orgName, projectName, componentName string) (*models.DeploymentList, error)
 
@@ -422,6 +452,140 @@ func (c *componentClient) UpdateComponentWorkflowEnvVars(ctx context.Context, or
 	return nil
 }
 
+// DeleteComponent issues DELETE against OC's Component endpoint. Returns
+// nil on 200/204 OR 404 (idempotent — deleting a non-existent component
+// is a success). OC's controller cascades the chain via k8s ownerRefs;
+// trait-emitted Backend / RestApi resources are NOT covered by that
+// cascade (see interface comment), so callers must surface that gap to
+// the operator. The Component CR's RB list is GC'd by OC itself — the
+// BFF doesn't need to delete each RB individually.
+func (c *componentClient) DeleteComponent(ctx context.Context, orgName, projectName, componentName string) error {
+	scopedComp := ScopedComponentName(projectName, componentName)
+	resp, err := c.oc.DeleteComponentWithResponse(ctx, orgName, gen.ComponentNameParam(scopedComp))
+	if err != nil {
+		return fmt.Errorf("failed to delete component: %w", err)
+	}
+	switch resp.StatusCode() {
+	case http.StatusOK, http.StatusNoContent, http.StatusAccepted:
+		return nil
+	case http.StatusNotFound:
+		// Idempotent — caller's intent is satisfied.
+		return nil
+	}
+	return handleErrorResponse(resp.StatusCode(), ErrorResponses{
+		JSON401: resp.JSON401,
+		JSON403: resp.JSON403,
+		JSON404: resp.JSON404,
+		JSON500: resp.JSON500,
+	})
+}
+
+// UpdateComponentTraits replaces spec.traits on the named Component. GET-
+// then-PUT to satisfy OC's full-object update semantics. Pass an empty
+// slice to clear traits.
+func (c *componentClient) UpdateComponentTraits(ctx context.Context, orgName, projectName, componentName string, traits []models.ComponentTrait) error {
+	scopedComp := ScopedComponentName(projectName, componentName)
+	getResp, err := c.oc.GetComponentWithResponse(ctx, orgName, scopedComp)
+	if err != nil {
+		return fmt.Errorf("failed to get component for traits update: %w", err)
+	}
+	if getResp.StatusCode() != http.StatusOK || getResp.JSON200 == nil {
+		return handleErrorResponse(getResp.StatusCode(), ErrorResponses{
+			JSON401: getResp.JSON401,
+			JSON403: getResp.JSON403,
+			JSON404: getResp.JSON404,
+			JSON500: getResp.JSON500,
+		})
+	}
+	comp := *getResp.JSON200
+	if comp.Spec == nil {
+		comp.Spec = &gen.ComponentSpec{}
+	}
+	comp.Spec.Traits = componentTraitsToGen(traits)
+
+	updResp, err := c.oc.UpdateComponentWithResponse(ctx, orgName, gen.ComponentNameParam(scopedComp), gen.UpdateComponentJSONRequestBody(comp))
+	if err != nil {
+		return fmt.Errorf("failed to update component traits: %w", err)
+	}
+	if updResp.StatusCode() != http.StatusOK && updResp.StatusCode() != http.StatusCreated {
+		return handleErrorResponse(updResp.StatusCode(), ErrorResponses{
+			JSON400: updResp.JSON400,
+			JSON401: updResp.JSON401,
+			JSON403: updResp.JSON403,
+			JSON404: updResp.JSON404,
+			JSON500: updResp.JSON500,
+		})
+	}
+	return nil
+}
+
+// UpdateComponentTraitEnvironmentConfigs iterates the Component's
+// ReleaseBindings and writes the supplied trait-instance keyed configs
+// onto each one's `spec.traitEnvironmentConfigs`. Existing entries are
+// preserved when not named in `configs` (the typical add-trait case
+// shouldn't strip other traits' env configs). Pass a nil/empty value
+// for an instance to clear that instance's config.
+func (c *componentClient) UpdateComponentTraitEnvironmentConfigs(ctx context.Context, orgName, projectName, componentName string, configs map[string]map[string]interface{}) error {
+	scopedComp := ScopedComponentName(projectName, componentName)
+	componentQ := gen.ComponentQueryParam(scopedComp)
+	listResp, err := c.oc.ListReleaseBindingsWithResponse(ctx, orgName, &gen.ListReleaseBindingsParams{
+		Component: &componentQ,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list release bindings for trait env config update: %w", err)
+	}
+	if listResp.StatusCode() != http.StatusOK || listResp.JSON200 == nil {
+		return handleErrorResponse(listResp.StatusCode(), ErrorResponses{
+			JSON401: listResp.JSON401,
+			JSON403: listResp.JSON403,
+			JSON500: listResp.JSON500,
+		})
+	}
+
+	rbs := listResp.JSON200.Items
+	if len(rbs) == 0 {
+		// First build hasn't produced a ReleaseBinding yet — soft no-op.
+		// The trait_sync watcher will retry once the deploy chain catches up.
+		return nil
+	}
+
+	for _, rb := range rbs {
+		if rb.Spec == nil {
+			rb.Spec = &gen.ReleaseBindingSpec{}
+		}
+		// Merge: preserve any pre-existing instance keys we don't touch.
+		var merged map[string]interface{}
+		if rb.Spec.TraitEnvironmentConfigs != nil {
+			merged = *rb.Spec.TraitEnvironmentConfigs
+		} else {
+			merged = map[string]interface{}{}
+		}
+		for inst, params := range configs {
+			if len(params) == 0 {
+				delete(merged, inst)
+				continue
+			}
+			merged[inst] = cloneParameterMap(params)
+		}
+		rb.Spec.TraitEnvironmentConfigs = &merged
+
+		updResp, uerr := c.oc.UpdateReleaseBindingWithResponse(ctx, orgName, gen.ReleaseBindingNameParam(rb.Metadata.Name), gen.UpdateReleaseBindingJSONRequestBody(rb))
+		if uerr != nil {
+			return fmt.Errorf("failed to update release binding %s trait env config: %w", rb.Metadata.Name, uerr)
+		}
+		if updResp.StatusCode() != http.StatusOK && updResp.StatusCode() != http.StatusCreated {
+			return handleErrorResponse(updResp.StatusCode(), ErrorResponses{
+				JSON400: updResp.JSON400,
+				JSON401: updResp.JSON401,
+				JSON403: updResp.JSON403,
+				JSON404: updResp.JSON404,
+				JSON500: updResp.JSON500,
+			})
+		}
+	}
+	return nil
+}
+
 // buildCreateComponentBody mirrors the legacy hand-rolled body verbatim.
 // gen's ComponentSpec.{ComponentType,Owner} are inline anonymous structs;
 // we materialize them with composite literals to stay clear of pointer
@@ -468,7 +632,36 @@ func buildCreateComponentBody(projectName string, req *models.CreateComponentReq
 		}
 		body.Spec.Workflow = wf
 	}
+	if traits := componentTraitsToGen(req.Traits); traits != nil {
+		body.Spec.Traits = traits
+	}
 	return body
+}
+
+// componentTraitsToGen converts the BFF-internal slice into the gen shape.
+// Returns nil for an empty input so we don't stamp an empty traits array
+// onto Components without API security configured.
+func componentTraitsToGen(traits []models.ComponentTrait) *[]gen.ComponentTrait {
+	if len(traits) == 0 {
+		return nil
+	}
+	out := make([]gen.ComponentTrait, 0, len(traits))
+	for _, t := range traits {
+		entry := gen.ComponentTrait{
+			InstanceName: t.InstanceName,
+			Name:         t.Name,
+		}
+		if t.Kind != "" {
+			k := gen.ComponentTraitKind(t.Kind)
+			entry.Kind = &k
+		}
+		if len(t.Parameters) > 0 {
+			p := cloneParameterMap(t.Parameters)
+			entry.Parameters = &p
+		}
+		out = append(out, entry)
+	}
+	return &out
 }
 
 // workflowParametersToMap shapes our typed CreateComponentRequest.Workflow.Parameters

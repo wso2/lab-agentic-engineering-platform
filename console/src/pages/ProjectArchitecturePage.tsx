@@ -430,7 +430,12 @@ export default function ProjectArchitecturePage() {
         ),
       },
     ],
-    [effectiveComponents, designMdContent, handleDesignMdChange, designReadOnly],
+    [
+      effectiveComponents,
+      designMdContent,
+      handleDesignMdChange,
+      designReadOnly,
+    ],
   );
 
   // Strip the root `design.md` from the file list passed to Explorer — its

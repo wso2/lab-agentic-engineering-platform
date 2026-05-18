@@ -21,9 +21,11 @@ import OrgSettingsLayout from './pages/OrgSettingsLayout';
 import OrgGitHubSettings from './pages/OrgGitHubSettings';
 import OrgGitHubAppPicker from './pages/OrgGitHubAppPicker';
 import OrgAnthropicSettings from './pages/OrgAnthropicSettings';
+import OrgIDPSettings from './pages/OrgIDPSettings';
 import NoOrganizationPage from './pages/NoOrganizationPage';
 import { setOrgGithubTokenAccessor } from './services/api/orgGithub';
 import { setOrgAnthropicTokenAccessor } from './services/api/orgAnthropic';
+import { setOrgIDPTokenAccessor } from './services/api/orgIDP';
 import { useBillingOrg } from './hooks/useBillingOrg';
 import { organizationOverviewPath } from './lib/paths';
 import { resolveOuHandle } from './utils/orgClaims';
@@ -57,6 +59,7 @@ export function App() {
     setTokenAccessor(getAccessToken);
     setOrgGithubTokenAccessor(getAccessToken);
     setOrgAnthropicTokenAccessor(getAccessToken);
+    setOrgIDPTokenAccessor(getAccessToken);
   }, [getAccessToken]);
 
   // Triggers server-side org/subscription provisioning so downstream entitlement checks pass.
@@ -96,6 +99,7 @@ export function App() {
           <Route path="github" element={<OrgGitHubSettings />} />
           <Route path="github/pick" element={<OrgGitHubAppPicker />} />
           <Route path="anthropic" element={<OrgAnthropicSettings />} />
+          <Route path="idp" element={<OrgIDPSettings />} />
         </Route>
 
         <Route path="/organizations/:orgId/projects/:projectId" element={<ContextForwardingOutlet />}>

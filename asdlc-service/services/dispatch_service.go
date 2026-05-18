@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
+	"strings"
 	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
+	"github.com/wso2/asdlc/asdlc-service/clients/thundersvc"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 )
@@ -63,6 +66,14 @@ type DispatchService interface {
 	// source of truth for upstream URLs (the prompt no longer carries
 	// them). Best-effort: per-task failures are logged but never bubble.
 	AnnounceDependencyDeployed(ctx context.Context, orgID, projectID, componentName string)
+	// RegisterUserAppRedirectURI ensures the just-deployed component's
+	// external URL is registered as a redirect_uri on the user-apps
+	// OAuth client in Thunder. No-op when the component is not a
+	// web-app with auth.kind=oidc-spa, when the Thunder admin client
+	// is not configured, or when the URL hasn't materialised yet (we
+	// fail closed — manual register-after-deploy is always available).
+	// Best-effort: never returns an error; per-call failures are logged.
+	RegisterUserAppRedirectURI(ctx context.Context, orgID, projectID, componentName string)
 }
 
 type dispatchService struct {
@@ -77,6 +88,64 @@ type dispatchService struct {
 	projector     TaskStateProjector
 	gitServiceURL string // URL the agent pod uses to reach git-service; cross-namespace FQDN in cluster
 	platformURL   string // URL the agent pod uses to call the BFF F3c verification-failed callback
+	// traitSync, when non-nil, is invoked after CreateComponent to
+	// reconcile per-environment trait configs (the part CreateComponent
+	// can't pre-stamp because RBs are created asynchronously by OC's
+	// autoDeploy controller). Set via WithTraitSync. Optional in tests.
+	traitSync *TraitSyncService
+	// userAppsOIDC, when ClientID is non-empty, drives the
+	// `## OIDC client provisioned` comment posted on the issues of
+	// web-app tasks whose design has auth.kind=oidc-spa. Wired via
+	// SetUserAppsOIDC from main.go's config. Optional in tests.
+	userAppsOIDC UserAppsOIDC
+	// thunderAdmin, when non-nil, is used to register a deployed
+	// user-webapp's external URL on the userAppsOIDC.ClientID app's
+	// redirectUris set (see RegisterUserAppRedirectURI). Wired via
+	// SetThunderAdminClient. Optional in tests — without it the
+	// register step logs and skips, and the operator must add the URL
+	// manually before browser sign-in works for that webapp.
+	thunderAdmin thundersvc.Client
+}
+
+// UserAppsOIDC is the BFF-side mirror of config.UserAppsOIDCConfig —
+// declared here to keep the services package independent of config.
+//
+// InternalProxyPass is the URL the SPA's own nginx writes verbatim as
+// the `proxy_pass` target for the same-origin `/oidc/` block. Must be
+// reachable from a pod inside the cluster — see UserAppsOIDCConfig.
+type UserAppsOIDC struct {
+	Issuer            string
+	ClientID          string
+	Scopes            string
+	InternalProxyPass string
+}
+
+// SetUserAppsOIDC installs the OIDC config the dispatch path hands to
+// user web-apps via issue comments. Call after NewDispatchService.
+func (s *dispatchService) SetUserAppsOIDC(cfg UserAppsOIDC) {
+	s.userAppsOIDC = cfg
+}
+
+// SetThunderAdminClient installs the Thunder REST client used to register
+// per-webapp redirect URIs on the user-apps OAuth client. Call after
+// NewDispatchService (in production) — when nil, RegisterUserAppRedirectURI
+// is a logged no-op and the operator must register URIs by hand.
+func (s *dispatchService) SetThunderAdminClient(c thundersvc.Client) {
+	s.thunderAdmin = c
+}
+
+// DispatchServiceWithTraitSync surfaces the trait_sync setter without
+// polluting the public DispatchService interface (parallels the
+// DesignServiceWithTaskHook pattern in design_service.go).
+type DispatchServiceWithTraitSync interface {
+	DispatchService
+	SetTraitSync(traitSync *TraitSyncService)
+}
+
+// SetTraitSync installs the shared trait_sync emitter. Call after
+// NewDispatchService in production wiring.
+func (s *dispatchService) SetTraitSync(traitSync *TraitSyncService) {
+	s.traitSync = traitSync
 }
 
 func NewDispatchService(
@@ -509,6 +578,83 @@ func (s *dispatchService) AnnounceDependencyDeployed(ctx context.Context, orgID,
 	)
 }
 
+// RegisterUserAppRedirectURI is the cascade-time hook that registers a
+// just-deployed OIDC-SPA web-app's external URL on the user-apps OAuth
+// client in Thunder (the redirect_uris set the SPA's /oauth2/authorize
+// call is checked against). Without this, browser sign-in fails with
+// "Invalid redirect URI" on the first load of the new webapp.
+//
+// Idempotent on each URI (re-running on an unchanged design is free).
+// Best-effort: never returns an error; failures log + skip.
+func (s *dispatchService) RegisterUserAppRedirectURI(ctx context.Context, orgID, projectID, componentName string) {
+	if s == nil || s.componentSvc == nil || s.store == nil || s.gitClient == nil {
+		return
+	}
+	if s.thunderAdmin == nil {
+		slog.DebugContext(ctx, "registerUserAppRedirect: thunder admin client not configured; skipping",
+			"project", projectID, "component", componentName)
+		return
+	}
+	if s.userAppsOIDC.ClientID == "" {
+		slog.DebugContext(ctx, "registerUserAppRedirect: USER_APPS_OIDC_CLIENT_ID not configured; skipping",
+			"project", projectID, "component", componentName)
+		return
+	}
+	if s.tokenInject != nil {
+		ctx = s.tokenInject(ctx)
+	}
+	design, err := s.store.ReadDesign(ctx, orgID, projectID)
+	if err != nil || design == nil {
+		slog.WarnContext(ctx, "registerUserAppRedirect: read design failed",
+			"project", projectID, "component", componentName, "error", err)
+		return
+	}
+	var comp *models.DesignComponent
+	for i := range design.Components {
+		if design.Components[i].Name == componentName {
+			comp = &design.Components[i]
+			break
+		}
+	}
+	if comp == nil || comp.ComponentType != "web-app" {
+		return
+	}
+	if comp.Auth == nil || comp.Auth.Kind != "oidc-spa" {
+		return
+	}
+	url := s.resolveExternalURL(ctx, orgID, projectID, componentName)
+	if url == "" {
+		slog.WarnContext(ctx, "registerUserAppRedirect: no external URL for webapp; skipping",
+			"project", projectID, "component", componentName)
+		return
+	}
+	// Append both the origin and origin/callback. Different SPA stacks
+	// pick different conventions (Asgardeo SDK uses the origin; the
+	// canonical SKILL recipe in this repo uses origin/callback) — we
+	// add both to be safe. EnsureRedirectURIs dedupes existing entries.
+	// Strip a trailing slash from the origin first — firstExternalURL
+	// often returns `http://host:port/` and naive concat yields
+	// `http://host:port//callback`, which Thunder treats as a distinct
+	// (non-matching) URI from the SPA's `${origin}/callback`.
+	origin := strings.TrimRight(url, "/")
+	uris := []string{origin, origin + "/callback"}
+	added, err := s.thunderAdmin.EnsureRedirectURIs(ctx, s.userAppsOIDC.ClientID, uris)
+	if err != nil {
+		slog.WarnContext(ctx, "registerUserAppRedirect: thunder update failed",
+			"project", projectID, "component", componentName,
+			"clientId", s.userAppsOIDC.ClientID, "error", err)
+		return
+	}
+	if added {
+		slog.InfoContext(ctx, "registerUserAppRedirect: redirect URIs registered",
+			"project", projectID, "component", componentName,
+			"clientId", s.userAppsOIDC.ClientID, "uris", uris)
+	} else {
+		slog.DebugContext(ctx, "registerUserAppRedirect: redirect URIs already present (no-op)",
+			"project", projectID, "component", componentName, "uris", uris)
+	}
+}
+
 // resolveExternalURL resolves a single component's first external URL, or
 // "" if the component has no deployed endpoint with `visibility: external`.
 // Mirrors resolveDependencyEndpoints' inner step but for a single
@@ -709,6 +855,22 @@ func (s *dispatchService) ensureOCComponent(
 	// ReleaseBindings don't exist yet — OC creates them after autoDeploy
 	// observes the build's Workload — so the next config save (or the
 	// caller's post-dispatch reconcile) is what lands env vars into them.
+	// Phase 2 — derive the `api-configuration` trait from design.md's
+	// optional `api.security` block. nil/none ⇒ no trait, no AP hop;
+	// `required` ⇒ trait attached with cors+jwtAuth enabled in every env.
+	// See services/trait_sync.go for the canonical emitter.
+	//
+	// Gated on FEATURE_EMIT_API_TRAIT — when off, both `apiSecurityEnabled`
+	// and `traits` stay zero-valued so the resulting Component is
+	// bit-identical to the pre-Phase-2 baseline (covered by
+	// tests/api/baseline_diff_test.go).
+	var apiSecurityEnabled bool
+	var traits []models.ComponentTrait
+	if s.traitSync != nil && s.traitSync.Enabled() {
+		apiSecurityEnabled = ResolveAPISecurityEnabled(*comp)
+		traits, _ = DesiredAPIConfigurationTrait(componentName, apiSecurityEnabled)
+	}
+
 	_, err = s.componentSvc.CreateComponent(ctx, task.OrgID, task.ProjectID, &models.CreateComponentRequest{
 		Name:        componentName,
 		DisplayName: task.ComponentName,
@@ -732,9 +894,119 @@ func (s *dispatchService) ensureOCComponent(
 				},
 			},
 		},
+		Traits: traits,
 	})
 	if err != nil {
 		return fmt.Errorf("create component: %w", err)
 	}
+
+	// Best-effort post-create sync. Idempotent — the Component already has
+	// traits set via CreateComponent above; this call resolves the
+	// per-environment ReleaseBinding configs once OC creates them. When no
+	// RBs exist yet the call is a soft no-op (the trait_sync watcher will
+	// catch up).
+	if apiSecurityEnabled && s.traitSync != nil {
+		if syncErr := s.traitSync.SyncComponentTraits(ctx, task.OrgID, task.ProjectID, componentName); syncErr != nil {
+			slog.WarnContext(ctx, "ensureOCComponent: trait_sync best-effort failed",
+				"orgID", task.OrgID,
+				"projectID", task.ProjectID,
+				"componentName", componentName,
+				"error", syncErr,
+			)
+		}
+	}
+
+	// Best-effort: post the `## OIDC client provisioned` comment on the
+	// issue for web-apps whose design has auth.kind=oidc-spa. The coding
+	// agent reads this comment (per the asdlc SKILL's OIDC-SPA section)
+	// and bakes the values into the SPA's workload.yaml env block.
+	s.announceOIDCConfigIfApplicable(ctx, task, comp)
+
 	return nil
+}
+
+// announceOIDCConfigIfApplicable posts a `## OIDC client provisioned`
+// comment on the task's issue when (a) the component is a web-app, (b)
+// its design has auth.kind = "oidc-spa", and (c) the BFF has
+// USER_APPS_OIDC_CLIENT_ID configured. Idempotency: re-running dispatch
+// re-posts the comment; the agent uses the most recent matching comment,
+// so duplicates are harmless. Best-effort — failures log and don't bubble.
+func (s *dispatchService) announceOIDCConfigIfApplicable(ctx context.Context, task *models.ComponentTask, comp *models.DesignComponent) {
+	if comp == nil || comp.ComponentType != "web-app" {
+		return
+	}
+	if comp.Auth == nil || comp.Auth.Kind != "oidc-spa" {
+		return
+	}
+	if s.userAppsOIDC.ClientID == "" {
+		slog.WarnContext(ctx, "announceOIDC: USER_APPS_OIDC_CLIENT_ID not configured; skipping comment",
+			"task", task.ID, "component", task.ComponentName)
+		return
+	}
+	if task.IssueNumber == 0 {
+		return
+	}
+	body := buildOIDCCommentBody(s.userAppsOIDC)
+	if err := s.gitClient.CommentIssue(ctx, task.OrgID, task.ProjectID, task.IssueNumber, body); err != nil {
+		slog.WarnContext(ctx, "announceOIDC: comment failed",
+			"task", task.ID, "component", task.ComponentName, "error", err)
+		return
+	}
+	slog.InfoContext(ctx, "announceOIDC: comment posted",
+		"task", task.ID, "component", task.ComponentName,
+		"clientId", s.userAppsOIDC.ClientID, "issuer", s.userAppsOIDC.Issuer,
+	)
+}
+
+// buildOIDCCommentBody renders the markdown for a `## OIDC client
+// provisioned` comment. The format mirrors `## Dependency endpoint
+// resolved` so the asdlc SKILL can scan-and-reduce both comment kinds
+// the same way. Kept structured enough for the agent to parse
+// confidently while staying readable for a human reviewer.
+//
+// `host` is derived from the Issuer URL (hostname:port stripped of scheme).
+// It is needed by the SPA's nginx `/oidc/` same-origin proxy block, which
+// sets `proxy_set_header Host ${OIDC_HOST}` so Thunder sees its own
+// canonical hostname (kgateway routes by Host header).
+func buildOIDCCommentBody(cfg UserAppsOIDC) string {
+	host := cfg.Issuer
+	if u, err := url.Parse(cfg.Issuer); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	return fmt.Sprintf(
+		"## OIDC client provisioned\n"+
+			"\n"+
+			"- **issuer**: %s\n"+
+			"- **clientId**: %s\n"+
+			"- **scopes**: %s\n"+
+			"- **host**: %s\n"+
+			"- **internalProxyPass**: %s\n"+
+			"\n"+
+			"Bake the first four values into `<appPath>/.env` BEFORE "+
+			"`npm run build` as `VITE_OIDC_ISSUER`, "+
+			"`VITE_OIDC_CLIENT_ID`, `VITE_OIDC_SCOPES`, "+
+			"`VITE_OIDC_HOST` (or the framework's equivalent "+
+			"prefix — CRA `REACT_APP_*`, Next `NEXT_PUBLIC_*`). "+
+			"Add `VITE_API_BASE_URL` from the upstream's "+
+			"`## Dependency endpoint resolved` comment. Read them "+
+			"via `import.meta.env.VITE_*` and throw at module "+
+			"top-level on missing — no silent `?? ''` fallback. "+
+			"ALSO write the `internalProxyPass` value above as the "+
+			"literal `proxy_pass` target in `nginx/default.conf` for "+
+			"the same-origin `/oidc/` proxy (it routes `/oidc/token` "+
+			"to Thunder's `/oauth2/token`, bypassing a kgateway "+
+			"CORS bug). The `internalProxyPass` is an in-cluster "+
+			"Service FQDN — the public `issuer` hostname does NOT "+
+			"resolve from inside a pod, so DO NOT use `${issuer}/oauth2/` "+
+			"as the `proxy_pass` target (nginx will fail to start with "+
+			"\"host not found in upstream\"). The redirect URI is "+
+			"`window.location.origin + '/callback'`. DO NOT use "+
+			"`workload.yaml` `configurations.env`, nginx "+
+			"envsubst, `/etc/nginx/templates/`, `/env-config.js`, "+
+			"or `window.__ENV__` — those runtime mechanisms are "+
+			"deprecated. See the `asdlc` SKILL's OIDC-SPA section "+
+			"for the reference `.env`, `nginx/default.conf`, and "+
+			"`src/auth.ts`.",
+		cfg.Issuer, cfg.ClientID, cfg.Scopes, host, cfg.InternalProxyPass,
+	)
 }

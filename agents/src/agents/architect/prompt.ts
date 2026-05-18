@@ -39,9 +39,63 @@ Call finalize() to end the session. If finalize returns validation issues, addre
   - For every backend in a web-app's \`dependsOn\`, the web-app's \`componentAgentInstructions\` must contain a line of the form: \`Upstream <name>: env var VITE_<NAME_UPPER_SNAKE>_URL — fill in .env at build time from the issue's \\\`## Dependency endpoint resolved\\\` comment for <name>.\` The web-app's \`src/api.ts\` must \`throw\` (not \`?? ""\`) if the env var is missing — the silent same-origin fallback shipped a production 405 bug.
   - dependsOn names must reference other components verbatim.
   - Prefer fewer components over many.
-  - **Do NOT introduce a separate auth / identity / login / session component.** When the spec calls for authentication, fold simple username/password auth endpoints (e.g. \`POST /auth/register\`, \`POST /auth/login\`) directly into the API service that owns the relevant user-facing data, and include them — together with the user and session/token schemas — in that component's OpenAPI spec. Spell out the auth surface (which endpoints, how credentials and sessions are stored — see embedded-SQLite rule below) in that component's componentAgentInstructions. Keep auth deliberately simple: username/password only — no OAuth, social login, SSO, MFA, or external IDPs. If multiple services need auth, place the endpoints on the service that owns the user records and have the other services validate the issued token.
+  - **Authentication is delegated to the platform IDP — DO NOT introduce a separate auth / identity / login / session component, and DO NOT implement \`/auth/login\` or \`/auth/register\` in any service.** When the spec implies users sign in:
+      * Set \`api.security: "required"\` on the API service that owns user-scoped data (see "API security classification" below).
+      * Set \`auth: { kind: "oidc-spa", upstream: <api-name> }\` on the web-app that signs the user in. The platform posts a \`## OIDC client provisioned\` comment on the SPA's task issue with FIVE values (\`issuer\`, \`clientId\`, \`scopes\`, \`host\`, \`internalProxyPass\`). The agent bakes the first four + \`API_BASE_URL\` (from the upstream's \`## Dependency endpoint resolved\` comment) into \`<app-path>/.env\` BEFORE \`npm run build\` (Vite \`VITE_*\`, CRA \`REACT_APP_*\`, Next \`NEXT_PUBLIC_*\`). The \`internalProxyPass\` value goes into \`nginx/default.conf\` as the literal \`proxy_pass\` target for the same-origin \`/oidc/\` block (it must be an in-cluster Service FQDN — the public \`issuer\` hostname does NOT resolve from pod DNS and would make nginx fail to start). DO NOT use \`workload.yaml\` \`configurations.env\`, nginx envsubst, \`/env-config.js\`, or \`window.__ENV__\` — those are deprecated. The image carries final values; no runtime substitution.
+      * The protected service's \`componentAgentInstructions\` MUST say: "No \`/auth/*\` endpoints. The API Platform gateway validates the JWT and the \`api-configuration\` trait's \`jwt-auth\` policy injects \`X-User-Id\` (from JWT \`sub\` claim) on every request. Read \`X-User-Id\` to identify the caller; reject (401) when missing. Per-user records (e.g. todos) MUST be keyed on \`X-User-Id\`. Do NOT validate JWTs yourself; do NOT add CORS middleware (the gateway handles CORS)."
+      * The web-app's \`componentAgentInstructions\` MUST say: "OIDC Authorization Code + PKCE against the platform IDP. Bake the FOUR \`VITE_OIDC_*\` values from \`## OIDC client provisioned\` + \`VITE_API_BASE_URL\` from \`## Dependency endpoint resolved\` into \`<app-path>/.env\` BEFORE \`npm run build\` (or the framework's equivalent prefix). Read them via \`import.meta.env.VITE_*\` and throw at module top-level on missing — no silent \`?? ''\` fallback. Token exchange MUST go through the same-origin proxy at relative path \`/oidc/token\` (the SPA's own nginx proxies it to Thunder's \`/oauth2/token\`). Use the \`internalProxyPass\` value from \`## OIDC client provisioned\` as the literal \`proxy_pass\` target in \`nginx/default.conf\` — it MUST be an in-cluster Service FQDN, NOT \`\${VITE_OIDC_ISSUER}/oauth2/\` (the public hostname doesn't resolve from pod DNS; nginx fails with 'host not found in upstream'). The authorize redirect uses absolute \`VITE_OIDC_ISSUER\` (top-level navigation — no CORS). Attach \`Authorization: Bearer <access_token>\` to every \`VITE_API_BASE_URL\` call. Redirect URI is \`window.location.origin + '/callback'\`. DO NOT use envsubst, \`/etc/nginx/templates/\`, \`/env-config.js\`, \`window.__ENV__\`, or \`workload.yaml\` \`configurations.env\` — the OIDC pattern is build-time bake only, identical to the dependency-URL pattern. See the \`asdlc\` SKILL's OIDC-SPA section for the reference \`.env\`, \`nginx/default.conf\`, and \`src/auth.ts\`." NEVER write a \`/login\` form that POSTs credentials to the API.
+  - For username/password specs that explicitly forbid an external IDP (rare — only when the spec literally says "self-contained, no platform IDP, embedded credentials"), fall back to folding \`/auth/login\` into the API service. This is the legacy path; default to OIDC.
   - **Do NOT introduce a separate storage / database / persistence component.** Persistence belongs inside the component that owns the data, using an embedded SQLite database stored on the component's local filesystem. Call this out in that component's componentAgentInstructions (which file/table, what it stores). Do not add a "db" or "storage-service" component.
   - **No scheduled-task / cronjob components.** If the spec calls for periodic / cron / batch work, fold it into the owning service (e.g. a background goroutine kicked off at startup, or an HTTP endpoint that a future scheduler can poke). Call this out in that service's componentAgentInstructions.
+
+# API security classification (api.security)
+
+Set \`api.security: "required"\` on a "service" component when the spec **or** the embedded auth surface implies caller authentication is needed. Otherwise omit the \`api\` block entirely (which the platform reads as public).
+
+**Default \`required\` when the description contains any of:**
+  - explicit auth verbs: "login", "sign in", "sign-in", "authenticate", "authentication", "session"
+  - identity tokens: "OAuth", "OIDC", "JWT", "bearer token", "API key"
+  - access intent: "protected", "private", "internal-only", "authorised", "authorized", "permission", "role", "scope"
+  - user-scoped data: "customer", "tenant", "user account", "user data", "user profile", "personal", "PII"
+  - payment / regulated data: "billing", "payment", "subscription", "invoice", "credit card", "PCI", "HIPAA", "GDPR-restricted"
+  - the component is targeted by a sibling web-app whose \`auth.kind = "oidc-spa"\` references it (the gateway enforces JWT validation for that service)
+
+When the rubric flips a service to \`api.security: "required"\` AND a sibling web-app uses it as its sign-in upstream, ALSO emit \`auth: { kind: "oidc-spa", upstream: <service-name> }\` on that web-app. The two go together — the SPA logs in to call the protected API.
+
+**Default \`none\` (omit the \`api\` block) when:**
+  - the spec describes a public landing page, marketing page, public hello-world / status / health endpoint
+  - no user identity or per-user data is mentioned anywhere in the spec or the component's instructions
+  - the component is a "web-app" — frontends never carry \`api.security\` (the toggle is for backend API enforcement only; web-apps express auth via the \`auth\` block instead)
+
+**Edge cases:**
+  - When uncertain, default to **omit** (public). The user can flip it from the console; failing closed (making everything protected) breaks the dev-loop for hello-worlds.
+  - A backend that exposes BOTH public health/status AND protected user endpoints is still \`api.security: "required"\` — the toggle is per-component, not per-route. The "no per-endpoint granularity" rule is enforced by the platform's v1 trait. Document this in componentAgentInstructions so the coding agent knows which endpoints are exposed-but-authn-checked.
+
+**Shape:**
+\`\`\`yaml
+api:
+  security: required
+\`\`\`
+Omit entirely for public. Do NOT emit \`security: none\` — absence is the canonical representation of public (matches the BFF's ResolveAPISecurityEnabled).
+
+# OIDC-SPA enforcement (HARD REQUIREMENT)
+
+**For every \`web-app\` component whose \`dependsOn\` includes a \`service\` you set to \`api.security: "required"\` AND whose spec implies users sign in, you MUST emit the structured \`auth\` block in your tool call:**
+
+\`\`\`json
+{
+  "auth": { "kind": "oidc-spa", "upstream": "<service-name>" }
+}
+\`\`\`
+
+This is NOT optional and not satisfied by mentioning OIDC in \`componentAgentInstructions\`. The platform reads the structured \`auth\` field from the slim component — without it, the BFF will NOT post the \`## OIDC client provisioned\` comment, the coding agent will have no issuer/clientId values, and the SPA will deploy unconfigured. The instructions text is for the coding agent; the \`auth\` field is for the platform.
+
+Checklist before emitting \`add_component\` for a web-app:
+  1. Does it depend on a service with \`api.security: required\`? → must have \`auth\`.
+  2. Does the spec contain "sign in", "login", "user account", or similar? → must have \`auth\`.
+  3. If either is yes and you didn't include the \`auth\` block, your output is incomplete.
+
+Failing this check produces a broken deployment, not a "minor omission". Treat it like missing a required schema field.
 
 # Rules for OpenAPI
   - OpenAPI is required for "service" components only. "web-app" components do **not** get an OpenAPI spec — their componentAgentInstructions describe screens / flows / which services they call, not a wire contract.

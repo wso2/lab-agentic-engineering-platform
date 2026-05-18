@@ -1,0 +1,21 @@
+# Public hello-world Component. Routes through the AP router because the
+# api-configuration trait is attached, but the ReleaseBinding sets
+# jwtAuth.enabled: false so unauthenticated calls pass.
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: poc-public
+  namespace: default
+spec:
+  owner:
+    projectName: poc-api-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/service
+  autoDeploy: true
+  traits:
+    - instanceName: poc-public-http
+      kind: ClusterTrait
+      name: api-configuration
+      parameters:
+        endpointName: http

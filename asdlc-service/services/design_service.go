@@ -43,6 +43,11 @@ func toK8sName(name string) string {
 	return s
 }
 
+// ToK8sName is an exported alias for toK8sName so callers outside the
+// services package (e.g. webhook/trait_sync_watcher) can produce the
+// same k8s-shaped slug the dispatch path uses.
+func ToK8sName(name string) string { return toK8sName(name) }
+
 // DesignBundle is the file-map view returned to the architecture page. It
 // pairs the raw per-file working-tree contents (used by the Explorer) with
 // the assembled flat Design (used by the cell diagram + downstream code).
@@ -70,6 +75,11 @@ type designService struct {
 	agentsClient agents.Client
 	gitClient    gitservice.Client
 	taskSvc      TaskService // for SaveAndProceed reconciliation; may be nil in tests
+	// traitSync, when non-nil, is invoked after a per-component design
+	// edit so an `api.security` toggle propagates to the OC Component +
+	// ReleaseBindings without waiting for the next dispatch. Set via
+	// SetTraitSync. Optional in tests.
+	traitSync *TraitSyncService
 }
 
 // DesignServiceWithTaskHook lets the construction wire-up surface the
@@ -78,6 +88,14 @@ type designService struct {
 type DesignServiceWithTaskHook interface {
 	DesignService
 	SetTaskService(taskSvc TaskService)
+}
+
+// DesignServiceWithTraitSync surfaces the trait_sync setter so an
+// `api.security` toggle on design.md propagates to OC after the file is
+// written. Mirrors the DesignServiceWithTaskHook pattern.
+type DesignServiceWithTraitSync interface {
+	DesignService
+	SetTraitSync(traitSync *TraitSyncService)
 }
 
 func NewDesignService(
@@ -94,6 +112,10 @@ func NewDesignService(
 
 func (s *designService) SetTaskService(taskSvc TaskService) {
 	s.taskSvc = taskSvc
+}
+
+func (s *designService) SetTraitSync(traitSync *TraitSyncService) {
+	s.traitSync = traitSync
 }
 
 func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) (*models.Design, error) {
@@ -401,11 +423,46 @@ func (s *designService) GetDesignBundleAtTag(ctx context.Context, orgID, project
 
 // UpdateDesignFile writes a single file under .asdlc/design/ and returns
 // the refreshed bundle.
+//
+// Side effect: when the written file is a per-component `design.md`,
+// fire `SyncComponentTraits` so an `api.security` toggle propagates to
+// the OC Component + ReleaseBindings before the next dispatch. Best-
+// effort — failures are logged but never bubble (design tree is the
+// canonical source; the trait_sync watcher reconciles on the next
+// sweep).
 func (s *designService) UpdateDesignFile(ctx context.Context, orgID, projectID, subPath, content string) (*DesignBundle, error) {
 	if _, err := s.store.WriteDesignFile(ctx, orgID, projectID, subPath, content); err != nil {
 		return nil, err
 	}
+	if compName, ok := componentNameFromDesignPath(subPath); ok && s.traitSync != nil {
+		if err := s.traitSync.SyncComponentTraits(ctx, orgID, projectID, toK8sName(compName)); err != nil {
+			slog.WarnContext(ctx, "design_service.UpdateDesignFile: trait_sync best-effort failed",
+				"orgID", orgID,
+				"projectID", projectID,
+				"componentName", compName,
+				"subPath", subPath,
+				"error", err,
+			)
+		}
+	}
 	return s.GetDesignBundle(ctx, orgID, projectID)
+}
+
+// componentNameFromDesignPath returns the component name encoded in a
+// `components/<name>/design.md` sub-path, or false for any other path
+// (root design.md, openapi.yaml, etc.). Used by UpdateDesignFile to gate
+// the trait_sync hook to the one path where `api.security` lives.
+func componentNameFromDesignPath(subPath string) (string, bool) {
+	const prefix = "components/"
+	const suffix = "/design.md"
+	if !strings.HasPrefix(subPath, prefix) || !strings.HasSuffix(subPath, suffix) {
+		return "", false
+	}
+	name := subPath[len(prefix) : len(subPath)-len(suffix)]
+	if name == "" || strings.ContainsRune(name, '/') {
+		return "", false
+	}
+	return name, true
 }
 
 // DeleteDesignFile removes a single file under .asdlc/design/ and returns
@@ -419,12 +476,31 @@ func (s *designService) DeleteDesignFile(ctx context.Context, orgID, projectID, 
 
 // DeleteComponent removes the entire components/<name>/ directory and
 // returns the refreshed bundle.
+//
+// Side effect: triggers the OC cascade via TraitSyncService.DeleteComponentCascade
+// so the Component CR + ReleaseBindings are GC'd in OC. The OC delete is
+// best-effort — failures are logged but never propagate to the user,
+// since the design tree has already been mutated (cascade-mismatch is
+// surfaced by the audit log). See trait_sync.DeleteComponentCascade for
+// the documented owner-ref gap on trait-emitted Backend/RestApi
+// resources (R3).
 func (s *designService) DeleteComponent(ctx context.Context, orgID, projectID, componentName string) (*DesignBundle, error) {
 	if componentName == "" {
 		return nil, fmt.Errorf("component name required")
 	}
 	if err := s.store.DeleteDesignDirectory(ctx, orgID, projectID, ComponentDirPath(componentName)); err != nil {
 		return nil, err
+	}
+	if s.traitSync != nil {
+		k8sName := toK8sName(componentName)
+		if err := s.traitSync.DeleteComponentCascade(ctx, orgID, projectID, k8sName); err != nil {
+			slog.WarnContext(ctx, "design_service.DeleteComponent: OC cascade best-effort failed",
+				"orgID", orgID,
+				"projectID", projectID,
+				"componentName", componentName,
+				"error", err,
+			)
+		}
 	}
 	return s.GetDesignBundle(ctx, orgID, projectID)
 }

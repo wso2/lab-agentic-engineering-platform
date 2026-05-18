@@ -1,0 +1,21 @@
+# Protected hello-world Component. Same trait as poc-public; the
+# ReleaseBinding flips jwtAuth.enabled to true so the AP router rejects
+# requests without a valid Bearer token (validated against Thunder's JWKS).
+apiVersion: openchoreo.dev/v1alpha1
+kind: Component
+metadata:
+  name: poc-protected
+  namespace: default
+spec:
+  owner:
+    projectName: poc-api-platform
+  componentType:
+    kind: ClusterComponentType
+    name: deployment/service
+  autoDeploy: true
+  traits:
+    - instanceName: poc-protected-http
+      kind: ClusterTrait
+      name: api-configuration
+      parameters:
+        endpointName: http

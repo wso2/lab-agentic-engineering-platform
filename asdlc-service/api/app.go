@@ -31,6 +31,7 @@ type AppParams struct {
 	OrgGitHubController    controllers.OrgGitHubController
 	OrgAnthropicController controllers.OrgAnthropicController
 	OrganizationController controllers.OrganizationController
+	IDPController          controllers.IDPController
 	JWKSController         controllers.JWKSController
 	TaskRepo               repositories.TaskRepository
 	ConfigRepo             repositories.ConfigRepository
@@ -98,6 +99,9 @@ func NewHandler(params AppParams) http.Handler {
 	}
 	if params.OrgAnthropicController != nil {
 		registerOrgAnthropicRoutes(apiMux, params.OrgAnthropicController)
+	}
+	if params.IDPController != nil {
+		registerIDPRoutes(apiMux, params.IDPController)
 	}
 
 	// Test-only reset endpoint — truncates local DB tables.

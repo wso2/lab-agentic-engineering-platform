@@ -83,3 +83,12 @@ server:
       # v2's deployments-v2/wso2cloud-deployment/.../layer-0/tools/openbao.yaml.
       bao kv put secret/opensearch-username value="admin"
       bao kv put secret/opensearch-password value="ThisIsTheOpenSearchPassword1"
+
+      # ── ASDLC system client (Phase 3 of api-platform-integration) ────
+      # The BFF's clients/thundersvc.getSystemToken reads this path to
+      # mint Thunder admin tokens with scope=system. Value mirrors the
+      # asdlc-system-client row in values-thunder.yaml CONFIDENTIAL_APPS
+      # so a single source-of-truth rotation is one line + bounce.
+      bao kv put secret/asdlc/system/thunder-admin \
+        clientId="asdlc-system-client" \
+        clientSecret="asdlc-system-client-secret"

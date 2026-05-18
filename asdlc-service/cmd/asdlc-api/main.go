@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -19,6 +20,7 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/clients/observability"
 	"github.com/wso2/asdlc/asdlc-service/clients/observer"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
+	"github.com/wso2/asdlc/asdlc-service/clients/thundersvc"
 	"github.com/wso2/asdlc/asdlc-service/config"
 	"github.com/wso2/asdlc/asdlc-service/controllers"
 	"github.com/wso2/asdlc/asdlc-service/database"
@@ -98,6 +100,14 @@ func main() {
 	// See docs/design/cross-component-wiring-gaps.md. Idempotent.
 	if err := migrations.RunPhase5DeployGating(db); err != nil {
 		slog.Error("phase5_deploy_gating migration failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Phase 6 — API platform IDP: organization_idp_profiles + idp_audit_events
+	// tables for per-org Thunder publisher client lifecycle. See
+	// docs/design/api-platform-integration.md §6 Phase 3.
+	if err := migrations.RunPhase6APIPlatformIDP(db); err != nil {
+		slog.Error("phase6_api_platform_idp migration failed", "error", err)
 		os.Exit(1)
 	}
 
@@ -228,6 +238,57 @@ func main() {
 		hook.SetTaskService(taskService)
 	}
 
+	// Phase 2 (api-platform-integration) — trait_sync is the single shared
+	// emitter that reconciles the `api-configuration` ClusterTrait on a
+	// Component CR + per-environment ReleaseBindings. Hooked from both the
+	// dispatch path (after CreateComponent) and the design-edit path
+	// (after `components/<name>/design.md` PUT). See
+	// docs/design/api-platform-integration.md §6 Phase 2.
+	traitSyncService := services.NewTraitSyncService(componentClient, artifactStore, cfg.FeatureEmitAPITrait)
+	slog.Info("Trait sync service", "enabled", cfg.FeatureEmitAPITrait)
+	if hook, ok := designService.(services.DesignServiceWithTraitSync); ok {
+		hook.SetTraitSync(traitSyncService)
+	}
+
+	// Phase 3 — Thunder admin client + IDP service. Reads
+	// asdlc-system-client credentials from env (THUNDER_*) and exposes
+	// EnsureOrgPublisher / RevokeOrgPublisher / RegenerateClientSecret
+	// for per-org publisher OAuth app lifecycle. Optional — when the
+	// Thunder base URL is empty the IDP service still runs and serves
+	// GetProfile / GetOrCreateProfile, but mutating calls fail with
+	// ErrIDPThunderUnavailable (non-fatal — protected components keep
+	// deploying, just without per-org publishers).
+	var thunderAdminClient thundersvc.Client
+	thunderBase := cfg.ThunderAdmin.BaseURL
+	if thunderBase == "" {
+		// Fall back to the public Thunder URL the auth middleware
+		// already trusts. setup-prerequisites and docker compose set
+		// this to http://k3d-openchoreo-serverlb:8080 in-cluster /
+		// http://thunder.openchoreo.localhost:8080 from the host.
+		thunderBase = cfg.ServiceAuth.TokenURL
+		// TokenURL contains /oauth2/token — strip back to the host:
+		if idx := strings.Index(thunderBase, "/oauth2/"); idx > 0 {
+			thunderBase = thunderBase[:idx]
+		}
+	}
+	if cfg.ThunderAdmin.ClientID != "" && cfg.ThunderAdmin.ClientSecret != "" && thunderBase != "" {
+		thunderAdminClient = thundersvc.New(thundersvc.Config{
+			BaseURL:      thunderBase,
+			ClientID:     cfg.ThunderAdmin.ClientID,
+			ClientSecret: cfg.ThunderAdmin.ClientSecret,
+		})
+		slog.Info("Thunder admin client", "baseURL", thunderBase, "clientID", cfg.ThunderAdmin.ClientID)
+	} else {
+		slog.Warn("Thunder admin client disabled — set THUNDER_ADMIN_URL + THUNDER_SYSTEM_CLIENT_ID + THUNDER_SYSTEM_CLIENT_SECRET")
+	}
+	idpService := services.NewIDPService(db, thunderAdminClient, services.PlatformIDPConfig{
+		Issuer:  cfg.PlatformIDP.Issuer,
+		JWKSURL: cfg.PlatformIDP.JWKSURL,
+	})
+	// Make idpService available to trait_sync so first-protected-deploy
+	// provisions the publisher app lazily.
+	traitSyncService.SetIDPService(idpService)
+
 	// Connect-state JWT issuer (App-mode OAuth CSRF state). The Task JWT
 	// path moved to RS256 (taskTokens below); this signing key is HS256 and
 	// only ever leaves the BFF as a JWT signature inside the GitHub OAuth
@@ -310,6 +371,41 @@ func main() {
 		agentGitServiceURL = cfg.GitService.BaseURL
 	}
 	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, agentGitServiceURL, cfg.AgentPlatformURL)
+	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
+		hook.SetTraitSync(traitSyncService)
+	}
+	// Wire the user-apps OIDC config so dispatch posts the
+	// `## OIDC client provisioned` comment on web-app issues with
+	// design.auth.kind=oidc-spa. See docs/design/oauth-protected-webapp.md.
+	if oidcSetter, ok := dispatchSvc.(interface {
+		SetUserAppsOIDC(services.UserAppsOIDC)
+	}); ok {
+		oidcSetter.SetUserAppsOIDC(services.UserAppsOIDC{
+			Issuer:            cfg.UserAppsOIDC.Issuer,
+			ClientID:          cfg.UserAppsOIDC.ClientID,
+			Scopes:            cfg.UserAppsOIDC.Scopes,
+			InternalProxyPass: cfg.UserAppsOIDC.InternalProxyPass,
+		})
+		if cfg.UserAppsOIDC.ClientID == "" {
+			slog.Warn("USER_APPS_OIDC_CLIENT_ID empty — user web-apps with auth.kind=oidc-spa will deploy without an OIDC client comment posted")
+		} else {
+			slog.Info("UserApps OIDC wired", "issuer", cfg.UserAppsOIDC.Issuer, "clientID", cfg.UserAppsOIDC.ClientID, "scopes", cfg.UserAppsOIDC.Scopes, "internalProxyPass", cfg.UserAppsOIDC.InternalProxyPass)
+		}
+	}
+	// Plumb the Thunder admin client into dispatch so the cascade hook can
+	// register a deployed user-webapp's external URL on the user-apps
+	// OAuth client's redirect_uris set. Without this, browser sign-in
+	// fails on the first load with "Invalid redirect URI" until an
+	// operator appends the URL by hand. See dispatch_service.go's
+	// RegisterUserAppRedirectURI.
+	if thunderAdminClient != nil {
+		if setter, ok := dispatchSvc.(interface {
+			SetThunderAdminClient(thundersvc.Client)
+		}); ok {
+			setter.SetThunderAdminClient(thunderAdminClient)
+			slog.Info("Thunder admin client wired into dispatch (auto-register webapp redirect URIs on deploy)")
+		}
+	}
 	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
 
 	// F1 — wire the post-deploy dispatch cascade. The projector fires
@@ -336,6 +432,13 @@ func main() {
 	// webhook path. Only acts on terminal-failed coding-agent WorkflowRuns;
 	// success transitions ride the pull_request:ready_for_review webhook.
 	codingAgentWatcher := webhook.NewCodingAgentWatcher(db, componentClient, projector, tokenInject)
+
+	// Phase 2 — trait_sync drift watcher (10 s cadence). Idempotent
+	// reconcile of the `api-configuration` ClusterTrait on every
+	// (org,project,component) tuple that has a task record. Closes
+	// write-write races between dispatch / design PUT and provides the
+	// convergence backstop the §6 Phase 2 plan calls for.
+	traitSyncWatcher := webhook.NewTraitSyncWatcher(db, traitSyncService, tokenInject)
 
 	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
 	var orgGitHubCtrl controllers.OrgGitHubController
@@ -393,6 +496,7 @@ func main() {
 		ConfigRepo:             configRepo,
 		OrgGitHubController:    orgGitHubCtrl,
 		OrgAnthropicController: orgAnthropicCtrl,
+		IDPController:          controllers.NewIDPController(idpService),
 		JWKSController:         controllers.NewJWKSController(taskTokens),
 		ThunderJWKS:            thunderJWKS,
 		OrganizationService:    organizationService,
@@ -430,6 +534,7 @@ func main() {
 	go buildWatcher.Run(watcherCtx)
 	go codingAgentWatcher.Run(watcherCtx)
 	go onHoldWatcher.Run(watcherCtx)
+	go traitSyncWatcher.Run(watcherCtx)
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

@@ -55,6 +55,14 @@ export interface DesignComponent {
   // BFF always has a non-empty string here.
   openAPISpec?: string;
   componentAgentInstructions: string;
+  // Optional API security policy. Absent ⇒ public (skips the AP gateway).
+  // `security: 'required'` ⇒ AP enforces JWT validation against the org's
+  // IDP. See docs/design/api-platform-integration.md section 5.1.
+  api?: APISecurity;
+}
+
+export interface APISecurity {
+  security: 'required' | 'none';
 }
 
 export interface Design {

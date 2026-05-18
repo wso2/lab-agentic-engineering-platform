@@ -224,12 +224,32 @@ type rootFrontmatter struct {
 // `components/<name>/design.md`. Field names mirror the user-facing keys
 // (snake-free) so frontmatter the architect emits is human-editable.
 type componentFrontmatter struct {
-	Type       string   `yaml:"type"`
-	Language   string   `yaml:"language,omitempty"`
-	DependsOn  []string `yaml:"dependsOn,omitempty"`
-	Buildpack  string   `yaml:"buildpack,omitempty"`
-	AppPath    string   `yaml:"appPath,omitempty"`
-	Entrypoint string   `yaml:"entrypoint,omitempty"`
+	Type       string      `yaml:"type"`
+	Language   string      `yaml:"language,omitempty"`
+	DependsOn  []string    `yaml:"dependsOn,omitempty"`
+	Buildpack  string      `yaml:"buildpack,omitempty"`
+	AppPath    string      `yaml:"appPath,omitempty"`
+	Entrypoint string      `yaml:"entrypoint,omitempty"`
+	Api        *apiConfig  `yaml:"api,omitempty"`
+	Auth       *authConfig `yaml:"auth,omitempty"`
+}
+
+// apiConfig is the optional `api:` block in component frontmatter.
+// Absent / nil ⇒ public (no AP hop). `security: required` ⇒ AP enforces JWT
+// validation against the org's IDP. See docs/design/api-platform-integration.md
+// section 5.1.
+type apiConfig struct {
+	Security string `yaml:"security,omitempty"`
+}
+
+// authConfig is the optional `auth:` block in component frontmatter. Only
+// valid on web-app components. When `kind: oidc-spa`, the BFF dispatches the
+// SPA with a `## OIDC client provisioned` comment so the coding-agent bakes
+// the platform IDP's issuer / clientId / scopes / host into the SPA's
+// workload.yaml. See docs/design/oauth-protected-webapp.md.
+type authConfig struct {
+	Kind     string `yaml:"kind"`
+	Upstream string `yaml:"upstream,omitempty"`
 }
 
 // splitFrontmatter separates the leading YAML frontmatter block (delimited
@@ -336,6 +356,14 @@ func assembleComponent(name, designMd string, files map[string]string) (models.D
 	if dependsOn == nil {
 		dependsOn = []string{}
 	}
+	var api *models.APISecurity
+	if cfm.Api != nil && cfm.Api.Security != "" {
+		api = &models.APISecurity{Security: cfm.Api.Security}
+	}
+	var auth *models.ComponentAuth
+	if cfm.Auth != nil && cfm.Auth.Kind != "" {
+		auth = &models.ComponentAuth{Kind: cfm.Auth.Kind, Upstream: cfm.Auth.Upstream}
+	}
 	return models.DesignComponent{
 		Name:                       name,
 		ComponentType:              cfm.Type,
@@ -346,6 +374,8 @@ func assembleComponent(name, designMd string, files map[string]string) (models.D
 		AppPath:                    cfm.AppPath,
 		OpenAPISpec:                openapi,
 		ComponentAgentInstructions: strings.TrimSpace(body),
+		Api:                        api,
+		Auth:                       auth,
 	}, nil
 }
 
@@ -400,6 +430,12 @@ func SplitDesign(d *DesignFile) (map[string]string, error) {
 			Buildpack:  comp.Buildpack,
 			AppPath:    comp.AppPath,
 			Entrypoint: comp.Entrypoint,
+		}
+		if comp.Api != nil && comp.Api.Security != "" {
+			cfm.Api = &apiConfig{Security: comp.Api.Security}
+		}
+		if comp.Auth != nil && comp.Auth.Kind != "" {
+			cfm.Auth = &authConfig{Kind: comp.Auth.Kind, Upstream: comp.Auth.Upstream}
 		}
 		cfmBytes, err := marshalFrontmatter(cfm)
 		if err != nil {

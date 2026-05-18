@@ -120,6 +120,7 @@ bootstrap:
         "ASDLC BFF to agents-service|BFF outbound Service JWT, audience: agents-service|asdlc-bff-to-agents-service|asdlc-bff-to-agents-service-secret"
         "ASDLC BFF to remote-worker|BFF outbound Service JWT, audience: remote-worker|asdlc-bff-to-remote-worker|asdlc-bff-to-remote-worker-secret"
         "ASDLC Local Dev Seeder|Local-dev convenience client used by scripts/seed-dev.sh to POST GitHub PAT + Anthropic key to the default org. Not used by any platform code path.|asdlc-local-dev-seeder|asdlc-local-dev-seeder-secret"
+        "ASDLC System Client|System-level Thunder admin client used by the BFF (clients/thundersvc) to mint scope=system tokens for the publisher-app lifecycle (POST /applications). Bound to the Thunder Administrator role by the 60-asdlc-system-role.sh bootstrap script. See docs/design/api-platform-integration.md §6 Phase 3 (D7).|asdlc-system-client|asdlc-system-client-secret"
       )
 
       PUBLIC_APPS=(
@@ -305,3 +306,78 @@ bootstrap:
       done
 
       log_success "All OAuth applications configured"
+
+    # Assigns the Administrator role to the asdlc-system-client OAuth app so
+    # the BFF (via clients/thundersvc.getSystemToken) can mint scope=system
+    # tokens and call Thunder's admin /applications endpoints to manage per-
+    # org publisher apps. Mirrors the agent-manager precedent in
+    # wso2-amp-thunder-extension's 56-amp-system-client.sh. Idempotent.
+    60-asdlc-system-role.sh: |
+      #!/bin/bash
+      set -e
+      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+      source "${SCRIPT_DIR}/common.sh"
+
+      SYSTEM_CLIENT_ID="asdlc-system-client"
+
+      # ── Resolve the system app's internal id by its clientId. ───────────
+      log_info "Looking up app id for ${SYSTEM_CLIENT_ID}..."
+      RESPONSE=$(thunder_api_call GET "/applications")
+      HTTP_CODE="${RESPONSE: -3}"
+      BODY="${RESPONSE%???}"
+      if [[ "$HTTP_CODE" != "200" ]]; then
+        log_error "Failed to list applications (HTTP $HTTP_CODE): $BODY"
+        exit 1
+      fi
+      # Each app has at least one inboundAuthConfig with clientId=<our id>.
+      # Match the surrounding application's `id`. Greedy enough to survive
+      # ordering changes; brittle to format changes but mirrors the
+      # agent-manager approach.
+      SYSTEM_APP_ID=$(echo "$BODY" \
+        | sed 's/},{/}\n{/g' \
+        | grep -F "\"clientId\":\"${SYSTEM_CLIENT_ID}\"" \
+        | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+      if [[ -z "$SYSTEM_APP_ID" ]]; then
+        log_error "Could not find application with clientId=${SYSTEM_CLIENT_ID}"
+        log_error "Make sure 59-asdlc-oauth-apps.sh ran first."
+        exit 1
+      fi
+      log_info "Found ${SYSTEM_CLIENT_ID} app id: $SYSTEM_APP_ID"
+
+      # ── Resolve the Administrator role id. ──────────────────────────────
+      log_info "Looking up Administrator role..."
+      RESPONSE=$(thunder_api_call GET "/roles")
+      HTTP_CODE="${RESPONSE: -3}"
+      BODY="${RESPONSE%???}"
+      if [[ "$HTTP_CODE" != "200" ]]; then
+        log_error "Failed to fetch roles (HTTP $HTTP_CODE): $BODY"
+        exit 1
+      fi
+      ADMIN_ROLE_ID=$(echo "$BODY" \
+        | sed 's/},{/}\n{/g' \
+        | grep '"name":"Administrator"' \
+        | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      if [[ -z "$ADMIN_ROLE_ID" ]]; then
+        log_error "Could not find Administrator role"
+        exit 1
+      fi
+      log_info "Found Administrator role id: $ADMIN_ROLE_ID"
+
+      # ── Assign the system app to Administrator. Idempotent on 409. ──────
+      log_info "Assigning ${SYSTEM_CLIENT_ID} to Administrator role..."
+      ASSIGN_PAYLOAD='{"assignments":[{"id":"'${SYSTEM_APP_ID}'","type":"app"}]}'
+      RESPONSE=$(thunder_api_call POST "/roles/${ADMIN_ROLE_ID}/assignments/add" "$ASSIGN_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      case "$HTTP_CODE" in
+        200|201|204)
+          log_success "${SYSTEM_CLIENT_ID} bound to Administrator role"
+          ;;
+        409)
+          log_info "${SYSTEM_CLIENT_ID} already bound — skipping"
+          ;;
+        *)
+          log_error "Failed to assign role (HTTP $HTTP_CODE): ${RESPONSE%???}"
+          exit 1
+          ;;
+      esac

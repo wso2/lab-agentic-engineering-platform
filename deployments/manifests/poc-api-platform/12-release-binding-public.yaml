@@ -1,0 +1,23 @@
+# ReleaseBinding for the public hello-world.
+# CORS enabled with wildcards (POC convenience). jwtAuth.enabled: false —
+# the AP gateway accepts requests without an Authorization header.
+apiVersion: openchoreo.dev/v1alpha1
+kind: ReleaseBinding
+metadata:
+  name: poc-public-development
+  namespace: default
+spec:
+  environment: development
+  owner:
+    projectName: poc-api-platform
+    componentName: poc-public
+  traitEnvironmentConfigs:
+    poc-public-http:
+      cors:
+        enabled: true
+        allowedOrigins: ["*"]
+        allowedMethods: ["*"]
+        allowedHeaders: ["*"]
+        allowCredentials: false
+      jwtAuth:
+        enabled: false

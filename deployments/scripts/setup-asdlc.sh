@@ -90,6 +90,12 @@ spec:
   allowedWorkflows:
     - kind: ClusterWorkflow
       name: dockerfile-builder
+  # api-configuration lets a component opt into the WSO2 API Platform
+  # gateway path (RestApi + kgateway Backend pointing at the AP router).
+  # The trait's CRD is applied below via apply_with_retry.
+  allowedTraits:
+    - kind: ClusterTrait
+      name: api-configuration
   environmentConfigs:
     openAPIV3Schema:
       type: object
@@ -194,6 +200,15 @@ spec:
                   port: "${workload.endpoints[endpoint].port}"
 OCEOF
 echo "✅ ClusterComponentType 'deployment/service' created"
+
+# ClusterTrait: api-configuration — opts a component endpoint into the
+# WSO2 API Platform path. Creates a kgateway Backend pointing at the AP
+# router, a RestApi CR registering the API, and patches the HTTPRoute's
+# backendRef + URL rewrite. Per-environment toggles for CORS / jwtAuth /
+# rateLimit / addHeaders flow through the ReleaseBinding's
+# `traitEnvironmentConfigs.<instance>` block.
+apply_with_retry "${SCRIPT_DIR}/../manifests/api-platform/api-configuration-trait.yaml" "api-configuration-trait"
+echo "✅ ClusterTrait 'api-configuration' installed"
 
 # ClusterComponentType: deployment/web-application — frontends with subdomain routing
 # Web-apps get their own subdomain via oc_dns_label so SPAs work correctly
@@ -520,8 +535,8 @@ echo ""
 echo "✅ ASDLC setup complete!"
 echo ""
 echo "   Default login credentials:"
-echo "     Username: admin@openchoreo.dev"
-echo "     Password: Admin@123"
+echo "     Username: admin"
+echo "     Password: admin"
 echo ""
 echo "   To start ASDLC:"
 echo "     cd deployments && bash scripts/start.sh"

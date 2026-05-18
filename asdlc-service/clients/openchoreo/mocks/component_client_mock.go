@@ -24,6 +24,9 @@ var _ openchoreo.ComponentClient = &ComponentClientMock{}
 //			CreateComponentFunc: func(ctx context.Context, orgName string, projectName string, req *models.CreateComponentRequest) (*models.Component, error) {
 //				panic("mock out the CreateComponent method")
 //			},
+//			DeleteComponentFunc: func(ctx context.Context, orgName string, projectName string, componentName string) error {
+//				panic("mock out the DeleteComponent method")
+//			},
 //			GetComponentFunc: func(ctx context.Context, orgName string, projectName string, componentName string) (*models.Component, error) {
 //				panic("mock out the GetComponent method")
 //			},
@@ -48,6 +51,12 @@ var _ openchoreo.ComponentClient = &ComponentClientMock{}
 //			TriggerCodingAgentFunc: func(ctx context.Context, params openchoreo.CodingAgentParams) (*models.WorkflowRun, error) {
 //				panic("mock out the TriggerCodingAgent method")
 //			},
+//			UpdateComponentTraitEnvironmentConfigsFunc: func(ctx context.Context, orgName string, projectName string, componentName string, configs map[string]map[string]interface{}) error {
+//				panic("mock out the UpdateComponentTraitEnvironmentConfigs method")
+//			},
+//			UpdateComponentTraitsFunc: func(ctx context.Context, orgName string, projectName string, componentName string, traits []models.ComponentTrait) error {
+//				panic("mock out the UpdateComponentTraits method")
+//			},
 //			UpdateComponentWorkflowEnvVarsFunc: func(ctx context.Context, orgName string, projectName string, componentName string, envVars []models.WorkflowEnvVarRef) error {
 //				panic("mock out the UpdateComponentWorkflowEnvVars method")
 //			},
@@ -60,6 +69,9 @@ var _ openchoreo.ComponentClient = &ComponentClientMock{}
 type ComponentClientMock struct {
 	// CreateComponentFunc mocks the CreateComponent method.
 	CreateComponentFunc func(ctx context.Context, orgName string, projectName string, req *models.CreateComponentRequest) (*models.Component, error)
+
+	// DeleteComponentFunc mocks the DeleteComponent method.
+	DeleteComponentFunc func(ctx context.Context, orgName string, projectName string, componentName string) error
 
 	// GetComponentFunc mocks the GetComponent method.
 	GetComponentFunc func(ctx context.Context, orgName string, projectName string, componentName string) (*models.Component, error)
@@ -85,6 +97,12 @@ type ComponentClientMock struct {
 	// TriggerCodingAgentFunc mocks the TriggerCodingAgent method.
 	TriggerCodingAgentFunc func(ctx context.Context, params openchoreo.CodingAgentParams) (*models.WorkflowRun, error)
 
+	// UpdateComponentTraitEnvironmentConfigsFunc mocks the UpdateComponentTraitEnvironmentConfigs method.
+	UpdateComponentTraitEnvironmentConfigsFunc func(ctx context.Context, orgName string, projectName string, componentName string, configs map[string]map[string]interface{}) error
+
+	// UpdateComponentTraitsFunc mocks the UpdateComponentTraits method.
+	UpdateComponentTraitsFunc func(ctx context.Context, orgName string, projectName string, componentName string, traits []models.ComponentTrait) error
+
 	// UpdateComponentWorkflowEnvVarsFunc mocks the UpdateComponentWorkflowEnvVars method.
 	UpdateComponentWorkflowEnvVarsFunc func(ctx context.Context, orgName string, projectName string, componentName string, envVars []models.WorkflowEnvVarRef) error
 
@@ -100,6 +118,17 @@ type ComponentClientMock struct {
 			ProjectName string
 			// Req is the req argument value.
 			Req *models.CreateComponentRequest
+		}
+		// DeleteComponent holds details about calls to the DeleteComponent method.
+		DeleteComponent []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OrgName is the orgName argument value.
+			OrgName string
+			// ProjectName is the projectName argument value.
+			ProjectName string
+			// ComponentName is the componentName argument value.
+			ComponentName string
 		}
 		// GetComponent holds details about calls to the GetComponent method.
 		GetComponent []struct {
@@ -195,6 +224,32 @@ type ComponentClientMock struct {
 			// Params is the params argument value.
 			Params openchoreo.CodingAgentParams
 		}
+		// UpdateComponentTraitEnvironmentConfigs holds details about calls to the UpdateComponentTraitEnvironmentConfigs method.
+		UpdateComponentTraitEnvironmentConfigs []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OrgName is the orgName argument value.
+			OrgName string
+			// ProjectName is the projectName argument value.
+			ProjectName string
+			// ComponentName is the componentName argument value.
+			ComponentName string
+			// Configs is the configs argument value.
+			Configs map[string]map[string]interface{}
+		}
+		// UpdateComponentTraits holds details about calls to the UpdateComponentTraits method.
+		UpdateComponentTraits []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OrgName is the orgName argument value.
+			OrgName string
+			// ProjectName is the projectName argument value.
+			ProjectName string
+			// ComponentName is the componentName argument value.
+			ComponentName string
+			// Traits is the traits argument value.
+			Traits []models.ComponentTrait
+		}
 		// UpdateComponentWorkflowEnvVars holds details about calls to the UpdateComponentWorkflowEnvVars method.
 		UpdateComponentWorkflowEnvVars []struct {
 			// Ctx is the ctx argument value.
@@ -209,16 +264,19 @@ type ComponentClientMock struct {
 			EnvVars []models.WorkflowEnvVarRef
 		}
 	}
-	lockCreateComponent                sync.RWMutex
-	lockGetComponent                   sync.RWMutex
-	lockGetWorkflowRun                 sync.RWMutex
-	lockListComponents                 sync.RWMutex
-	lockListDeployments                sync.RWMutex
-	lockListWorkflowRuns               sync.RWMutex
-	lockTriggerBuild                   sync.RWMutex
-	lockTriggerBuildAtCommit           sync.RWMutex
-	lockTriggerCodingAgent             sync.RWMutex
-	lockUpdateComponentWorkflowEnvVars sync.RWMutex
+	lockCreateComponent                        sync.RWMutex
+	lockDeleteComponent                        sync.RWMutex
+	lockGetComponent                           sync.RWMutex
+	lockGetWorkflowRun                         sync.RWMutex
+	lockListComponents                         sync.RWMutex
+	lockListDeployments                        sync.RWMutex
+	lockListWorkflowRuns                       sync.RWMutex
+	lockTriggerBuild                           sync.RWMutex
+	lockTriggerBuildAtCommit                   sync.RWMutex
+	lockTriggerCodingAgent                     sync.RWMutex
+	lockUpdateComponentTraitEnvironmentConfigs sync.RWMutex
+	lockUpdateComponentTraits                  sync.RWMutex
+	lockUpdateComponentWorkflowEnvVars         sync.RWMutex
 }
 
 // CreateComponent calls CreateComponentFunc.
@@ -262,6 +320,50 @@ func (mock *ComponentClientMock) CreateComponentCalls() []struct {
 	mock.lockCreateComponent.RLock()
 	calls = mock.calls.CreateComponent
 	mock.lockCreateComponent.RUnlock()
+	return calls
+}
+
+// DeleteComponent calls DeleteComponentFunc.
+func (mock *ComponentClientMock) DeleteComponent(ctx context.Context, orgName string, projectName string, componentName string) error {
+	if mock.DeleteComponentFunc == nil {
+		panic("ComponentClientMock.DeleteComponentFunc: method is nil but ComponentClient.DeleteComponent was just called")
+	}
+	callInfo := struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+	}{
+		Ctx:           ctx,
+		OrgName:       orgName,
+		ProjectName:   projectName,
+		ComponentName: componentName,
+	}
+	mock.lockDeleteComponent.Lock()
+	mock.calls.DeleteComponent = append(mock.calls.DeleteComponent, callInfo)
+	mock.lockDeleteComponent.Unlock()
+	return mock.DeleteComponentFunc(ctx, orgName, projectName, componentName)
+}
+
+// DeleteComponentCalls gets all the calls that were made to DeleteComponent.
+// Check the length with:
+//
+//	len(mockedComponentClient.DeleteComponentCalls())
+func (mock *ComponentClientMock) DeleteComponentCalls() []struct {
+	Ctx           context.Context
+	OrgName       string
+	ProjectName   string
+	ComponentName string
+} {
+	var calls []struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+	}
+	mock.lockDeleteComponent.RLock()
+	calls = mock.calls.DeleteComponent
+	mock.lockDeleteComponent.RUnlock()
 	return calls
 }
 
@@ -626,6 +728,102 @@ func (mock *ComponentClientMock) TriggerCodingAgentCalls() []struct {
 	mock.lockTriggerCodingAgent.RLock()
 	calls = mock.calls.TriggerCodingAgent
 	mock.lockTriggerCodingAgent.RUnlock()
+	return calls
+}
+
+// UpdateComponentTraitEnvironmentConfigs calls UpdateComponentTraitEnvironmentConfigsFunc.
+func (mock *ComponentClientMock) UpdateComponentTraitEnvironmentConfigs(ctx context.Context, orgName string, projectName string, componentName string, configs map[string]map[string]interface{}) error {
+	if mock.UpdateComponentTraitEnvironmentConfigsFunc == nil {
+		panic("ComponentClientMock.UpdateComponentTraitEnvironmentConfigsFunc: method is nil but ComponentClient.UpdateComponentTraitEnvironmentConfigs was just called")
+	}
+	callInfo := struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+		Configs       map[string]map[string]interface{}
+	}{
+		Ctx:           ctx,
+		OrgName:       orgName,
+		ProjectName:   projectName,
+		ComponentName: componentName,
+		Configs:       configs,
+	}
+	mock.lockUpdateComponentTraitEnvironmentConfigs.Lock()
+	mock.calls.UpdateComponentTraitEnvironmentConfigs = append(mock.calls.UpdateComponentTraitEnvironmentConfigs, callInfo)
+	mock.lockUpdateComponentTraitEnvironmentConfigs.Unlock()
+	return mock.UpdateComponentTraitEnvironmentConfigsFunc(ctx, orgName, projectName, componentName, configs)
+}
+
+// UpdateComponentTraitEnvironmentConfigsCalls gets all the calls that were made to UpdateComponentTraitEnvironmentConfigs.
+// Check the length with:
+//
+//	len(mockedComponentClient.UpdateComponentTraitEnvironmentConfigsCalls())
+func (mock *ComponentClientMock) UpdateComponentTraitEnvironmentConfigsCalls() []struct {
+	Ctx           context.Context
+	OrgName       string
+	ProjectName   string
+	ComponentName string
+	Configs       map[string]map[string]interface{}
+} {
+	var calls []struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+		Configs       map[string]map[string]interface{}
+	}
+	mock.lockUpdateComponentTraitEnvironmentConfigs.RLock()
+	calls = mock.calls.UpdateComponentTraitEnvironmentConfigs
+	mock.lockUpdateComponentTraitEnvironmentConfigs.RUnlock()
+	return calls
+}
+
+// UpdateComponentTraits calls UpdateComponentTraitsFunc.
+func (mock *ComponentClientMock) UpdateComponentTraits(ctx context.Context, orgName string, projectName string, componentName string, traits []models.ComponentTrait) error {
+	if mock.UpdateComponentTraitsFunc == nil {
+		panic("ComponentClientMock.UpdateComponentTraitsFunc: method is nil but ComponentClient.UpdateComponentTraits was just called")
+	}
+	callInfo := struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+		Traits        []models.ComponentTrait
+	}{
+		Ctx:           ctx,
+		OrgName:       orgName,
+		ProjectName:   projectName,
+		ComponentName: componentName,
+		Traits:        traits,
+	}
+	mock.lockUpdateComponentTraits.Lock()
+	mock.calls.UpdateComponentTraits = append(mock.calls.UpdateComponentTraits, callInfo)
+	mock.lockUpdateComponentTraits.Unlock()
+	return mock.UpdateComponentTraitsFunc(ctx, orgName, projectName, componentName, traits)
+}
+
+// UpdateComponentTraitsCalls gets all the calls that were made to UpdateComponentTraits.
+// Check the length with:
+//
+//	len(mockedComponentClient.UpdateComponentTraitsCalls())
+func (mock *ComponentClientMock) UpdateComponentTraitsCalls() []struct {
+	Ctx           context.Context
+	OrgName       string
+	ProjectName   string
+	ComponentName string
+	Traits        []models.ComponentTrait
+} {
+	var calls []struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+		Traits        []models.ComponentTrait
+	}
+	mock.lockUpdateComponentTraits.RLock()
+	calls = mock.calls.UpdateComponentTraits
+	mock.lockUpdateComponentTraits.RUnlock()
 	return calls
 }
 

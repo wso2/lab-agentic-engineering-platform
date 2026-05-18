@@ -80,6 +80,39 @@ The Thunder default admin (`admin` / `admin`) is in the **Administrators** group
 For GitHub repo provisioning, connect a PAT (or GitHub App) at **Settings → GitHub Integration**.
 For AI generation, connect an Anthropic key at **Settings → Anthropic Integration** (or rely on the platform fallback `ANTHROPIC_API_KEY` from `.env`).
 
+## POC: API Platform + Thunder JWT (`poc-api-platform` branch)
+
+Branch-scoped experiment to prove the WSO2 API Platform gateway + the
+`api-configuration` ClusterTrait + Thunder JWT validation work on this
+`deployments/` setup. Findings live in `POC-API-PLATFORM.md`.
+
+What it adds:
+
+- `setup-prerequisites.sh` — step 6 installs the AP gateway-operator (`gateway-operator` v0.4.0, runtime image v0.9.0) into `openchoreo-data-plane`, applies `manifests/api-platform/{gateway-config.yaml,rbac.yaml,api-gateway.yaml}`.
+- `setup-asdlc.sh` — adds `api-configuration` to the `service` ClusterComponentType's `allowedTraits` and installs the ClusterTrait CR from `manifests/api-platform/api-configuration-trait.yaml`.
+- `manifests/poc-api-platform/` — two hello-world Components (`poc-public`, `poc-protected`) using `mendhak/http-https-echo:35`. Both have the trait attached; only the protected one's ReleaseBinding sets `jwtAuth.enabled: true`.
+- `scripts/setup-thunder-client.sh` — bootstraps the `poc-api-platform-client` confidential OAuth client via `kubectl exec` into the Thunder pod (idempotent).
+- `scripts/verify-api-platform.sh` — applies the manifests, mints a token, runs the 4-cell truth table.
+
+Run the POC:
+
+```bash
+# After setup.sh has finished — the AP install is already part of setup-prerequisites.sh
+bash scripts/verify-api-platform.sh
+```
+
+Expected output (truth table):
+
+```
+✅ protected + valid token                expected 200, got 200
+✅ protected + no token                   expected 401, got 401
+✅ public + valid token                   expected 200, got 200
+✅ public + no token                      expected 200, got 200
+```
+
+When something fails, `POC-API-PLATFORM.md` is the running log of every
+gotcha — that document is the actual deliverable of this branch.
+
 ## Tear down
 
 ```bash

@@ -10,6 +10,12 @@ CERT_MANAGER_VERSION="v1.19.4"
 EXTERNAL_SECRETS_VERSION="2.0.1"
 KGATEWAY_VERSION="v2.2.1"
 OPENBAO_VERSION="0.25.6"
+API_PLATFORM_OPERATOR_VERSION="0.6.0"
+# AP gateway-runtime chart version. 1.0.1 ships runtime + controller +
+# policy-engine images at tag 1.0.0, which adds `jwt-auth v1` support
+# (per-RestApi issuers + audience filtering — see Phase 6 of
+# docs/design/api-platform-integration.md).
+API_PLATFORM_CHART_VERSION="1.0.1"
 
 echo "=== Installing Prerequisites for OpenChoreo ==="
 
@@ -103,6 +109,62 @@ spec:
             namespace: "openbao"
 EOF
 echo "✅ ClusterSecretStore configured"
+
+echo ""
+echo "6️⃣  WSO2 API Platform operator"
+# The AP operator deploys the gateway runtime (controller + router + policy-engine)
+# in `openchoreo-data-plane`. The namespace is created by setup-openchoreo.sh
+# later, but the operator install runs --create-namespace and `kubectl apply`
+# manifests below short-circuit on the same namespace, so order is safe.
+#
+# The operator manages the gateway-runtime chart out-of-band — see
+# manifests/api-platform/operator-values.yaml for the chart pin (gateway v1.0.0).
+# CRDs (APIGateway, RestApi) ship with the operator chart.
+helm_install_if_not_exists "api-platform-operator" "openchoreo-data-plane" \
+    "oci://ghcr.io/wso2/api-platform/helm-charts/gateway-operator" \
+    --version ${API_PLATFORM_OPERATOR_VERSION} \
+    --set gatewayApi.installStandardCRDs=false \
+    --set "gateway.helm.chartVersion=${API_PLATFORM_CHART_VERSION}" \
+    --values "${SCRIPT_DIR}/../manifests/api-platform/operator-values.yaml"
+kubectl wait --for=condition=available deployment \
+    -l app.kubernetes.io/instance=api-platform-operator \
+    -n openchoreo-data-plane --context ${CLUSTER_CONTEXT} --timeout=180s || true
+echo "✅ API Platform operator installed"
+
+# AES-GCM encryption key required by gateway-controller v1.0.0+ for
+# at-rest secret encryption. Generated once and kept in a Secret —
+# subsequent setup runs check for the Secret and skip regeneration to
+# preserve the key (rotating the key drops all encrypted state).
+# Production should provision via ExternalSecret backed by OpenBao/KMS.
+if ! kubectl --context ${CLUSTER_CONTEXT} get secret -n openchoreo-data-plane api-platform-controller-aesgcm-key &>/dev/null; then
+    AESGCM_KEY_B64=$(openssl rand 32 | base64 | tr -d '\n')
+    kubectl --context ${CLUSTER_CONTEXT} create secret generic api-platform-controller-aesgcm-key \
+        -n openchoreo-data-plane \
+        --from-literal="default-aesgcm256-v1.bin=${AESGCM_KEY_B64}" \
+        --dry-run=client -o yaml | \
+    sed "s|default-aesgcm256-v1.bin: .*|default-aesgcm256-v1.bin: ${AESGCM_KEY_B64}|" | \
+    kubectl --context ${CLUSTER_CONTEXT} apply -f -
+    echo "✅ AES-GCM controller encryption key provisioned"
+else
+    echo "✅ AES-GCM controller encryption key already present (preserved)"
+fi
+
+# ConfigMap consumed by the APIGateway CR via spec.configRef.
+# Contains the Thunder JWKS keymanagers under jwtauth_v0 (legacy) +
+# jwtauth_v1 (Phase 6 — supports issuers/audience filtering).
+kubectl --context ${CLUSTER_CONTEXT} apply -f "${SCRIPT_DIR}/../manifests/api-platform/gateway-config.yaml"
+echo "✅ gateway-config ConfigMap applied (Thunder keymanager configured)"
+
+# RBAC: lets OC's cluster-agent-dataplane SA reconcile RestApi CRs created
+# by the api-configuration trait. The SA is created by setup-openchoreo.sh
+# later — k8s allows binding to a non-existent subject.
+kubectl --context ${CLUSTER_CONTEXT} apply -f "${SCRIPT_DIR}/../manifests/api-platform/rbac.yaml"
+echo "✅ API Platform RBAC applied"
+
+# APIGateway CR — triggers the operator to deploy the gateway-runtime
+# (controller, router, policy-engine) reading config from the ConfigMap above.
+kubectl --context ${CLUSTER_CONTEXT} apply -f "${SCRIPT_DIR}/../manifests/api-platform/api-gateway.yaml"
+echo "✅ APIGateway CR applied — operator will deploy the gateway runtime"
 
 echo ""
 echo "✅ All prerequisites installed!"

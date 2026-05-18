@@ -77,6 +77,21 @@ type CreateComponentRequest struct {
 	AutoBuild   bool                   `json:"autoBuild,omitempty"`
 	AutoDeploy  bool                   `json:"autoDeploy,omitempty"`
 	Workflow    *ComponentWorkflowSpec `json:"workflow,omitempty"`
+	// Traits are ClusterTrait attachments emitted by the BFF based on
+	// design.md frontmatter (e.g. `api-configuration` when
+	// `api.security: required`). See services/trait_sync.go for the
+	// canonical emitter.
+	Traits []ComponentTrait `json:"traits,omitempty"`
+}
+
+// ComponentTrait is the BFF-internal shape of a ClusterTrait attachment
+// on a Component. Mirrors OC's ComponentTrait gen-type but uses our own
+// types so callers don't need to import the gen package.
+type ComponentTrait struct {
+	InstanceName string                 `json:"instanceName"`
+	Kind         string                 `json:"kind"` // "ClusterTrait"
+	Name         string                 `json:"name"` // e.g. "api-configuration"
+	Parameters   map[string]interface{} `json:"parameters,omitempty"`
 }
 
 // -- WorkflowRun (builds) ----------------------------------------------------

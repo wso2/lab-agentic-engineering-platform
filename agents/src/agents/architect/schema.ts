@@ -38,6 +38,35 @@ export const SlimComponent = z.object({
     .describe(
       "Detailed implementation instructions for the Generator agent",
     ),
+  api: z
+    .object({
+      security: z
+        .enum(["required", "none"])
+        .describe(
+          "'required' enables JWT validation at the WSO2 API Platform gateway against the org's IDP (Thunder v1; Asgardeo / custom OIDC v2). 'none' (or omitted entirely) means the API is public and traffic skips the AP hop.",
+        ),
+    })
+    .optional()
+    .describe(
+      "Optional API security policy (services only). Omit (or set security='none') for public APIs. Set security='required' for protected APIs that must validate caller JWTs at the gateway. Default for ambiguous cases: omit. Set 'required' when the description mentions login, OAuth, JWT, protected, private, customer, billing, or any per-user data.",
+    ),
+  auth: z
+    .object({
+      kind: z
+        .literal("oidc-spa")
+        .describe(
+          "OIDC Single-Page-App relying party. The platform provisions a per-project OAuth client in Thunder, injects OIDC_ISSUER/OIDC_CLIENT_ID/OIDC_REDIRECT_URI/OIDC_SCOPES into the pod, and the SPA performs Authorization Code + PKCE against it.",
+        ),
+      upstream: z
+        .string()
+        .describe(
+          "Name of the protected service this SPA signs in to call. Must reference a sibling component with api.security='required'.",
+        ),
+    })
+    .optional()
+    .describe(
+      "OIDC relying-party config. ONLY valid on web-app components. Emit this together with api.security='required' on the upstream service when the spec implies users sign in. When set, the API service must NOT implement /auth/* endpoints (Thunder owns token issuance) and must read the authenticated user from the gateway-injected X-User-Id header.",
+    ),
 });
 
 export type SlimComponent = z.infer<typeof SlimComponent>;

@@ -106,6 +106,50 @@ echo "⏳ Waiting for Thunder..."
 kubectl wait -n thunder --for=condition=available --timeout=300s deployment --all
 echo "✅ Thunder ready"
 
+# The Thunder helm chart's HTTPRoute is created with no filters, but the
+# console (at PUBLIC_CONSOLE_URL — typically http://localhost:8090) needs
+# to preflight POST /oauth2/token cross-origin to get an access_token.
+# Without an explicit kgateway CORS filter on the HTTPRoute, the preflight
+# returns 405 Method Not Allowed and the Asgardeo SDK fails with
+# "Requesting access token failed". Patch the filter in idempotently.
+# User-app SPAs (auth.kind=oidc-spa) sidestep this via a same-origin nginx
+# /oidc/ proxy — but the console login itself needs the CORS filter.
+echo "🔧 Patching Thunder HTTPRoute with CORS filter for cross-origin /oauth2/* preflights..."
+kubectl wait -n thunder --for=condition=Accepted --timeout=120s \
+    httproute/thunder-httproute --context "${CLUSTER_CONTEXT}" >/dev/null
+CORS_PATCH=$(cat <<EOF
+[{"op":"replace","path":"/spec/rules/0/filters","value":[{"type":"CORS","cors":{"allowOrigins":["http://localhost:8090","http://localhost:19080","http://*.openchoreoapis.localhost:19080","${PUBLIC_CONSOLE_URL}","${PUBLIC_THUNDER_URL}"],"allowMethods":["GET","POST","PUT","PATCH","DELETE","OPTIONS"],"allowHeaders":["Content-Type","Authorization","Accept","Origin"],"allowCredentials":true,"maxAge":3600}}]}]
+EOF
+)
+# Retry the patch + verify. On a fresh cluster the kgateway controller's
+# CORS-filter handling can lag behind the HTTPRoute Accepted condition, so
+# the first attempt sometimes returns a transient validation error and the
+# old code silently swallowed it while still printing "✅ applied". We now
+# verify .spec.rules[0].filters[0].type == "CORS" after each patch and
+# only declare success on a verified write. Hard-fail (set -e is on) if
+# all retries are exhausted — silently shipping a CORS-broken cluster
+# bricks the console login.
+_cors_applied=0
+for attempt in 1 2 3 4 5; do
+    if kubectl patch httproute -n thunder thunder-httproute --type=json \
+            -p="$CORS_PATCH" --context "${CLUSTER_CONTEXT}" >/dev/null 2>&1 \
+        && [ "$(kubectl get httproute -n thunder thunder-httproute \
+                --context "${CLUSTER_CONTEXT}" \
+                -o jsonpath='{.spec.rules[0].filters[0].type}' 2>/dev/null)" = "CORS" ]; then
+        echo "✅ Thunder HTTPRoute CORS filter applied (attempt ${attempt})"
+        _cors_applied=1
+        break
+    fi
+    echo "   attempt ${attempt} did not land the CORS filter — retrying in 5s..."
+    sleep 5
+done
+if [ "${_cors_applied}" -ne 1 ]; then
+    echo "❌ Thunder HTTPRoute CORS patch failed after 5 attempts." >&2
+    echo "   Console login will hit CORS errors on /api/server/v1/* and /oauth2/*." >&2
+    echo "   Inspect with: kubectl get httproute -n thunder thunder-httproute -o yaml" >&2
+    exit 1
+fi
+
 # The Helm chart uses security.oidc.tokenUrl for both the OpenChoreo API metadata
 # (browser-facing) and the Backstage token exchange (server-side). The browser URL
 # (thunder.openchoreo.localhost:8080) is not resolvable from inside the cluster, so
