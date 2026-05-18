@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
@@ -108,10 +109,15 @@ type dispatchService struct {
 
 // UserAppsOIDC is the BFF-side mirror of config.UserAppsOIDCConfig —
 // declared here to keep the services package independent of config.
+//
+// InternalProxyPass is the URL the SPA's own nginx writes verbatim as
+// the `proxy_pass` target for the same-origin `/oidc/` block. Must be
+// reachable from a pod inside the cluster — see UserAppsOIDCConfig.
 type UserAppsOIDC struct {
-	Issuer   string
-	ClientID string
-	Scopes   string
+	Issuer            string
+	ClientID          string
+	Scopes            string
+	InternalProxyPass string
 }
 
 // SetUserAppsOIDC installs the OIDC config the dispatch path hands to
@@ -626,7 +632,12 @@ func (s *dispatchService) RegisterUserAppRedirectURI(ctx context.Context, orgID,
 	// pick different conventions (Asgardeo SDK uses the origin; the
 	// canonical SKILL recipe in this repo uses origin/callback) — we
 	// add both to be safe. EnsureRedirectURIs dedupes existing entries.
-	uris := []string{url, url + "/callback"}
+	// Strip a trailing slash from the origin first — firstExternalURL
+	// often returns `http://host:port/` and naive concat yields
+	// `http://host:port//callback`, which Thunder treats as a distinct
+	// (non-matching) URI from the SPA's `${origin}/callback`.
+	origin := strings.TrimRight(url, "/")
+	uris := []string{origin, origin + "/callback"}
 	added, err := s.thunderAdmin.EnsureRedirectURIs(ctx, s.userAppsOIDC.ClientID, uris)
 	if err != nil {
 		slog.WarnContext(ctx, "registerUserAppRedirect: thunder update failed",
@@ -969,19 +980,33 @@ func buildOIDCCommentBody(cfg UserAppsOIDC) string {
 			"- **clientId**: %s\n"+
 			"- **scopes**: %s\n"+
 			"- **host**: %s\n"+
+			"- **internalProxyPass**: %s\n"+
 			"\n"+
-			"Bake these four values verbatim into this SPA's "+
-			"`workload.yaml` `configurations.env` block as "+
-			"`OIDC_ISSUER`, `OIDC_CLIENT_ID`, `OIDC_SCOPES`, "+
-			"`OIDC_HOST`. nginx envsubst renders them into "+
-			"`/env-config.js` and the same-origin `/oidc/` proxy "+
-			"block at pod start; the SPA reads `window.__ENV__` "+
-			"at runtime and POSTs the token exchange through "+
-			"`/oidc/token` (same-origin — bypasses a kgateway CORS "+
-			"bug). The redirect URI is `window.location.origin + "+
-			"'/callback'`. See the `asdlc` SKILL's OIDC-SPA "+
-			"section for the reference nginx template + PKCE flow "+
-			"snippet.",
-		cfg.Issuer, cfg.ClientID, cfg.Scopes, host,
+			"Bake the first four values into `<appPath>/.env` BEFORE "+
+			"`npm run build` as `VITE_OIDC_ISSUER`, "+
+			"`VITE_OIDC_CLIENT_ID`, `VITE_OIDC_SCOPES`, "+
+			"`VITE_OIDC_HOST` (or the framework's equivalent "+
+			"prefix — CRA `REACT_APP_*`, Next `NEXT_PUBLIC_*`). "+
+			"Add `VITE_API_BASE_URL` from the upstream's "+
+			"`## Dependency endpoint resolved` comment. Read them "+
+			"via `import.meta.env.VITE_*` and throw at module "+
+			"top-level on missing — no silent `?? ''` fallback. "+
+			"ALSO write the `internalProxyPass` value above as the "+
+			"literal `proxy_pass` target in `nginx/default.conf` for "+
+			"the same-origin `/oidc/` proxy (it routes `/oidc/token` "+
+			"to Thunder's `/oauth2/token`, bypassing a kgateway "+
+			"CORS bug). The `internalProxyPass` is an in-cluster "+
+			"Service FQDN — the public `issuer` hostname does NOT "+
+			"resolve from inside a pod, so DO NOT use `${issuer}/oauth2/` "+
+			"as the `proxy_pass` target (nginx will fail to start with "+
+			"\"host not found in upstream\"). The redirect URI is "+
+			"`window.location.origin + '/callback'`. DO NOT use "+
+			"`workload.yaml` `configurations.env`, nginx "+
+			"envsubst, `/etc/nginx/templates/`, `/env-config.js`, "+
+			"or `window.__ENV__` — those runtime mechanisms are "+
+			"deprecated. See the `asdlc` SKILL's OIDC-SPA section "+
+			"for the reference `.env`, `nginx/default.conf`, and "+
+			"`src/auth.ts`.",
+		cfg.Issuer, cfg.ClientID, cfg.Scopes, host, cfg.InternalProxyPass,
 	)
 }

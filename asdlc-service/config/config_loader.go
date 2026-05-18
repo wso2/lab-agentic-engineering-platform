@@ -51,9 +51,10 @@ func Load() (Config, error) {
 			JWKSURL: r.readOptionalString("PLATFORM_IDP_JWKS_URL", "http://thunder-service.thunder.svc.cluster.local:8090/oauth2/jwks"),
 		},
 		UserAppsOIDC: UserAppsOIDCConfig{
-			Issuer:   r.readOptionalString("USER_APPS_OIDC_ISSUER", "http://thunder.openchoreo.localhost:8080"),
-			ClientID: r.readOptionalString("USER_APPS_OIDC_CLIENT_ID", ""),
-			Scopes:   r.readOptionalString("USER_APPS_OIDC_SCOPES", "openid profile"),
+			Issuer:            r.readOptionalString("USER_APPS_OIDC_ISSUER", "http://thunder.openchoreo.localhost:8080"),
+			ClientID:          r.readOptionalString("USER_APPS_OIDC_CLIENT_ID", ""),
+			Scopes:            r.readOptionalString("USER_APPS_OIDC_SCOPES", "openid profile"),
+			InternalProxyPass: r.readOptionalString("USER_APPS_OIDC_INTERNAL_PROXY_PASS", "http://thunder-service.thunder.svc.cluster.local:8090/oauth2/"),
 		},
 		TaskTokenSigningKey:    r.taskSigningKey(),
 		TaskTokenIssuer:        r.readOptionalString("BFF_TASK_TOKEN_ISSUER", "asdlc-bff"),

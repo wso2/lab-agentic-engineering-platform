@@ -618,36 +618,38 @@ issue with the OIDC client config:
 - **issuer**: http://thunder.openchoreo.localhost:8080
 - **clientId**: asdlc-console-client
 - **scopes**: openid profile
-- **host**: thunder.openchoreo.localhost
+- **host**: thunder.openchoreo.localhost:8080
+- **internalProxyPass**: http://thunder-service.thunder.svc.cluster.local:8090/oauth2/
 ```
 
-Bake those four values into `workload.yaml`'s `configurations.env`
-block as static values — same pattern as the upstream URL comments.
-nginx envsubst renders them at container start into both
-`/env-config.js` (the runtime config script the SPA reads as
-`window.__ENV__`) and the `/oidc/` same-origin proxy block (token
-exchange goes through the SPA's own origin to bypass a kgateway
-CORS bug — see below). The browser-side redirect URI is computed
-in-browser as `window.location.origin + '/callback'` (no env needed;
-the platform pre-registers a generous set of URIs on the OAuth
-client).
+**All values are baked at build time** — same pattern as the
+dependency-URL section above. The first four values plus `API_BASE_URL`
+from the upstream's `## Dependency endpoint resolved` comment go into
+`<appPath>/.env` BEFORE `npm run build`. The `internalProxyPass` value
+goes into `nginx/default.conf` as the literal `proxy_pass` target at
+PR time. There is NO runtime substitution: no envsubst, no
+`/etc/nginx/templates/`, no `/env-config.js`, no `window.__ENV__`, and
+NO `configurations.env` in `workload.yaml`. The Docker image carries
+the final config; `workload.yaml` only declares the `endpoints` block.
 
-> **Why a same-origin proxy?** Posting `POST /oauth2/token` directly
-> to Thunder is cross-origin, and kgateway's CORS filter currently
-> drops the response body even on a 200. Routing the POST through
-> the SPA's own nginx (`/oidc/token` → `${OIDC_ISSUER}/oauth2/token`)
-> keeps it same-origin. The browser still does the `authorize`
-> redirect cross-origin (no CORS — it's a top-level navigation).
+> **Why two URLs?** The `issuer` is the public hostname the browser
+> uses for the cross-origin `authorize` redirect (it MUST be the same
+> URL Thunder is registered at, so JS-side PKCE works). The
+> `internalProxyPass` is what the SPA's own nginx uses to reach
+> Thunder *from inside the cluster* — the public hostname
+> `*.openchoreo.localhost` does NOT resolve from pod DNS, so using it
+> in `proxy_pass` makes nginx fail to start with "host not found in
+> upstream". The two values point at the same Thunder; the difference
+> is who's doing the lookup (browser vs. pod).
 
-#### workload.yaml (SPA with OIDC)
+> **Why a same-origin proxy?** Posting `POST /oauth2/token` directly to
+> Thunder is cross-origin, and kgateway's CORS filter currently drops
+> the response body even on a 200. Routing the POST through the SPA's
+> own nginx (`/oidc/token` → Thunder's `/oauth2/token`) keeps it
+> same-origin. The browser still does the `authorize` redirect
+> cross-origin (no CORS — it's a top-level navigation).
 
-Copy the four values verbatim from the `## OIDC client provisioned`
-comment, plus `API_BASE_URL` from each upstream's `## Dependency
-endpoint resolved` comment, into `configurations.env`. **The flat
-WorkloadDescriptor uses `configurations.env: [{name, value}]`** — the
-OC CLI converts this to the Workload CRD's `spec.container.env:
-[{key, value}]` at build time. Do NOT write `containers.main.env`
-or `container.env` directly.
+#### workload.yaml (SPA with OIDC) — no env block
 
 ```yaml
 apiVersion: openchoreo.dev/v1alpha1
@@ -660,38 +662,38 @@ endpoints:
     port: 9090
     visibility:
       - external
-
-configurations:
-  env:
-    - name: OIDC_ISSUER
-      value: "<paste issuer from comment>"
-    - name: OIDC_CLIENT_ID
-      value: "<paste clientId from comment>"
-    - name: OIDC_SCOPES
-      value: "<paste scopes from comment>"
-    - name: OIDC_HOST
-      value: "<paste host from comment>"
-    - name: API_BASE_URL
-      value: "<paste URL from `## Dependency endpoint resolved` comment for the upstream>"
 ```
 
-#### nginx config — template + envsubst (replaces the static nginx.conf above)
+The `configurations.env` block is **deliberately absent**. All OIDC and
+API values are bundled at build time. If you find yourself wanting to
+add `configurations.env`, re-read this section — runtime env injection
+is not supported on SPAs in v1.
 
-Use `default.conf.template` instead of `nginx.conf`. `nginx:alpine`'s
-stock entrypoint automatically envsubst's any file under
-`/etc/nginx/templates/` into `/etc/nginx/conf.d/` at container start.
+#### `.env` (at the SPA's app-path root) — fill BEFORE `npm run build`
 
-The template does THREE things:
-1. Serves the SPA + `/index.html` fallback.
-2. Renders `/env-config.js` from `${OIDC_*}` and `${API_BASE_URL}` —
-   the SPA reads `window.__ENV__` at runtime (no values baked into
-   the bundle, so dev/stage/prod share an image).
-3. Proxies `/oidc/*` → Thunder's `/oauth2/*` so the SPA's
-   `POST /oidc/token` is same-origin (bypasses the kgateway CORS
-   bug).
+Five values, all from issue comments. The `VITE_` prefix is required so
+Vite exposes them via `import.meta.env.VITE_*` in the bundle. Other
+frameworks: CRA uses `REACT_APP_*`, Next.js uses `NEXT_PUBLIC_*`; the
+substance is identical.
+
+```ini
+# from `## OIDC client provisioned` comment on this issue
+VITE_OIDC_ISSUER=http://thunder.openchoreo.localhost:8080
+VITE_OIDC_CLIENT_ID=asdlc-console-client
+VITE_OIDC_SCOPES=openid profile
+VITE_OIDC_HOST=thunder.openchoreo.localhost:8080
+
+# from `## Dependency endpoint resolved` comment for the upstream service
+VITE_API_BASE_URL=http://development-default.openchoreoapis.localhost:19080/<upstream-component-slug>
+```
+
+The token-exchange URL (`/oidc/token`) is a SAME-ORIGIN relative path
+and lives in `src/auth.ts` as a constant — it does NOT need an env var
+because every SPA serves it from its own nginx.
+
+#### `nginx/default.conf` (static — no template, no envsubst)
 
 ```nginx
-# default.conf.template
 server {
     listen 9090;
     server_name _;
@@ -704,21 +706,16 @@ server {
         add_header Content-Type text/plain;
     }
 
-    # Runtime config — rendered by envsubst at pod start.
-    # Variables: ${OIDC_ISSUER} ${OIDC_CLIENT_ID} ${OIDC_SCOPES} ${API_BASE_URL}
-    # OIDC_TOKEN_URL is intentionally relative ("/oidc/token") — see proxy below.
-    location = /env-config.js {
-        default_type application/javascript;
-        return 200 'window.__ENV__ = { OIDC_ISSUER: "${OIDC_ISSUER}", OIDC_TOKEN_URL: "/oidc/token", OIDC_CLIENT_ID: "${OIDC_CLIENT_ID}", OIDC_SCOPES: "${OIDC_SCOPES}", API_BASE_URL: "${API_BASE_URL}" };';
-    }
-
     # Same-origin proxy for OIDC token / userinfo / etc.
-    # Browser POST /oidc/token → nginx → ${OIDC_ISSUER}/oauth2/token.
-    # The Host header MUST be Thunder's canonical hostname so kgateway
-    # routes the request correctly — that's why we capture OIDC_HOST.
+    # Browser POST /oidc/token → nginx → Thunder /oauth2/token.
+    # The proxy_pass URL below is the LITERAL `internalProxyPass` value
+    # from the `## OIDC client provisioned` comment — an in-cluster
+    # Service FQDN. DO NOT substitute the public `issuer` hostname here:
+    # `*.openchoreo.localhost` does not resolve from pod DNS and nginx
+    # will fail to start with "host not found in upstream".
+    # NO envsubst, NO ${OIDC_*} placeholders.
     location /oidc/ {
-        proxy_pass ${OIDC_ISSUER}/oauth2/;
-        proxy_set_header Host ${OIDC_HOST};
+        proxy_pass http://thunder-service.thunder.svc.cluster.local:8090/oauth2/;
         proxy_pass_request_headers on;
     }
 
@@ -728,7 +725,7 @@ server {
 }
 ```
 
-#### Dockerfile (SPA with OIDC)
+#### Dockerfile (SPA with OIDC) — same as the plain SPA Dockerfile
 
 ```dockerfile
 FROM node:20-alpine AS builder
@@ -740,19 +737,20 @@ RUN npm run build
 
 FROM nginx:alpine
 COPY --from=builder /app/dist /usr/share/nginx/html
-COPY default.conf.template /etc/nginx/templates/default.conf.template
+COPY nginx/default.conf /etc/nginx/conf.d/default.conf
 EXPOSE 9090
-# (no CMD — nginx:alpine's stock entrypoint envsubst's templates → conf.d at start)
+CMD ["nginx", "-g", "daemon off;"]
 ```
 
-#### `index.html` — load runtime config BEFORE the bundle
+No `/etc/nginx/templates/`, no envsubst step. The bundle has the OIDC
+values baked in; nginx has the issuer URL baked in.
+
+#### `index.html` — standard, no `/env-config.js`
 
 ```html
 <!doctype html>
 <html>
-  <head>
-    <script src="/env-config.js"></script>
-  </head>
+  <head><title>App</title></head>
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
@@ -764,33 +762,39 @@ EXPOSE 9090
 
 The SPA does Authorization Code + PKCE directly. Minimal, no
 heavyweight library required — but `oidc-client-ts` is a reasonable
-choice if the spec asks for refresh tokens / silent renew. Pattern:
+choice if the spec asks for refresh tokens / silent renew.
 
 ```ts
-declare global {
-  interface Window {
-    __ENV__: {
-      OIDC_ISSUER: string;       // absolute Thunder URL — used for the authorize REDIRECT only
-      OIDC_TOKEN_URL: string;    // relative "/oidc/token" — same-origin nginx proxy, used for the token POST
-      OIDC_CLIENT_ID: string;
-      OIDC_SCOPES: string;
-      API_BASE_URL: string;
-    };
-  }
+// Values baked into the bundle at `npm run build` time from .env.
+// Hard-fail at module top-level if any is missing — silent fallback is
+// what produced the v0 405-Method-Not-Allowed bug.
+const OIDC_ISSUER = import.meta.env.VITE_OIDC_ISSUER as string | undefined;
+const OIDC_CLIENT_ID = import.meta.env.VITE_OIDC_CLIENT_ID as string | undefined;
+const OIDC_SCOPES = import.meta.env.VITE_OIDC_SCOPES as string | undefined;
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL as string | undefined;
+
+if (!OIDC_ISSUER || !OIDC_CLIENT_ID || !OIDC_SCOPES || !API_BASE_URL) {
+  throw new Error(
+    "OIDC config missing. Ensure VITE_OIDC_ISSUER, VITE_OIDC_CLIENT_ID, " +
+    "VITE_OIDC_SCOPES, and VITE_API_BASE_URL are set in `.env` BEFORE " +
+    "`npm run build` (values from the issue's `## OIDC client provisioned` " +
+    "and `## Dependency endpoint resolved` comments).",
+  );
 }
 
-const cfg = window.__ENV__;
-if (!cfg?.OIDC_ISSUER || !cfg?.OIDC_CLIENT_ID || !cfg?.API_BASE_URL) {
-  throw new Error("OIDC config missing in window.__ENV__ — /env-config.js not loaded?");
-}
+// Same-origin proxy path — served by the SPA's own nginx (see
+// nginx/default.conf). This is a constant, NOT an env var: every SPA
+// forwards /oidc/* to its own Thunder regardless of the cluster.
+const OIDC_TOKEN_URL = "/oidc/token";
 
 const REDIRECT_URI = window.location.origin + "/callback";
 
 // 1. Kick off login: generate PKCE code_verifier, store in sessionStorage,
 //    redirect to `${OIDC_ISSUER}/oauth2/authorize?response_type=code&...`.
 //    (Top-level navigation — cross-origin, no CORS.)
-// 2. /callback: read ?code=, exchange via cfg.OIDC_TOKEN_URL (= "/oidc/token",
-//    same-origin proxy) with code_verifier, store access_token in sessionStorage.
+// 2. /callback: read ?code=, exchange via OIDC_TOKEN_URL (same-origin
+//    /oidc/token proxy) with code_verifier, store access_token in
+//    sessionStorage.
 // 3. fetch wrapper attaches Authorization: Bearer <access_token>.
 // 4. On 401 from any upstream, clear token + restart step 1.
 
@@ -800,28 +804,28 @@ export async function startLogin() {
   sessionStorage.setItem("pkce_verifier", verifier);
   const params = new URLSearchParams({
     response_type: "code",
-    client_id: cfg.OIDC_CLIENT_ID,
+    client_id: OIDC_CLIENT_ID!,
     redirect_uri: REDIRECT_URI,
-    scope: cfg.OIDC_SCOPES || "openid profile",
+    scope: OIDC_SCOPES || "openid profile",
     code_challenge: challenge,
     code_challenge_method: "S256",
   });
-  window.location.assign(`${cfg.OIDC_ISSUER}/oauth2/authorize?${params}`);
+  window.location.assign(`${OIDC_ISSUER}/oauth2/authorize?${params}`);
 }
 
 export async function completeLogin(code: string) {
   const verifier = sessionStorage.getItem("pkce_verifier")!;
-  // MUST go through cfg.OIDC_TOKEN_URL (same-origin /oidc/token proxy).
-  // POSTing directly to `${cfg.OIDC_ISSUER}/oauth2/token` triggers the
+  // MUST go through OIDC_TOKEN_URL (same-origin /oidc/token proxy).
+  // POSTing directly to `${OIDC_ISSUER}/oauth2/token` triggers the
   // kgateway CORS bug — the browser sees an empty response body.
-  const res = await fetch(cfg.OIDC_TOKEN_URL, {
+  const res = await fetch(OIDC_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
     body: new URLSearchParams({
       grant_type: "authorization_code",
       code,
       redirect_uri: REDIRECT_URI,
-      client_id: cfg.OIDC_CLIENT_ID,
+      client_id: OIDC_CLIENT_ID!,
       code_verifier: verifier,
     }),
   });
@@ -835,7 +839,7 @@ export async function authFetch(path: string, init: RequestInit = {}) {
   const token = sessionStorage.getItem("access_token");
   const headers = new Headers(init.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(cfg.API_BASE_URL + path, { ...init, headers });
+  const res = await fetch(API_BASE_URL + path, { ...init, headers });
   if (res.status === 401) {
     sessionStorage.removeItem("access_token");
     startLogin();
@@ -847,6 +851,15 @@ export async function authFetch(path: string, init: RequestInit = {}) {
 **Do NOT** add a username/password form that POSTs to the API. The API
 has no `/auth/*` endpoints when this pattern is used — Thunder owns
 token issuance.
+
+> **Why no runtime env injection?** Vite (and similar bundlers) freeze
+> `import.meta.env.VITE_*` at `npm run build` time. A pod env var set
+> at deploy time would have no effect on the served bundle. Baking at
+> build time is the only correct option for SPA components in v1, and
+> it eliminates a whole class of platform bugs (env not propagated to
+> pod, envsubst variable typos, missing `/env-config.js`, etc.). When
+> the platform adds multi-environment promotion, this section will be
+> revisited.
 
 ---
 

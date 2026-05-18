@@ -138,14 +138,22 @@ type PlatformIDPDefaults struct {
 
 // UserAppsOIDCConfig is the OIDC client config the BFF hands to user
 // web-apps. Loaded from env vars USER_APPS_OIDC_ISSUER /
-// USER_APPS_OIDC_CLIENT_ID / USER_APPS_OIDC_SCOPES. When ClientID is
-// empty the dispatch path skips the `## OIDC client provisioned`
-// comment and logs a warning — user apps with auth.kind=oidc-spa
-// will deploy but fail at sign-in.
+// USER_APPS_OIDC_CLIENT_ID / USER_APPS_OIDC_SCOPES /
+// USER_APPS_OIDC_INTERNAL_PROXY_PASS. When ClientID is empty the
+// dispatch path skips the `## OIDC client provisioned` comment and
+// logs a warning — user apps with auth.kind=oidc-spa will deploy but
+// fail at sign-in.
+//
+// InternalProxyPass is the URL the SPA's own nginx `/oidc/` block uses
+// to proxy `POST /oidc/token` back to Thunder. It MUST be reachable
+// from a pod inside the cluster (the public Issuer hostname isn't —
+// `*.openchoreo.localhost` doesn't resolve from pod DNS). Default is
+// the in-cluster Thunder Service FQDN + the `/oauth2/` path prefix.
 type UserAppsOIDCConfig struct {
-	Issuer   string
-	ClientID string
-	Scopes   string // space-separated, e.g. "openid profile"
+	Issuer            string
+	ClientID          string
+	Scopes            string // space-separated, e.g. "openid profile"
+	InternalProxyPass string
 }
 
 // ServiceAuthConfig holds OAuth2 client_credentials settings for

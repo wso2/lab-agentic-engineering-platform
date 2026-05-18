@@ -381,14 +381,15 @@ func main() {
 		SetUserAppsOIDC(services.UserAppsOIDC)
 	}); ok {
 		oidcSetter.SetUserAppsOIDC(services.UserAppsOIDC{
-			Issuer:   cfg.UserAppsOIDC.Issuer,
-			ClientID: cfg.UserAppsOIDC.ClientID,
-			Scopes:   cfg.UserAppsOIDC.Scopes,
+			Issuer:            cfg.UserAppsOIDC.Issuer,
+			ClientID:          cfg.UserAppsOIDC.ClientID,
+			Scopes:            cfg.UserAppsOIDC.Scopes,
+			InternalProxyPass: cfg.UserAppsOIDC.InternalProxyPass,
 		})
 		if cfg.UserAppsOIDC.ClientID == "" {
 			slog.Warn("USER_APPS_OIDC_CLIENT_ID empty — user web-apps with auth.kind=oidc-spa will deploy without an OIDC client comment posted")
 		} else {
-			slog.Info("UserApps OIDC wired", "issuer", cfg.UserAppsOIDC.Issuer, "clientID", cfg.UserAppsOIDC.ClientID, "scopes", cfg.UserAppsOIDC.Scopes)
+			slog.Info("UserApps OIDC wired", "issuer", cfg.UserAppsOIDC.Issuer, "clientID", cfg.UserAppsOIDC.ClientID, "scopes", cfg.UserAppsOIDC.Scopes, "internalProxyPass", cfg.UserAppsOIDC.InternalProxyPass)
 		}
 	}
 	// Plumb the Thunder admin client into dispatch so the cascade hook can

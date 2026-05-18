@@ -314,30 +314,37 @@ own auth endpoints. The issue body must:
 
   - For the \`web-app\` component with \`auth.kind: oidc-spa\`:
       * Add a **Scope** bullet: "Implement OIDC Authorization Code +
-        PKCE against the platform IDP. Read OIDC config from
-        \`window.__ENV__\` at runtime (rendered by nginx envsubst — see
-        the \`asdlc\` SKILL's OIDC-SPA section for the canonical
-        \`default.conf.template\` and PKCE flow snippet). NEVER bake
-        OIDC values into the bundle."
+        PKCE against the platform IDP. Bake all FIVE values from this
+        issue's \`## OIDC client provisioned\` and \`## Dependency
+        endpoint resolved\` comments into \`<appPath>/.env\` BEFORE
+        \`npm run build\` (Vite: \`VITE_*\`; CRA: \`REACT_APP_*\`; Next:
+        \`NEXT_PUBLIC_*\`). Read them via \`import.meta.env.VITE_*\` and
+        throw at module top-level on missing — no \`?? ''\` fallback.
+        DO NOT use \`window.__ENV__\`, nginx envsubst, \`/env-config.js\`,
+        \`/etc/nginx/templates/\`, or \`workload.yaml\` \`configurations.env\`
+        — those runtime mechanisms are deprecated. See the \`asdlc\`
+        SKILL's OIDC-SPA section for the reference \`.env\`,
+        \`nginx/default.conf\`, and \`src/auth.ts\`."
       * Add a **Scope** bullet: "Token exchange MUST go through the
-        same-origin proxy at \`window.__ENV__.OIDC_TOKEN_URL\` (= the
-        relative path \`/oidc/token\`). DO NOT \`POST\` directly to
-        \`\${OIDC_ISSUER}/oauth2/token\` — kgateway's CORS filter drops
-        the response body on cross-origin POSTs. The authorize
-        REDIRECT uses absolute \`window.__ENV__.OIDC_ISSUER\` (top-level
-        navigation — no CORS)."
+        same-origin proxy at relative path \`/oidc/token\`. DO NOT \`POST\`
+        directly to \`\${VITE_OIDC_ISSUER}/oauth2/token\` — kgateway's CORS
+        filter drops the response body on cross-origin POSTs. Use the
+        \`internalProxyPass\` value from \`## OIDC client provisioned\`
+        as the literal \`proxy_pass\` target in \`nginx/default.conf\`
+        (no envsubst, no template) — it MUST be an in-cluster Service
+        FQDN, NOT \`\${VITE_OIDC_ISSUER}/oauth2/\`, because the public
+        hostname doesn't resolve from pod DNS. The authorize REDIRECT
+        uses absolute \`VITE_OIDC_ISSUER\` (top-level navigation — no
+        CORS)."
       * Add a **Scope** bullet: "Attach \`Authorization: Bearer
-        <access_token>\` to every \`window.__ENV__.API_BASE_URL\` fetch.
-        On 401, restart the login flow. Do NOT write a \`/login\` form
-        that POSTs credentials anywhere."
-      * Add a **Scope** bullet: "\`workload.yaml\`'s \`configurations.env\`
-        block MUST declare FIVE env vars — \`OIDC_ISSUER\`,
-        \`OIDC_CLIENT_ID\`, \`OIDC_SCOPES\`, \`OIDC_HOST\` (copy verbatim
-        from this issue's \`## OIDC client provisioned\` comment), and
-        \`API_BASE_URL\` (copy from this issue's \`## Dependency
-        endpoint resolved\` comment for the upstream service). The
-        flat WorkloadDescriptor uses \`configurations.env: [{name,
-        value}]\` — NOT \`containers.main.env\` or \`container.env\`."
+        <access_token>\` to every \`VITE_API_BASE_URL\` fetch. On 401,
+        restart the login flow. Do NOT write a \`/login\` form that
+        POSTs credentials anywhere."
+      * Add a **Scope** bullet: "DO NOT declare \`configurations.env\`
+        in \`workload.yaml\` for OIDC values. All five values are baked
+        into the bundle + nginx config at \`npm run build\` time; the
+        running pod needs no env vars and no runtime substitution.
+        \`workload.yaml\` only declares \`endpoints\` for the web-app."
       * Add an **Acceptance criteria** bullet: "Loading the webapp
         unauthenticated redirects to the OIDC authorize endpoint;
         after sign-in, the user lands back on the app with a token

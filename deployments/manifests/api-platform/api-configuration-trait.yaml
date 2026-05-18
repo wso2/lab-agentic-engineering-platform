@@ -257,7 +257,7 @@ spec:
               url: "http://${metadata.componentName}.${metadata.namespace}:${parameters.upstreamPort > 0 ? parameters.upstreamPort : workload.endpoints[parameters.endpointName].port}${parameters.upstreamBasePath}"
           policies: >-
             ${(environmentConfigs.cors.enabled ? [{"name": "cors", "version": "v1", "params": {"allowedOrigins": environmentConfigs.cors.allowedOrigins, "allowedMethods": environmentConfigs.cors.allowedMethods, "allowedHeaders": environmentConfigs.cors.allowedHeaders, "allowCredentials": environmentConfigs.cors.allowCredentials}}] : [])
-              + (environmentConfigs.jwtAuth.enabled ? [{"name": "jwt-auth", "version": "v1", "params": {"issuers": environmentConfigs.jwtAuth.issuers, "audiences": environmentConfigs.jwtAuth.audience}}] : [])
+              + (environmentConfigs.jwtAuth.enabled ? [{"name": "jwt-auth", "version": "v1", "params": {"issuers": environmentConfigs.jwtAuth.issuers, "audiences": environmentConfigs.jwtAuth.audience, "claimMappings": {"sub": "x-user-id", "username": "x-user-name", "ouHandle": "x-user-ou"}}}] : [])
               + (environmentConfigs.rateLimit.enabled ? [{"name": "basic-ratelimit", "version": "v1", "params": {"limits": environmentConfigs.rateLimit.limits}}] : [])
               + (environmentConfigs.addHeaders.enabled ? [{"name": "add-headers", "version": "v1", "params": {"requestHeaders": environmentConfigs.addHeaders.requestHeaders, "responseHeaders": environmentConfigs.addHeaders.responseHeaders}}] : [])}
           operations: ${parameters.operations}
