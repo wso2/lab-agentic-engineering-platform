@@ -14,6 +14,20 @@ type DesignComponent struct {
 	ComponentAgentInstructions string         `json:"componentAgentInstructions"`
 	Api                        *APISecurity   `json:"api,omitempty"`
 	Auth                       *ComponentAuth `json:"auth,omitempty"`
+	DependentApis              []DependentAPI `json:"dependentApis,omitempty"`
+}
+
+// DependentAPI is an HTTP endpoint outside this project that a component
+// consumes at runtime — a corporate directory, a payments processor, etc.
+// Unlike `DependsOn` (which references sibling components built by this
+// project), the URL here is fixed at design time. The cell diagram renders
+// these outside the cell boundary, and the tech-lead carries the URL +
+// description into the coding-agent's issue body.
+type DependentAPI struct {
+	Name           string `json:"name"`
+	URL            string `json:"url"`
+	Description    string `json:"description,omitempty"`
+	Authentication string `json:"authentication,omitempty"`
 }
 
 // APISecurity carries the component's HTTP API security policy. Absent / nil

@@ -57,6 +57,11 @@ fix_node_dns
 # rewrite for *.openchoreo.localhost above.
 ensure_host_k3d_internal_in_coredns
 
+# Repair OC's `openchoreo.override` so pods can also reach `*.openchoreo.localhost`
+# and `*.openchoreoapis.localhost` — the chart-shipped rewrite only handles
+# the first and targets a name the `.:53` plugin chain can't resolve.
+ensure_openchoreo_localhost_in_coredns
+
 generate_machine_ids "$CLUSTER_NAME"
 echo ""
 echo "✅ k3d cluster ready!"

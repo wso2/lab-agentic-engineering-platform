@@ -159,14 +159,14 @@ implementation. Over-specifying internals wastes tokens and constrains better
 solutions.
 
 The agent has access to:
-  - The full set of requirements documents under \`.asdlc/requirements/\` —
+  - The full set of requirements documents under \`specs/requirements/\` —
     at minimum \`requirements.md\` (the high-level sketch); often also
     \`functional-requirements.md\`, \`non-functional-requirements.md\`,
     \`user-stories.md\`, and any \`wireframes.dsl\` / \`domain-model.dsl\`
     canvases (the matching \`.excalidraw\` files are the rendered scenes —
     do NOT read them; the \`.dsl\` is the agent-readable source). The
     agent should consult whichever of these are relevant to its task.
-  - The architecture as a multi-file tree under \`.asdlc/design/\`:
+  - The architecture as a multi-file tree under \`specs/design/\`:
       * \`design.md\` — system-level overview.
       * \`components/<componentName>/design.md\` — per-component design with
         YAML frontmatter (\`type\`, \`language\`, \`dependsOn\`, \`buildpack\`,
@@ -243,7 +243,7 @@ Section rules:
   - **Scope**: A short bulleted list of the outcomes the agent must deliver,
     plus the boundary. Stay at the level of WHAT, not HOW. Shape by task kind:
       * **New component / feature**: list outcomes, e.g.
-          - "Implement the full OpenAPI contract (see \`.asdlc/design/components/<componentName>/openapi.yaml\`)."
+          - "Implement the full OpenAPI contract (see \`specs/design/components/<componentName>/openapi.yaml\`)."
           - "Persist todos to local SQLite; schema is the agent's choice."
           - "Frontend must let a user create, list, complete, and delete todos."
         For \`web-app\` components there is no \`openapi.yaml\` — describe the
@@ -266,16 +266,16 @@ Section rules:
 
   - **References**: Task-specific pointers, not content. The platform's
     appended Component Reference card already points at the component's
-    \`.asdlc/design/components/<componentName>/design.md\` and (for service
-    components) \`.asdlc/design/components/<componentName>/openapi.yaml\` —
+    \`specs/design/components/<componentName>/design.md\` and (for service
+    components) \`specs/design/components/<componentName>/openapi.yaml\` —
     do NOT repeat those generic pointers here. Use References for things
     the agent might otherwise miss:
-      * Specific sections in \`.asdlc/requirements/requirements.md\` (or any
+      * Specific sections in \`specs/requirements/requirements.md\` (or any
         of the sibling requirement docs) that constrain this task —
         only when the task hinges on product context.
       * Names of sibling components this task integrates with, when the
         integration shape isn't obvious from dependsOn alone (the agent will
-        look them up under \`.asdlc/design/components/<sibling>/\`).
+        look them up under \`specs/design/components/<sibling>/\`).
       * For EXISTING-component tasks (esp. bug fixes), the likely **area**
         of the codebase to start in (e.g. "the request-validation layer of
         this component", "the todo-list rendering logic"). You do NOT have a
@@ -386,6 +386,33 @@ add CORS middleware. The platform's gateway attaches an Envoy CORS
 filter to every \`visibility: external\` HTTPRoute via the
 ClusterComponentType; doubled CORS headers break browsers."
 
+External dependent APIs (HARD REQUIREMENT when \`dependentApis\` is non-empty):
+
+If the target component's design entry contains a non-empty
+\`dependentApis\` array, the issue body MUST surface each entry so the
+coding agent knows how to call it. For every entry, add a **Scope** bullet
+of the form:
+
+  - **External upstream \`<name>\`**: \`<METHOD or 'GET'>\` \`<url>\` —
+    <description>. Authentication: <authentication>. Read the URL from
+    env var \`<NAME_UPPER_SNAKE>_URL\` (already wired in the component's
+    design instructions) and call with a standard HTTP client.
+
+Use the literal URL, description, and authentication string from the
+\`dependentApis\` entry — do not invent values. \`<NAME_UPPER_SNAKE>\` is
+the upstream's \`name\` converted to upper-snake-case (e.g.
+\`employee-api\` → \`EMPLOYEE_API\`).
+
+Also add an **Acceptance criteria** bullet: "Calls to external upstream
+\`<name>\` use the URL from env var \`<NAME_UPPER_SNAKE>_URL\` (default
+\`<url>\`) and handle non-2xx responses without crashing. <auth-specific
+expectation: \`none\` → no Authorization header; \`bearer\` → caller's
+\`Authorization\` header forwarded; \`api-key\` → static key from env.>"
+
+These are external endpoints fixed at design time — there is NO
+\`## Dependency endpoint resolved\` comment for them (that mechanism is
+only for sibling components built by this project). The URL is canonical.
+
 Hard rules:
   - Stay at the WHAT/boundary altitude. Do NOT write step-by-step instructions,
     code skeletons, or library choices. Trust the agent.
@@ -437,7 +464,7 @@ ${spec}
 ## Component situation
 ${componentSituation}
 
-## Component design entry (assembled from \`.asdlc/design/components/${item.componentName}/design.md\`; \`openAPISpec\` stripped here for brevity. The agent reads the full \`design.md\` + \`openapi.yaml\` on disk. Do NOT inline.)
+## Component design entry (assembled from \`specs/design/components/${item.componentName}/design.md\`; \`openAPISpec\` stripped here for brevity. The agent reads the full \`design.md\` + \`openapi.yaml\` on disk. Do NOT inline.)
 \`\`\`json
 ${item.designSlice}
 \`\`\`

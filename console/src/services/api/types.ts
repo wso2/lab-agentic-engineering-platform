@@ -59,10 +59,22 @@ export interface DesignComponent {
   // `security: 'required'` ⇒ AP enforces JWT validation against the org's
   // IDP. See docs/design/api-platform-integration.md section 5.1.
   api?: APISecurity;
+  // External HTTP APIs this component consumes at runtime — e.g. a
+  // corporate directory like the Secret Santa employee API. Rendered
+  // outside the cell in the architecture diagram; surfaced in the
+  // tech-lead issue body so the coding agent knows the URL + auth.
+  dependentApis?: DependentApi[];
 }
 
 export interface APISecurity {
   security: 'required' | 'none';
+}
+
+export interface DependentApi {
+  name: string;
+  url: string;
+  description?: string;
+  authentication?: 'none' | 'bearer' | 'api-key';
 }
 
 export interface Design {
@@ -93,7 +105,7 @@ export interface ComponentOpenAPI {
  * diagram + downstream code). Returned by `GET /design/bundle` and the
  * per-file mutation endpoints.
  *
- * Files keys are paths relative to `.asdlc/design/` with forward slashes
+ * Files keys are paths relative to `specs/design/` with forward slashes
  * (e.g. `design.md`, `components/user-api/design.md`,
  * `components/user-api/openapi.yaml`).
  */
@@ -189,7 +201,7 @@ export interface ComponentTask {
 
   // Tech-lead agent revamp — task-level data lives on the row; component
   // shape (OpenAPI, language, appPath, etc.) is read fresh from
-  // .asdlc/design.json on every dispatch.
+  // specs/design.json on every dispatch.
   title?: string;
   rationale?: string;
   body?: string;

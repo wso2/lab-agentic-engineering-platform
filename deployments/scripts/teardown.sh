@@ -56,14 +56,30 @@ echo "4️⃣  Clean generated artifacts"
 rm -f "$DEPLOY_DIR/.kube/config" 2>/dev/null && echo "   removed deployments/.kube/config" || true
 rm -rf "$DEPLOY_DIR/.kube" 2>/dev/null || true
 
-# git-service stores cloned workspaces at $HOME/.asdlc/repos (host bind
-# mount, see docker-compose.yml `volumes:` on git-service). docker compose
-# down -v wipes named volumes but NOT bind mounts, so without this the
-# next `setup.sh` runs into "destination path already exists" when
-# git-service tries to clone a freshly-created repo into a stale workspace.
-REPOS_DIR="${HOME}/.asdlc/repos"
-if [ -d "$REPOS_DIR" ]; then
-    rm -rf "$REPOS_DIR" 2>/dev/null && echo "   removed git-service workspaces at $REPOS_DIR" || true
+# git-service stores cloned workspaces at the host bind mount declared on
+# the git-service compose service (see docker-compose.yml `volumes:`).
+# docker compose down -v wipes named volumes but NOT bind mounts, so
+# without this the next `setup.sh` runs into "destination path already
+# exists" when git-service tries to clone a freshly-created repo into a
+# stale workspace.
+# NOTE: previously hardcoded to ${HOME}/.asdlc/repos. The mount was renamed
+# to ${HOME}/specs/repos (commit 6232ff4) — read it back from the compose
+# file instead so this can't drift again.
+REPOS_HOST_PATH=$(awk '
+  /^  git-service:/      { in_svc=1; next }
+  in_svc && /^  [a-z]/   { in_svc=0 }
+  in_svc && /:\/data\/repos$/ {
+    sub(/^[[:space:]]*-[[:space:]]*/, "")
+    sub(/:\/data\/repos$/, "")
+    print; exit
+  }' "$COMPOSE_FILE")
+# Expand ${HOME} (and similar) without sourcing the file.
+REPOS_HOST_PATH="${REPOS_HOST_PATH//\$\{HOME\}/$HOME}"
+REPOS_HOST_PATH="${REPOS_HOST_PATH//\$HOME/$HOME}"
+if [ -n "$REPOS_HOST_PATH" ] && [ -d "$REPOS_HOST_PATH" ]; then
+    rm -rf "$REPOS_HOST_PATH" 2>/dev/null \
+        && echo "   removed git-service workspaces at $REPOS_HOST_PATH" \
+        || echo "   ⚠️  failed to remove $REPOS_HOST_PATH — clean it manually before next setup"
 fi
 
 echo "   keeping deployments/.env, deployments/keys/, deployments/github-app-private-key.pem"

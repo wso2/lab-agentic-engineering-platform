@@ -191,6 +191,49 @@ json.dump(cm, sys.stdout)
     echo "✅ host.k3d.internal added to coredns-custom (${gw_ip})"
 }
 
+# Make `*.openchoreo.localhost` AND `*.openchoreoapis.localhost` resolvable
+# from inside pods. The OpenChoreo Helm chart ships an `openchoreo.override`
+# that (a) only covers `*.openchoreo.localhost`, missing the public *runtime*
+# hostnames the kgateway HTTPRoutes actually use (`*.openchoreoapis.localhost`),
+# and (b) rewrites to `host.k3d.internal`, which can't be resolved from
+# within the `.:53` server block (its hosts plugin lives in a SEPARATE
+# `host.k3d.internal:53` server block). Result: any in-cluster pod calling
+# its own platform's public gateway hostname fails with NXDOMAIN.
+#
+# We replace the chart's override with a rewrite that targets the kgateway
+# Service FQDN directly — that name IS resolvable inside `.:53` via the
+# `kubernetes` plugin, and Envoy's Host-header-based routing on the gateway
+# preserves correct HTTPRoute selection because the client's Host header is
+# untouched. Pairs with the schema/prompt-level "External dependent APIs"
+# feature in the architect agent.
+ensure_openchoreo_localhost_in_coredns() {
+    local key="openchoreo.override"
+    local desired='rewrite stop {
+  name regex (.+\.)?(openchoreo|openchoreoapis)\.localhost gateway-default.openchoreo-data-plane.svc.cluster.local
+  answer auto
+}
+'
+    local current
+    current=$(kubectl get cm coredns-custom -n kube-system --context "${CLUSTER_CONTEXT}" \
+        -o jsonpath="{.data.${key}}" 2>/dev/null)
+    if [ "$current" = "$desired" ]; then
+        echo "✅ openchoreo*.localhost rewrite already correct in coredns-custom"
+        return
+    fi
+    kubectl get cm coredns-custom -n kube-system --context "${CLUSTER_CONTEXT}" -o json 2>/dev/null \
+        | KEY="$key" python3 -c "
+import json, os, sys
+cm = json.load(sys.stdin)
+key = os.environ['KEY']
+cm.setdefault('data', {})[key] = 'rewrite stop {\n  name regex (.+\\\\.)?(openchoreo|openchoreoapis)\\\\.localhost gateway-default.openchoreo-data-plane.svc.cluster.local\n  answer auto\n}\n'
+cm['metadata'] = {'name': cm['metadata']['name'], 'namespace': cm['metadata']['namespace']}
+json.dump(cm, sys.stdout)
+" | kubectl apply --context "${CLUSTER_CONTEXT}" -f - >/dev/null
+    kubectl rollout restart deployment coredns -n kube-system --context "${CLUSTER_CONTEXT}" >/dev/null
+    kubectl rollout status deployment coredns -n kube-system --context "${CLUSTER_CONTEXT}" --timeout=60s >/dev/null
+    echo "✅ openchoreo*.localhost rewrite installed in coredns-custom"
+}
+
 # Fix DNS on all k3d nodes. Keeps Docker's embedded DNS (127.0.0.11) as primary
 # so that Docker-internal names (container names) still resolve, and adds
 # 8.8.8.8 as a fallback for external image pulls.

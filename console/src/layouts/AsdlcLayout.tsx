@@ -67,7 +67,21 @@ export default function AsdlcLayout() {
   const claimsOrgId = resolveOuHandle(claims);
   const claimsOrgName = claims?.ouName || claimsOrgId;
 
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('asdlc:sidebarCollapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('asdlc:sidebarCollapsed', collapsed ? '1' : '0');
+    } catch {
+      // ignore quota/access errors
+    }
+  }, [collapsed]);
   const [projectAnchorEl, setProjectAnchorEl] = useState<null | HTMLElement>(null);
   const [componentAnchorEl, setComponentAnchorEl] = useState<null | HTMLElement>(null);
   const projectMenuOpen = Boolean(projectAnchorEl);
@@ -281,15 +295,16 @@ export default function AsdlcLayout() {
 
           <Header.Brand>
             <Stack
-              direction="row"
-              alignItems="center"
-              gap={1}
+              direction="column"
               onClick={() => navigate(organizationOverviewPath(routeOrgId))}
-              sx={{ cursor: 'pointer' }}
+              sx={{ cursor: 'pointer', lineHeight: 1 }}
             >
-              <Compass size={24} />
-              <Box component="span" sx={{ fontWeight: 700, fontSize: '1.1rem', whiteSpace: 'nowrap' }}>
-                App Factory
+              <Box component="span" sx={{ fontWeight: 700, fontSize: '1.25rem', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
+                Agentic
+              </Box>
+              <Box component="span" sx={{ fontSize: '0.95rem', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
+                <Box component="span" sx={{ fontWeight: 700 }}>Engineering</Box>
+                <Box component="span" sx={{ fontWeight: 400 }}> Platform</Box>
               </Box>
             </Stack>
           </Header.Brand>
@@ -598,13 +613,13 @@ export default function AsdlcLayout() {
                   <Sidebar.ItemIcon>
                     <Compass size={20} />
                   </Sidebar.ItemIcon>
-                  <Sidebar.ItemLabel>Architecture</Sidebar.ItemLabel>
+                  <Sidebar.ItemLabel>Design</Sidebar.ItemLabel>
                 </Sidebar.Item>
                 <Sidebar.Item id="tasks">
                   <Sidebar.ItemIcon>
                     <ClipboardList size={20} />
                   </Sidebar.ItemIcon>
-                  <Sidebar.ItemLabel>Tasks</Sidebar.ItemLabel>
+                  <Sidebar.ItemLabel>Implementation</Sidebar.ItemLabel>
                 </Sidebar.Item>
               </Sidebar.Category>
             )}
@@ -669,7 +684,7 @@ export default function AsdlcLayout() {
       <AppShell.Main>
         <Box sx={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'row', overflow: 'hidden' }}>
           <Box sx={{ flex: 1, minWidth: 0, overflow: 'auto' }}>
-            <Outlet context={{ setSidebarCollapsed: setCollapsed }} />
+            <Outlet />
           </Box>
           {inProjectLevel && (
             <Box
@@ -688,7 +703,7 @@ export default function AsdlcLayout() {
 
       <AppShell.Footer>
         <Footer
-          copyright={`\u00A9 ${new Date().getFullYear()} App Factory Platform. All rights reserved.`}
+          copyright={`\u00A9 ${new Date().getFullYear()} Agentic Engineering Platform. All rights reserved.`}
           termsUrl="#terms"
           privacyUrl="#privacy"
           sx={{ py: 0.5 }}
