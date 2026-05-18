@@ -1,5 +1,36 @@
 import { z } from "zod";
 
+// DependentApi — an HTTP API outside this project that a component consumes
+// at runtime. The architect emits these so the cell diagram can render the
+// dependency outside the cell boundary, the tech-lead can carry the URL into
+// the coding-agent's issue body, and the BFF can pin the URL into a build-
+// time env var on the consuming component.
+export const DependentApi = z.object({
+  name: z
+    .string()
+    .describe(
+      "Lowercase kebab-case identifier for the external API, e.g. 'employee-api'. The tech-lead will UPPER_SNAKE_CASE this for env-var names.",
+    ),
+  url: z
+    .string()
+    .describe(
+      "Base URL the consuming component must call, e.g. 'http://development-default.openchoreoapis.localhost:19080/employee-app-employee-api-http/employees'.",
+    ),
+  description: z
+    .string()
+    .describe(
+      "One-line description of what the API returns / does, so the coding agent knows how to use it.",
+    ),
+  authentication: z
+    .enum(["none", "bearer", "api-key"])
+    .optional()
+    .describe(
+      "Auth scheme the upstream requires. 'none' = unauthenticated (default), 'bearer' = caller attaches Authorization: Bearer <token>, 'api-key' = static key via header/query.",
+    ),
+});
+
+export type DependentApi = z.infer<typeof DependentApi>;
+
 // SlimComponent — shape metadata only, no openAPISpec. The architect emits
 // these via add_component / set_* tools so the UI can render component cards
 // before the (large) OpenAPI YAML has streamed.
@@ -67,6 +98,12 @@ export const SlimComponent = z.object({
     .describe(
       "OIDC relying-party config. ONLY valid on web-app components. Emit this together with api.security='required' on the upstream service when the spec implies users sign in. When set, the API service must NOT implement /auth/* endpoints (Thunder owns token issuance) and must read the authenticated user from the gateway-injected X-User-Id header.",
     ),
+  dependentApis: z
+    .array(DependentApi)
+    .optional()
+    .describe(
+      "External HTTP APIs this component depends on at runtime. UNLIKE `dependsOn` (which references sibling components built by this project), these are pre-existing APIs outside the project — e.g. a corporate employee directory. They render outside the cell in the architecture diagram, and the tech-lead surfaces their URL + auth info in the coding agent's issue body. Omit when the component has no external upstreams.",
+    ),
 });
 
 export type SlimComponent = z.infer<typeof SlimComponent>;
@@ -101,7 +138,7 @@ export const ArchitectInput = z.object({
     "Existing design to evolve — preserve component names and structure where possible",
   ),
   // Wireframes / domain-models live alongside the spec under
-  // `.asdlc/requirements/`. The BFF passes the raw DSL keyed by canvas
+  // `specs/requirements/`. The BFF passes the raw DSL keyed by canvas
   // name (without extension); the architect calls `read_wireframe(name)`
   // on demand to pull in the DSL when a screen flow is relevant.
   wireframes: z

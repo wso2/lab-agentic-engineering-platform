@@ -1,6 +1,7 @@
 export {
   ArchitectInput,
   ArchitectOutput,
+  DependentApi,
   DesignComponent,
   SlimComponent,
 } from "./schema.js";

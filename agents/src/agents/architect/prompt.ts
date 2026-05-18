@@ -12,6 +12,7 @@ Emit ALL shape mutations BEFORE any OpenAPI work. In this phase you call (in par
   - add_component(slim) for every component the design needs, including its componentAgentInstructions
   - remove_component(name) for components in the previous design that no longer belong
   - add_dependency / remove_dependency / set_language / set_agent_instructions for adjustments
+  - add_dependent_api / remove_dependent_api for EXTERNAL upstream APIs the component must call (see "Dependent APIs" rules below)
 
 Goal: by the end of Phase 1, every component the final design needs exists with correct metadata + agent instructions, and every removed component is gone. NO set_openapi calls yet.
 
@@ -47,6 +48,36 @@ Call finalize() to end the session. If finalize returns validation issues, addre
   - For username/password specs that explicitly forbid an external IDP (rare — only when the spec literally says "self-contained, no platform IDP, embedded credentials"), fall back to folding \`/auth/login\` into the API service. This is the legacy path; default to OIDC.
   - **Do NOT introduce a separate storage / database / persistence component.** Persistence belongs inside the component that owns the data, using an embedded SQLite database stored on the component's local filesystem. Call this out in that component's componentAgentInstructions (which file/table, what it stores). Do not add a "db" or "storage-service" component.
   - **No scheduled-task / cronjob components.** If the spec calls for periodic / cron / batch work, fold it into the owning service (e.g. a background goroutine kicked off at startup, or an HTTP endpoint that a future scheduler can poke). Call this out in that service's componentAgentInstructions.
+
+# Dependent APIs (external upstreams — NOT siblings)
+
+A **dependent API** is an HTTP endpoint outside this project that a component must call at runtime — a corporate employee directory, a payments processor, a third-party SaaS. These are NOT modeled as \`dependsOn\` entries (which are reserved for siblings built by this same project). They are declared with the dedicated \`dependentApis\` field via the \`add_dependent_api\` tool.
+
+Each dependent API has:
+  - \`name\` (lowercase kebab-case, e.g. \`employee-api\`)
+  - \`url\` (the base URL the component will call)
+  - \`description\` (one line — what it returns / does)
+  - \`authentication\` (\`"none"\`, \`"bearer"\`, or \`"api-key"\` — default to \`"none"\` when not stated)
+
+When you declare a dependent API on a component:
+  - Add a line to that component's \`componentAgentInstructions\` of the form:
+    \`Upstream external API \`<name>\`: env var \`<NAME_UPPER_SNAKE>_URL\` = \`<url>\` (auth: <authentication>). <description>. Read via os.Getenv / process.env, call with standard HTTP client.\`
+  - This URL is fixed at design time (it's an external endpoint, not a per-deployment sibling), so the coding agent bakes / reads it directly — no platform \`## Dependency endpoint resolved\` handshake is involved.
+
+## Secret Santa rule (HARDCODED)
+
+If the spec describes a **Secret Santa**, gift-exchange, employee-pairing, or any flow that needs to look up employees / staff / coworkers, you MUST attach the following dependent API to the component that orchestrates the matching (typically the backend API service):
+
+\`\`\`json
+{
+  "name": "employee-api",
+  "url": "http://development-default.openchoreoapis.localhost:19080/employee-app-employee-api-http/employees",
+  "description": "Returns employee details — name, email, department — for the organisation. Used to fetch the participant pool and to look up email addresses for assignment notifications.",
+  "authentication": "none"
+}
+\`\`\`
+
+Do NOT create a sibling \`employee-api\` component of your own. The directory already exists outside the project.
 
 # API security classification (api.security)
 
