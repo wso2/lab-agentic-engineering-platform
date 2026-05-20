@@ -19,14 +19,12 @@ Specification → Design → Implementation → Build → Deploy → Manage
 
 ## Trying it out
 
-Today, the only way to try this is **locally** — clone the repo and follow the
-[Running it locally](#running-it-locally) section below. We're actively looking for
-feedback: bug reports, ideas, "this is confusing," "this is broken" — all welcome
-via GitHub issues on the repo.
+Today, the only way to try this is **locally** — see [Running it locally](#running-it-locally)
+below. A hosted version on **WSO2 Cloud** is planned; this section will get the URL
+once it lands.
 
-A hosted version is planned: this will eventually be **deployed on WSO2 Cloud** so
-anyone interested can try it without standing up the local stack. Until then,
-local is the only path. Watch this section for the hosted URL once it lands.
+Feedback (bug reports, "this is confusing," "this is broken") is welcome via GitHub
+issues on the repo.
 
 ## What's in here
 
@@ -43,16 +41,14 @@ local is the only path. Watch this section for the hosted URL once it lands.
 | [`docs/design/`](./docs/design) | Architecture & component design docs |
 | [`requirements/`](./requirements) | User scenarios that drive features and E2E tests |
 | [`schemas/`](./schemas) | Shared JSON/YAML schemas |
-| `database-service/`, `collab-server/`, `local-dispatcher/` | Older/legacy components, kept for reference |
+| `database-service/`, `collab-server/`, `local-dispatcher/` | Legacy components, kept for reference |
 
-> **A note on naming.** Service names and code identifiers still use `asdlc-*`
-> (e.g. `asdlc-service`, `asdlc-api`, `asdlc-console`). That's the original
-> internal codename and changing it is a separate cleanup. The product itself is
-> now **WSO2 Labs Agentic Engineer**.
+> **Naming.** Service names and code identifiers still use `asdlc-*` (e.g.
+> `asdlc-api`, `asdlc-console`) — that's the original internal codename. The
+> product itself is now **WSO2 Labs Agentic Engineer**.
 
-`AGENTS.md` (symlinked as `CLAUDE.md`) is the day-to-day operations cheat sheet for
-contributors. The root `README.md` you're reading is the on-ramp; `AGENTS.md` is the
-detailed manual.
+This `README.md` is the on-ramp. `AGENTS.md` (symlinked as `CLAUDE.md`) is the
+day-to-day contributor manual.
 
 ## Running it locally
 
@@ -62,15 +58,15 @@ and a Docker Compose stack for the long-lived services.
 
 ### Prerequisites
 
-- Docker + `docker compose`
+- Docker + `docker compose` (Colima works too on macOS — `setup-k3d.sh` auto-adjusts for it)
 - [`k3d`](https://k3d.io/), `kubectl`, `helm`
 - An Anthropic API key (for the AI agents)
 - Optional: a GitHub App (for end-to-end repo provisioning + webhooks)
 
-### Three commands
+### Bring-up
 
 ```bash
-# 1. One-shot bring-up: k3d cluster, OpenChoreo, Thunder, observability, platform infra
+# 1. One-shot bring-up: k3d cluster + OpenChoreo + Thunder + platform infra
 bash deployments/scripts/setup.sh
 
 # 2. Set your Anthropic key (and optional GITHUB_APP_* values)
@@ -80,29 +76,23 @@ $EDITOR deployments/.env
 bash deployments/scripts/start.sh
 ```
 
-Then open **http://localhost:8090** and sign in with `admin` / `admin`
-(the default Thunder admin in the `Administrators` group).
+Open **http://localhost:8090** and sign in with `admin` / `admin` (the default
+Thunder admin in the `Administrators` group).
 
-### Useful scripts (all under `deployments/scripts/`)
+### Main scripts (under `deployments/scripts/`)
 
 | Script | What it does |
 |---|---|
-| `setup.sh` | One-shot bring-up. Chains the steps below. |
-| `setup-k3d.sh` | Creates the k3d cluster and patches CoreDNS. |
-| `setup-prerequisites.sh` | cert-manager, ESO, kgateway, OpenBao, API Platform gateway. |
-| `setup-openchoreo.sh` | Installs OpenChoreo (Control / Data / Workflow planes) + Thunder. |
-| `setup-asdlc.sh` | ClusterWorkflows, ClusterComponentTypes, AuthzRoleBindings, generates `.env` (platform services). |
-| `setup-observability.sh` | Observability stack. |
-| `setup-thunder-client.sh` | Bootstraps Thunder OAuth clients (idempotent). |
-| `start.sh` | Refreshes DNS, seeds the host kubeconfig, runs `docker compose up`. |
+| `setup.sh` | One-shot bring-up — k3d cluster + OpenChoreo + Thunder + platform infra. |
+| `start.sh` | Starts the Docker Compose stack (BFF, agents, git-service, console, db, smee). |
 | `stop.sh` | `docker compose down`. **Cluster stays up.** |
 | `teardown.sh` | Destroys the cluster (loses all OpenChoreo state). |
-| `seed-dev.sh` | Seeds dev data into the BFF. |
-| `seed-test-users.sh` | Idempotently seeds Thunder test users. |
-| `verify-api-platform.sh` | Runs the API Platform + Thunder-JWT PoC truth table. |
 
-For deeper details on the architecture, wiring, env vars, and the API Platform PoC,
-see [`deployments/README.md`](./deployments/README.md).
+`setup.sh` chains several `setup-*.sh` step scripts (k3d, prerequisites, OpenChoreo,
+ASDLC infra, observability, Thunder clients). You normally don't run these directly.
+
+For architecture wiring, env vars, and the API Platform PoC details, see
+[`deployments/README.md`](./deployments/README.md).
 
 ### Service ports (when the stack is up)
 
@@ -119,18 +109,14 @@ see [`deployments/README.md`](./deployments/README.md).
 ### Daily cycle
 
 ```bash
-# Rebuild & restart a single service after editing it
+# Rebuild & restart one service after editing it
 cd deployments && docker compose up -d --build asdlc-api
 
 # Tail logs
 docker compose logs -f asdlc-api
-
-# Stop everything (cluster stays up)
-bash deployments/scripts/stop.sh
-
-# Full teardown
-bash deployments/scripts/teardown.sh
 ```
+
+Use `stop.sh` / `teardown.sh` from the scripts table above to shut down.
 
 ## Architecture (one-pager)
 
