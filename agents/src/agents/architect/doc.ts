@@ -1,6 +1,7 @@
 import { parse as parseYaml } from "yaml";
 import type {
   ArchitectOutput,
+  DependentApi,
   DesignComponent,
   SlimComponent,
 } from "./schema.js";
@@ -95,6 +96,26 @@ export class DesignDoc {
       dependsOn: entry.slim.dependsOn.filter((d) => d !== dependsOn),
     };
     entry.openapi = null;
+  }
+
+  // Adds (or replaces by name) an external dependent API. Idempotent on name.
+  // Does NOT invalidate openapi — external calls are described in
+  // componentAgentInstructions, not the wire contract.
+  addDependentApi(name: string, dep: DependentApi): void {
+    const entry = this.requireEntry(name);
+    const existing = entry.slim.dependentApis ?? [];
+    const filtered = existing.filter((d) => d.name !== dep.name);
+    entry.slim = { ...entry.slim, dependentApis: [...filtered, dep] };
+  }
+
+  removeDependentApi(name: string, depName: string): void {
+    const entry = this.requireEntry(name);
+    const existing = entry.slim.dependentApis ?? [];
+    if (!existing.some((d) => d.name === depName)) return;
+    entry.slim = {
+      ...entry.slim,
+      dependentApis: existing.filter((d) => d.name !== depName),
+    };
   }
 
   // ── OpenAPI ───────────────────────────────────────────────────────────

@@ -295,15 +295,18 @@ export default function AsdlcLayout() {
 
           <Header.Brand>
             <Stack
-              direction="row"
-              alignItems="center"
-              gap={1}
+              direction="column"
               onClick={() => navigate(organizationOverviewPath(routeOrgId))}
-              sx={{ cursor: 'pointer' }}
+              sx={{ cursor: 'pointer', lineHeight: 1 }}
             >
-              <Compass size={24} />
-              <Box component="span" sx={{ fontWeight: 700, fontSize: '1.1rem', whiteSpace: 'nowrap' }}>
-                App Factory
+              <Box component="span" sx={{ lineHeight: 1.1, whiteSpace: 'nowrap' }}>
+                <Box component="span" sx={{ fontWeight: 700, fontSize: '1.25rem' }}>WSO2</Box>
+                <Box component="span" sx={{ fontWeight: 400, fontSize: '1rem' }}> Labs</Box>
+
+              </Box>
+              <Box component="span" sx={{ fontSize: '0.95rem', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
+                <Box component="span" sx={{ fontWeight: 700 }}>Agentic</Box>
+                <Box component="span" sx={{ fontWeight: 400 }}> Engineer</Box>
               </Box>
             </Stack>
           </Header.Brand>
@@ -702,7 +705,7 @@ export default function AsdlcLayout() {
 
       <AppShell.Footer>
         <Footer
-          copyright={`\u00A9 ${new Date().getFullYear()} App Factory Platform. All rights reserved.`}
+          copyright={`\u00A9 ${new Date().getFullYear()} WSO2 Labs Agentic Engineer. All rights reserved.`}
           termsUrl="#terms"
           privacyUrl="#privacy"
           sx={{ py: 0.5 }}

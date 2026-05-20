@@ -1,11 +1,11 @@
 ---
 name: asdlc
-description: Load when working a component task dispatched by the ASDLC platform. The cwd is a clone of the project's repo on its default branch; the task is anchored by a GitHub issue passed in your prompt. You create your own working branch and open the PR. Defines the workflow, the mandatory `Closes #N` PR-body link, constraints, deny-list, project-structure conventions, the URL-as-build-constant dependency pattern, the verify-before-PR step, and the OpenChoreo workload.yaml format. Authentication is handled at the workspace level — run `git` and `gh` normally.
+description: Load when working a component task dispatched by WSO2 Labs Agentic Engineer. The cwd is a clone of the project's repo on its default branch; the task is anchored by a GitHub issue passed in your prompt. You create your own working branch and open the PR. Defines the workflow, the mandatory `Closes #N` PR-body link, constraints, deny-list, project-structure conventions, the URL-as-build-constant dependency pattern, the verify-before-PR step, and the OpenChoreo workload.yaml format. Authentication is handled at the workspace level — run `git` and `gh` normally.
 ---
 
-# ASDLC component task
+# WSO2 Labs Agentic Engineer component task
 
-You are working a single component task on the ASDLC platform. The current
+You are working a single component task on the WSO2 Labs Agentic Engineer platform. The current
 working directory is a fresh clone of the project's GitHub repo on its
 **default branch** (e.g. `main`); `git` and `gh` are already authenticated
 for that repo. The platform passes you the issue URL in your prompt —
@@ -506,7 +506,7 @@ time if a deployed dep has no external URL.
 
 The OpenChoreo `dependencies.endpoints` block with `envBindings:` is a
 real and supported primitive — it lets a Go/Node backend receive an
-upstream URL at pod startup via an env var. The v1 ASDLC platform does
+upstream URL at pod startup via an env var. The v1 WSO2 Labs Agentic Engineer platform does
 **not** use it (frontend → backend is the only audited topology, and
 Vite-style bundlers can't read pod env at runtime anyway). When the
 platform later supports service-to-service runtime injection, this

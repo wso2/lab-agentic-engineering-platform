@@ -224,14 +224,24 @@ type rootFrontmatter struct {
 // `components/<name>/design.md`. Field names mirror the user-facing keys
 // (snake-free) so frontmatter the architect emits is human-editable.
 type componentFrontmatter struct {
-	Type       string      `yaml:"type"`
-	Language   string      `yaml:"language,omitempty"`
-	DependsOn  []string    `yaml:"dependsOn,omitempty"`
-	Buildpack  string      `yaml:"buildpack,omitempty"`
-	AppPath    string      `yaml:"appPath,omitempty"`
-	Entrypoint string      `yaml:"entrypoint,omitempty"`
-	Api        *apiConfig  `yaml:"api,omitempty"`
-	Auth       *authConfig `yaml:"auth,omitempty"`
+	Type          string               `yaml:"type"`
+	Language      string               `yaml:"language,omitempty"`
+	DependsOn     []string             `yaml:"dependsOn,omitempty"`
+	Buildpack     string               `yaml:"buildpack,omitempty"`
+	AppPath       string               `yaml:"appPath,omitempty"`
+	Entrypoint    string               `yaml:"entrypoint,omitempty"`
+	Api           *apiConfig           `yaml:"api,omitempty"`
+	Auth          *authConfig          `yaml:"auth,omitempty"`
+	DependentApis []dependentApiConfig `yaml:"dependentApis,omitempty"`
+}
+
+// dependentApiConfig is the on-disk shape for an external upstream API the
+// component consumes at runtime. See models.DependentAPI for the wire shape.
+type dependentApiConfig struct {
+	Name           string `yaml:"name"`
+	URL            string `yaml:"url"`
+	Description    string `yaml:"description,omitempty"`
+	Authentication string `yaml:"authentication,omitempty"`
 }
 
 // apiConfig is the optional `api:` block in component frontmatter.
@@ -364,6 +374,21 @@ func assembleComponent(name, designMd string, files map[string]string) (models.D
 	if cfm.Auth != nil && cfm.Auth.Kind != "" {
 		auth = &models.ComponentAuth{Kind: cfm.Auth.Kind, Upstream: cfm.Auth.Upstream}
 	}
+	var depApis []models.DependentAPI
+	if len(cfm.DependentApis) > 0 {
+		depApis = make([]models.DependentAPI, 0, len(cfm.DependentApis))
+		for _, d := range cfm.DependentApis {
+			if d.Name == "" || d.URL == "" {
+				continue
+			}
+			depApis = append(depApis, models.DependentAPI{
+				Name:           d.Name,
+				URL:            d.URL,
+				Description:    d.Description,
+				Authentication: d.Authentication,
+			})
+		}
+	}
 	return models.DesignComponent{
 		Name:                       name,
 		ComponentType:              cfm.Type,
@@ -376,6 +401,7 @@ func assembleComponent(name, designMd string, files map[string]string) (models.D
 		ComponentAgentInstructions: strings.TrimSpace(body),
 		Api:                        api,
 		Auth:                       auth,
+		DependentApis:              depApis,
 	}, nil
 }
 
@@ -436,6 +462,20 @@ func SplitDesign(d *DesignFile) (map[string]string, error) {
 		}
 		if comp.Auth != nil && comp.Auth.Kind != "" {
 			cfm.Auth = &authConfig{Kind: comp.Auth.Kind, Upstream: comp.Auth.Upstream}
+		}
+		if len(comp.DependentApis) > 0 {
+			cfm.DependentApis = make([]dependentApiConfig, 0, len(comp.DependentApis))
+			for _, d := range comp.DependentApis {
+				if d.Name == "" || d.URL == "" {
+					continue
+				}
+				cfm.DependentApis = append(cfm.DependentApis, dependentApiConfig{
+					Name:           d.Name,
+					URL:            d.URL,
+					Description:    d.Description,
+					Authentication: d.Authentication,
+				})
+			}
 		}
 		cfmBytes, err := marshalFrontmatter(cfm)
 		if err != nil {

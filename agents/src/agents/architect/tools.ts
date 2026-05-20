@@ -2,7 +2,7 @@ import { tool } from "ai";
 import type { Tool } from "ai";
 import { z } from "zod";
 import { DesignDoc } from "./doc.js";
-import { SlimComponent } from "./schema.js";
+import { DependentApi, SlimComponent } from "./schema.js";
 import { validate, type ValidationIssue } from "./validator.js";
 
 // Side-channel for tools to push SSE events to the client. Each tool emits at
@@ -185,6 +185,56 @@ export function buildTools(
             openapiInvalidated: true,
           });
           return { ok: true, openapiInvalidated: true };
+        }),
+    }),
+
+    add_dependent_api: tool({
+      description:
+        "Declare an EXTERNAL HTTP API the component depends on at runtime — i.e. an API that already exists outside this project (corporate directory, payments processor, third-party SaaS). Use this for any upstream NOT built by this project; use add_dependency for sibling components that are. Idempotent on `dependentApi.name`. Does NOT invalidate openapi.",
+      inputSchema: z.object({
+        name: z
+          .string()
+          .describe("Name of the component that consumes the external API."),
+        dependentApi: DependentApi,
+      }),
+      execute: async ({ name, dependentApi }) =>
+        guard(() => {
+          if (!doc.hasComponent(name)) {
+            return { error: "not-found" };
+          }
+          doc.addDependentApi(name, dependentApi);
+          const after = doc.getComponent(name);
+          sse.send("component-updated", {
+            name,
+            patch: { dependentApis: after.slim.dependentApis },
+            openapiInvalidated: false,
+          });
+          return { ok: true, openapiInvalidated: false };
+        }),
+    }),
+
+    remove_dependent_api: tool({
+      description:
+        "Remove an external dependent API by name. No-op if not present.",
+      inputSchema: z.object({
+        name: z.string().describe("Name of the component."),
+        dependentApiName: z
+          .string()
+          .describe("`name` field of the DependentApi to remove."),
+      }),
+      execute: async ({ name, dependentApiName }) =>
+        guard(() => {
+          if (!doc.hasComponent(name)) {
+            return { error: "not-found" };
+          }
+          doc.removeDependentApi(name, dependentApiName);
+          const after = doc.getComponent(name);
+          sse.send("component-updated", {
+            name,
+            patch: { dependentApis: after.slim.dependentApis },
+            openapiInvalidated: false,
+          });
+          return { ok: true, openapiInvalidated: false };
         }),
     }),
 

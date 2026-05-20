@@ -59,10 +59,22 @@ export interface DesignComponent {
   // `security: 'required'` ⇒ AP enforces JWT validation against the org's
   // IDP. See docs/design/api-platform-integration.md section 5.1.
   api?: APISecurity;
+  // External HTTP APIs this component consumes at runtime — e.g. a
+  // corporate directory like the Secret Santa employee API. Rendered
+  // outside the cell in the architecture diagram; surfaced in the
+  // tech-lead issue body so the coding agent knows the URL + auth.
+  dependentApis?: DependentApi[];
 }
 
 export interface APISecurity {
   security: 'required' | 'none';
+}
+
+export interface DependentApi {
+  name: string;
+  url: string;
+  description?: string;
+  authentication?: 'none' | 'bearer' | 'api-key';
 }
 
 export interface Design {

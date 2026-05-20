@@ -386,6 +386,45 @@ add CORS middleware. The platform's gateway attaches an Envoy CORS
 filter to every \`visibility: external\` HTTPRoute via the
 ClusterComponentType; doubled CORS headers break browsers."
 
+Go service components — Dockerfile base image (HARD REQUIREMENT when \`language: go\`):
+
+If the target component's design has \`language: go\`, the issue body MUST
+include a **Scope** bullet pinning the Dockerfile builder base image:
+
+  - **Dockerfile builder base image**: Use \`FROM golang:1.25-alpine AS builder\`
+    in the component's \`Dockerfile\`. The build pod runs with \`GOTOOLCHAIN=local\`
+    and will NOT auto-download a newer Go toolchain — picking an older base image
+    (\`golang:1.23-alpine\` etc.) causes \`go mod download\` to fail with
+    \`go.mod requires go >= X.Y\` at build time even when the local \`go build\`
+    verification succeeded.
+
+External dependent APIs (HARD REQUIREMENT when \`dependentApis\` is non-empty):
+
+If the target component's design entry contains a non-empty
+\`dependentApis\` array, the issue body MUST surface each entry so the
+coding agent knows how to call it. For every entry, add a **Scope** bullet
+of the form:
+
+  - **External upstream \`<name>\`**: \`<METHOD or 'GET'>\` \`<url>\` —
+    <description>. Authentication: <authentication>. Read the URL from
+    env var \`<NAME_UPPER_SNAKE>_URL\` (already wired in the component's
+    design instructions) and call with a standard HTTP client.
+
+Use the literal URL, description, and authentication string from the
+\`dependentApis\` entry — do not invent values. \`<NAME_UPPER_SNAKE>\` is
+the upstream's \`name\` converted to upper-snake-case (e.g.
+\`employee-api\` → \`EMPLOYEE_API\`).
+
+Also add an **Acceptance criteria** bullet: "Calls to external upstream
+\`<name>\` use the URL from env var \`<NAME_UPPER_SNAKE>_URL\` (default
+\`<url>\`) and handle non-2xx responses without crashing. <auth-specific
+expectation: \`none\` → no Authorization header; \`bearer\` → caller's
+\`Authorization\` header forwarded; \`api-key\` → static key from env.>"
+
+These are external endpoints fixed at design time — there is NO
+\`## Dependency endpoint resolved\` comment for them (that mechanism is
+only for sibling components built by this project). The URL is canonical.
+
 Hard rules:
   - Stay at the WHAT/boundary altitude. Do NOT write step-by-step instructions,
     code skeletons, or library choices. Trust the agent.

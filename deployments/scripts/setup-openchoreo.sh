@@ -115,10 +115,26 @@ echo "✅ Thunder ready"
 # User-app SPAs (auth.kind=oidc-spa) sidestep this via a same-origin nginx
 # /oidc/ proxy — but the console login itself needs the CORS filter.
 echo "🔧 Patching Thunder HTTPRoute with CORS filter for cross-origin /oauth2/* preflights..."
-kubectl wait -n thunder --for=condition=Accepted --timeout=120s \
-    httproute/thunder-httproute --context "${CLUSTER_CONTEXT}" >/dev/null
+# kgateway exposes HTTPRoute conditions under .status.parents[].conditions
+# (Gateway API spec), NOT the top-level .status.conditions that
+# `kubectl wait --for=condition=Accepted` reads. So that wait always times
+# out, even on a healthy route. Poll the parents path instead.
+for _hr_attempt in $(seq 1 60); do
+    if [ "$(kubectl get httproute -n thunder thunder-httproute \
+            --context "${CLUSTER_CONTEXT}" \
+            -o jsonpath='{.status.parents[0].conditions[?(@.type=="Accepted")].status}' \
+            2>/dev/null)" = "True" ]; then
+        break
+    fi
+    sleep 2
+done
+# Note: kgateway rejects the patch if allowOrigins contains duplicates. The
+# hardcoded http://localhost:8090 used to overlap with ${PUBLIC_CONSOLE_URL}
+# (default = http://localhost:8090) and every retry failed silently because
+# the patch call below masks stderr. Rely on the env-var here and let the
+# user override via PUBLIC_CONSOLE_URL in .env.
 CORS_PATCH=$(cat <<EOF
-[{"op":"replace","path":"/spec/rules/0/filters","value":[{"type":"CORS","cors":{"allowOrigins":["http://localhost:8090","http://localhost:19080","http://*.openchoreoapis.localhost:19080","${PUBLIC_CONSOLE_URL}","${PUBLIC_THUNDER_URL}"],"allowMethods":["GET","POST","PUT","PATCH","DELETE","OPTIONS"],"allowHeaders":["Content-Type","Authorization","Accept","Origin"],"allowCredentials":true,"maxAge":3600}}]}]
+[{"op":"replace","path":"/spec/rules/0/filters","value":[{"type":"CORS","cors":{"allowOrigins":["http://localhost:19080","http://*.openchoreoapis.localhost:19080","${PUBLIC_CONSOLE_URL}","${PUBLIC_THUNDER_URL}"],"allowMethods":["GET","POST","PUT","PATCH","DELETE","OPTIONS"],"allowHeaders":["Content-Type","Authorization","Accept","Origin"],"allowCredentials":true,"maxAge":3600}}]}]
 EOF
 )
 # Retry the patch + verify. On a fresh cluster the kgateway controller's
@@ -130,17 +146,19 @@ EOF
 # all retries are exhausted — silently shipping a CORS-broken cluster
 # bricks the console login.
 _cors_applied=0
+_cors_last_err=""
 for attempt in 1 2 3 4 5; do
-    if kubectl patch httproute -n thunder thunder-httproute --type=json \
-            -p="$CORS_PATCH" --context "${CLUSTER_CONTEXT}" >/dev/null 2>&1 \
-        && [ "$(kubectl get httproute -n thunder thunder-httproute \
-                --context "${CLUSTER_CONTEXT}" \
-                -o jsonpath='{.spec.rules[0].filters[0].type}' 2>/dev/null)" = "CORS" ]; then
+    _cors_last_err=$(kubectl patch httproute -n thunder thunder-httproute \
+        --type=json -p="$CORS_PATCH" --context "${CLUSTER_CONTEXT}" 2>&1 >/dev/null || true)
+    if [ "$(kubectl get httproute -n thunder thunder-httproute \
+            --context "${CLUSTER_CONTEXT}" \
+            -o jsonpath='{.spec.rules[0].filters[0].type}' 2>/dev/null)" = "CORS" ]; then
         echo "✅ Thunder HTTPRoute CORS filter applied (attempt ${attempt})"
         _cors_applied=1
         break
     fi
     echo "   attempt ${attempt} did not land the CORS filter — retrying in 5s..."
+    [ -n "$_cors_last_err" ] && echo "     ↳ ${_cors_last_err}"
     sleep 5
 done
 if [ "${_cors_applied}" -ne 1 ]; then
