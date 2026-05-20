@@ -12,7 +12,7 @@ export interface DesignDocumentType {
   id: DesignDocumentTypeId;
   label: string;
   description: string;
-  /** Path relative to `.asdlc/design/`. May contain `<name>` placeholder for per-component files. */
+  /** Path relative to `specs/design/`. May contain `<name>` placeholder for per-component files. */
   pathTemplate: string;
   extension: string;
   /** True when only one file of this type is allowed (e.g. root design.md). */
@@ -25,7 +25,7 @@ export interface DesignDocumentType {
    * How to compute source files for the generation skill. Receives the
    * current bundle file map + the target path; returns a Record<filename,
    * content> the skill expects (filenames are the keys the skill reads;
-   * for design skills these are paths relative to .asdlc/design/).
+   * for design skills these are paths relative to specs/design/).
    */
   generationSources?: (
     files: Record<string, string>,
@@ -104,7 +104,7 @@ export function getDesignDocumentType(
 }
 
 /**
- * Match a path (relative to `.asdlc/design/`) to its design document type.
+ * Match a path (relative to `specs/design/`) to its design document type.
  */
 export function designDocumentTypeForPath(path: string): DesignDocumentType | undefined {
   if (path === 'design.md') return getDesignDocumentType('system-design');

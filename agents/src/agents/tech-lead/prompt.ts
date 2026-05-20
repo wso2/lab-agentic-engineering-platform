@@ -386,6 +386,18 @@ add CORS middleware. The platform's gateway attaches an Envoy CORS
 filter to every \`visibility: external\` HTTPRoute via the
 ClusterComponentType; doubled CORS headers break browsers."
 
+Go service components — Dockerfile base image (HARD REQUIREMENT when \`language: go\`):
+
+If the target component's design has \`language: go\`, the issue body MUST
+include a **Scope** bullet pinning the Dockerfile builder base image:
+
+  - **Dockerfile builder base image**: Use \`FROM golang:1.25-alpine AS builder\`
+    in the component's \`Dockerfile\`. The build pod runs with \`GOTOOLCHAIN=local\`
+    and will NOT auto-download a newer Go toolchain — picking an older base image
+    (\`golang:1.23-alpine\` etc.) causes \`go mod download\` to fail with
+    \`go.mod requires go >= X.Y\` at build time even when the local \`go build\`
+    verification succeeded.
+
 External dependent APIs (HARD REQUIREMENT when \`dependentApis\` is non-empty):
 
 If the target component's design entry contains a non-empty

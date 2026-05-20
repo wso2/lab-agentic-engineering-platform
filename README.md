@@ -48,7 +48,7 @@ local is the only path. Watch this section for the hosted URL once it lands.
 > **A note on naming.** Service names and code identifiers still use `asdlc-*`
 > (e.g. `asdlc-service`, `asdlc-api`, `asdlc-console`). That's the original
 > internal codename and changing it is a separate cleanup. The product itself is
-> now the **Agentic Engineering**.
+> now **WSO2 Labs Agentic Engineer**.
 
 `AGENTS.md` (symlinked as `CLAUDE.md`) is the day-to-day operations cheat sheet for
 contributors. The root `README.md` you're reading is the on-ramp; `AGENTS.md` is the

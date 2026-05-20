@@ -10,14 +10,14 @@ import (
 )
 
 // ErrComponentRemovedAfterGeneration is returned when a task references a
-// component that no longer exists in the project's `.asdlc/design/` tree.
+// component that no longer exists in the project's `specs/design/` tree.
 // See docs/design/tech-lead-agent.md §10.4 — reconciliation auto-closes
 // pending tasks for removed components on every design save, so this case
 // should be rare. When it does happen, the dispatch / issue-body builder
 // fails fast rather than rendering placeholders.
 var ErrComponentRemovedAfterGeneration = errors.New("component removed after generation")
 
-// resolveDesignComponent reads the project's current `.asdlc/design/` tree
+// resolveDesignComponent reads the project's current `specs/design/` tree
 // and returns the entry whose Name matches task.ComponentName. Per design
 // §12, dispatch reads the *current* design at dispatch time — not a snapshot
 // from when the task was generated — so design edits between generation and
@@ -38,7 +38,7 @@ func resolveDesignComponentVia(ctx context.Context, store *ArtifactStore, task *
 		return nil, fmt.Errorf("read design for task %s: %w", task.ID, err)
 	}
 	if design == nil {
-		return nil, fmt.Errorf("design missing for project %s (no .asdlc/design/design.md)", task.ProjectID)
+		return nil, fmt.Errorf("design missing for project %s (no specs/design/design.md)", task.ProjectID)
 	}
 	target := strings.ToLower(task.ComponentName)
 	for i := range design.Components {

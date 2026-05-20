@@ -53,12 +53,12 @@ const (
 	// RequirementsDir is the working-tree directory holding all requirement
 	// markdown documents. Each file is one document; the bundle is versioned
 	// together as a single artifact.
-	RequirementsDir = ".asdlc/requirements"
+	RequirementsDir = "specs/requirements"
 	// DesignDir is the working-tree directory holding all design files. The
 	// architecture artifact is multi-file: a root `design.md` plus
 	// `components/<name>/design.md` (+ optional `openapi.yaml`) per component.
 	// Versioned as a single artifact under `v<N>-<M>` tags.
-	DesignDir = ".asdlc/design"
+	DesignDir = "specs/design"
 	// requirementsMainFile is the canonical "main" requirements document.
 	// Cannot be deleted/renamed at the BFF layer.
 	requirementsMainFile = "requirements.md"
@@ -103,7 +103,7 @@ type DesignSaveResult struct {
 }
 
 // RequirementsListResult is the response of GET /artifacts/requirements: a
-// snapshot of every file under `.asdlc/requirements/` keyed by basename.
+// snapshot of every file under `specs/requirements/` keyed by basename.
 type RequirementsListResult struct {
 	Files map[string]string `json:"files"`
 }
@@ -138,7 +138,7 @@ type ArtifactService interface {
 	ListRequirementFiles(ctx context.Context, projectID string) (map[string]string, error)
 	DeleteRequirementFile(ctx context.Context, projectID, name string) error
 
-	// Design multi-file ops. `sub` is relative to `.asdlc/design/`.
+	// Design multi-file ops. `sub` is relative to `specs/design/`.
 	ListDesignFiles(ctx context.Context, projectID string) (map[string]string, error)
 	DeleteDesignFile(ctx context.Context, projectID, sub string) error
 	DeleteDesignDirectory(ctx context.Context, projectID, sub string) error
@@ -192,8 +192,8 @@ func NewArtifactService(repo repositories.RepoRepository, gitOps GitOpsService) 
 
 const maxArtifactBytes = 5 << 20 // 5 MiB cap
 
-// validateRelPath ensures relPath is under .asdlc/, has no .. segments, and
-// after Clean still starts with .asdlc/.
+// validateRelPath ensures relPath is under specs/, has no .. segments, and
+// after Clean still starts with specs/.
 func validateRelPath(relPath string) error {
 	if relPath == "" {
 		return fmt.Errorf("%w: empty path", ErrArtifactPathInvalid)
@@ -203,11 +203,11 @@ func validateRelPath(relPath string) error {
 		return fmt.Errorf("%w: non-canonical path %q", ErrArtifactPathInvalid, relPath)
 	}
 	if strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, "..") {
-		return fmt.Errorf("%w: must be repo-relative under .asdlc/", ErrArtifactPathInvalid)
+		return fmt.Errorf("%w: must be repo-relative under specs/", ErrArtifactPathInvalid)
 	}
 	parts := strings.Split(clean, string(filepath.Separator))
-	if parts[0] != ".asdlc" {
-		return fmt.Errorf("%w: only .asdlc/ paths are accessible via this API", ErrArtifactPathInvalid)
+	if parts[0] != "specs" {
+		return fmt.Errorf("%w: only specs/ paths are accessible via this API", ErrArtifactPathInvalid)
 	}
 	for _, p := range parts {
 		if p == ".." {
@@ -218,13 +218,13 @@ func validateRelPath(relPath string) error {
 }
 
 // allowedRequirementExts is the set of file extensions recognised inside
-// `.asdlc/requirements/`. Markdown holds prose; `.excalidraw` holds
+// `specs/requirements/`. Markdown holds prose; `.excalidraw` holds
 // rendered Excalidraw scene JSON for wireframes / domain models; `.dsl` is
 // the source-of-truth canvas DSL the architect agent reads.
 var allowedRequirementExts = []string{".md", ".excalidraw", ".dsl"}
 
 // allowedDesignExts is the set of file extensions recognised inside
-// `.asdlc/design/`. Markdown holds prose + frontmatter for component design;
+// `specs/design/`. Markdown holds prose + frontmatter for component design;
 // YAML is for OpenAPI specs.
 var allowedDesignExts = []string{".md", ".yaml", ".yml"}
 
@@ -276,7 +276,7 @@ func RequirementFilePath(name string) (string, error) {
 	return filepath.Join(RequirementsDir, name), nil
 }
 
-// validateDesignSubPath validates a path relative to `.asdlc/design/`. The
+// validateDesignSubPath validates a path relative to `specs/design/`. The
 // path may contain forward slashes (e.g. `components/user-api/design.md`)
 // but must not have backslashes, traversal segments, or trailing slashes.
 // The leaf must end in an allowed design extension.
@@ -307,7 +307,7 @@ func validateDesignSubPath(sub string) error {
 }
 
 // validateDesignSubDir validates a directory path relative to
-// `.asdlc/design/` (used by DeleteDesignDirectory). No extension is required.
+// `specs/design/` (used by DeleteDesignDirectory). No extension is required.
 func validateDesignSubDir(sub string) error {
 	if sub == "" {
 		return fmt.Errorf("%w: empty design directory path", ErrArtifactPathInvalid)
@@ -503,7 +503,7 @@ func (s *artifactService) DeleteRequirementFile(ctx context.Context, projectID, 
 
 // ----- Save -----
 
-// SaveRequirements persists the working-tree `.asdlc/requirements/` snapshot
+// SaveRequirements persists the working-tree `specs/requirements/` snapshot
 // as a new commit on remote main and creates the next `v<N>` annotated tag.
 // Replaces the legacy `git commit + push + tag` flow with GitHub API calls
 // (Git Data API path) per docs/design/artifact-store-v2.md V1.
@@ -532,7 +532,7 @@ func (s *artifactService) SaveRequirements(ctx context.Context, projectID string
 	return s.saveRequirementsViaAPI(ctx, repoRecord, repoRecord.ClonePath, commitMsg)
 }
 
-// SaveDesign stages every file under `.asdlc/design/` (root `design.md` plus
+// SaveDesign stages every file under `specs/design/` (root `design.md` plus
 // per-component `design.md` and optional `openapi.yaml`), pushes the
 // changeset to remote main via the GitHub Git Data API, then creates the
 // next `v<N>-<M>` annotated tag where N is the latest requirements version.
@@ -564,7 +564,7 @@ func (s *artifactService) SaveDesign(ctx context.Context, projectID string, req 
 
 // ----- Discard -----
 
-// DiscardRequirements reverts the working-tree `.asdlc/requirements/`
+// DiscardRequirements reverts the working-tree `specs/requirements/`
 // directory to its content at the latest `v<N>` tag. Files added since that
 // tag are removed; deletions are restored. Returns ErrNoVersionToDiscard if
 // no `v<N>` tag exists.
@@ -608,7 +608,7 @@ func (s *artifactService) DiscardRequirements(ctx context.Context, projectID str
 	return readMarkdownDir(filepath.Join(clonePath, RequirementsDir))
 }
 
-// DiscardDesign reverts the working-tree `.asdlc/design/` directory to its
+// DiscardDesign reverts the working-tree `specs/design/` directory to its
 // content at the latest `v<N>-<M>` tag. Files added since that tag are
 // removed; deletions are restored. Returns ErrNoVersionToDiscard if no
 // design tag exists.
@@ -1229,7 +1229,7 @@ func snapshotPath(clonePath, id string) string {
 }
 
 // CaptureRequirementsSnapshot writes the current working-tree contents of
-// `.asdlc/requirements/` to a JSON blob keyed by `snapshotID`. Returns the
+// `specs/requirements/` to a JSON blob keyed by `snapshotID`. Returns the
 // captured file map. Idempotent — re-capturing the same id overwrites the
 // blob.
 func (s *artifactService) CaptureRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) (map[string]string, error) {
@@ -1270,7 +1270,7 @@ func (s *artifactService) CaptureRequirementsSnapshot(ctx context.Context, proje
 	return files, nil
 }
 
-// RestoreRequirementsSnapshot rewrites `.asdlc/requirements/` to the
+// RestoreRequirementsSnapshot rewrites `specs/requirements/` to the
 // contents captured under `snapshotID`. Files added since the snapshot are
 // removed; files deleted since the snapshot are restored.
 func (s *artifactService) RestoreRequirementsSnapshot(ctx context.Context, projectID, snapshotID string) (map[string]string, error) {

@@ -187,19 +187,19 @@ func TestValidateRelPath(t *testing.T) {
 		in      string
 		wantErr bool
 	}{
-		{"requirements file", ".asdlc/requirements/requirements.md", false},
-		{"requirements other", ".asdlc/requirements/functional-requirements.md", false},
-		{"design root", ".asdlc/design/design.md", false},
-		{"design component", ".asdlc/design/components/user-api/design.md", false},
-		{"design openapi", ".asdlc/design/components/user-api/openapi.yaml", false},
+		{"requirements file", "specs/requirements/requirements.md", false},
+		{"requirements other", "specs/requirements/functional-requirements.md", false},
+		{"design root", "specs/design/design.md", false},
+		{"design component", "specs/design/components/user-api/design.md", false},
+		{"design openapi", "specs/design/components/user-api/openapi.yaml", false},
 
 		{"empty", "", true},
 		{"absolute", "/etc/passwd", true},
 		{"traversal-up", "..", true},
-		{"traversal-mid", ".asdlc/../etc/passwd", true},
+		{"traversal-mid", "specs/../etc/passwd", true},
 		{"non-asdlc", "src/main.go", true},
-		{"non-canonical-trailing-slash", ".asdlc/requirements/foo.md/", true},
-		{"non-canonical-double-slash", ".asdlc//requirements/foo.md", true},
+		{"non-canonical-trailing-slash", "specs/requirements/foo.md/", true},
+		{"non-canonical-double-slash", "specs//requirements/foo.md", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -254,7 +254,7 @@ func TestRequirementFilePath_Join(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := ".asdlc/requirements/foo.md"
+	want := "specs/requirements/foo.md"
 	if got != want {
 		t.Errorf("RequirementFilePath = %q, want %q", got, want)
 	}

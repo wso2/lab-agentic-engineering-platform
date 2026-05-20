@@ -17,7 +17,7 @@ import (
 //     keeps working through the cutover.
 //
 //  2. DROP snapshot fields. Dispatch path now reads design fresh from the
-//     multi-file `.asdlc/design/` tree via ArtifactStore on every dispatch
+//     multi-file `specs/design/` tree via ArtifactStore on every dispatch
 //     — design changes propagate without re-snapshotting per task. Dropped:
 //     component_type, language, responsibilities, architecture_context,
 //     key_considerations, api_contract, dependencies, open_api_spec,

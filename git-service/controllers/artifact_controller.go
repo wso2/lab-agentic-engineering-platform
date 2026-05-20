@@ -11,9 +11,9 @@ import (
 )
 
 // ArtifactController serves the typed artifact endpoints:
-//   - Requirements: multi-file directory at .asdlc/requirements/, tagged
+//   - Requirements: multi-file directory at specs/requirements/, tagged
 //     `v<N>` per save.
-//   - Design: multi-file directory at .asdlc/design/ (root design.md +
+//   - Design: multi-file directory at specs/design/ (root design.md +
 //     components/<name>/{design.md,openapi.yaml}), tagged `v<N>-<M>` per
 //     save (where N is the source requirements version).
 type ArtifactController interface {
@@ -270,7 +270,7 @@ func requirementsRelPath(name string) (string, error) {
 // ----- Design handlers (multi-file) -----
 
 // DesignListResult is the response of GET /artifacts/design: a snapshot of
-// every file under `.asdlc/design/` keyed by path relative to that dir.
+// every file under `specs/design/` keyed by path relative to that dir.
 type DesignListResult struct {
 	Files map[string]string `json:"files"`
 }

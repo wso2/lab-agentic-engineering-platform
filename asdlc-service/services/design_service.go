@@ -421,7 +421,7 @@ func (s *designService) GetDesignBundleAtTag(ctx context.Context, orgID, project
 	return &DesignBundle{Files: files, Design: d}, nil
 }
 
-// UpdateDesignFile writes a single file under .asdlc/design/ and returns
+// UpdateDesignFile writes a single file under specs/design/ and returns
 // the refreshed bundle.
 //
 // Side effect: when the written file is a per-component `design.md`,
@@ -465,7 +465,7 @@ func componentNameFromDesignPath(subPath string) (string, bool) {
 	return name, true
 }
 
-// DeleteDesignFile removes a single file under .asdlc/design/ and returns
+// DeleteDesignFile removes a single file under specs/design/ and returns
 // the refreshed bundle. Refuses to delete the root design.md.
 func (s *designService) DeleteDesignFile(ctx context.Context, orgID, projectID, subPath string) (*DesignBundle, error) {
 	if err := s.store.DeleteDesignFile(ctx, orgID, projectID, subPath); err != nil {
@@ -505,7 +505,7 @@ func (s *designService) DeleteComponent(ctx context.Context, orgID, projectID, c
 	return s.GetDesignBundle(ctx, orgID, projectID)
 }
 
-// SaveAndProceed persists the working-tree `.asdlc/design/` directory as
+// SaveAndProceed persists the working-tree `specs/design/` directory as
 // the next `v<N>-<M>` tag where N is the latest requirements version.
 // Surfaces ErrSpecNotApproved (rendered as 409 by the controller) when
 // no requirements tag exists yet.

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useLocation, useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -45,10 +45,6 @@ import {
 } from '../lib/documentTypes';
 import { tryDslToExcalidraw, type DslKind } from '@asdlc/excalidraw-dsl';
 
-interface LayoutContext {
-  setSidebarCollapsed: (collapsed: boolean) => void;
-}
-
 type SaveStatus = 'idle' | 'unsaved' | 'saving' | 'saved' | 'error';
 
 const AUTO_SAVE_DEBOUNCE_MS = 1500;
@@ -66,11 +62,6 @@ function formatRelative(ts: number): string {
 }
 
 export default function ProjectRequirementsPage() {
-  const { setSidebarCollapsed } = useOutletContext<LayoutContext>();
-  useEffect(() => {
-    setSidebarCollapsed(true);
-  }, [setSidebarCollapsed]);
-
   const navigate = useNavigate();
   const location = useLocation();
   const { orgId, projectId } = useParams();

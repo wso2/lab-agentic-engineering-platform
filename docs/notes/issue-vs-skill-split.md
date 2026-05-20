@@ -35,7 +35,7 @@ Sections, in order:
    to restate "constraints, deny-lists, submission flow, project layout"
    — but we still append all of those below.
 3. **Component Reference** — task-specific (Name / Type / Language / App
-   Path / "see .asdlc/design.json → openAPISpec")
+   Path / "see specs/design.json → openAPISpec")
 4. **Component Dependencies** — task-specific (lists actual `dependsOn`
    names + injects env var name + a `workload.yaml` snippet wiring the
    `envBindings.address`)
@@ -243,7 +243,7 @@ Agents". Coding-agent ran end-to-end on the cluster:
 - Agent posted opening + completion comments on issue #1
 - PR #2 (`task/hello-api-af9aada7`) opened, **isDraft: false**
   (ready_for_review), 110 additions / 0 deletions, 5 files:
-  - `.asdlc/task.json` (platform-seeded)
+  - `specs/task.json` (platform-seeded)
   - `hello-api/main.go`
   - `hello-api/go.mod`
   - `hello-api/Dockerfile`

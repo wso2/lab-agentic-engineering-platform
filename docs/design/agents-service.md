@@ -246,7 +246,7 @@ Console → BFF → agents. Never direct.
     │               │   (text-delta × N)          │
     │ ◀── SSE ──────│ ◀── finish, [DONE] ─────────│
     │               │ accumulate text → write     │
-    │               │   .asdlc/spec.md (draft)    │
+    │               │   specs/spec.md (draft)    │
     │ ◀── done ─────│                             │
     │                                              │
     │ click "Save & Proceed"                       │
@@ -263,7 +263,7 @@ Two distinct BFF endpoints per artifact:
 BFF responsibilities on `generate`:
 - Compose the full user prompt from project context + prior artifacts (if any) + user feedback. This is the BFF's concern; the agents service only sees the final string.
 - Pass SSE frames through byte-for-byte to the console.
-- Tee `text-delta` deltas into an in-memory buffer; on `finish`, write the buffer to `.asdlc/spec.md` (draft).
+- Tee `text-delta` deltas into an in-memory buffer; on `finish`, write the buffer to `specs/spec.md` (draft).
 - On console disconnect, abort the agents connection (propagates `abort` down the chain).
 
 The BFF contract surface is out of scope for this doc — described in `api-service.md` when updated.

@@ -1,6 +1,6 @@
 // Per-file local-storage draft persistence for the Architecture page.
 // Mirrors `requirementsDraftStorage.ts`. Keys are paths relative to
-// `.asdlc/design/` (forward slashes), so we namespace differently.
+// `specs/design/` (forward slashes), so we namespace differently.
 
 export interface StoredDesignFileDraft {
   draft: string;

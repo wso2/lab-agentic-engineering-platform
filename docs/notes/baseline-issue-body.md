@@ -6,7 +6,7 @@ This task implements the **hello-api** service, a **Go-based REST API service** 
 
 ## Scope
 
-- Implement the full OpenAPI contract for this service (see `.asdlc/design.json` under `components[name="hello-api"].openAPISpec`).
+- Implement the full OpenAPI contract for this service (see `specs/design.json` under `components[name="hello-api"].openAPISpec`).
 - Service must respond to GET /hello with a JSON greeting message.
 - Include a health check endpoint at GET /health for container orchestration.
 - Package the service as a Docker container that can be deployed standalone.
@@ -23,8 +23,8 @@ This task implements the **hello-api** service, a **Go-based REST API service** 
 
 ## References
 
-- Component design entry: `.asdlc/design.json` under `components[name="hello-api"]`
-- OpenAPI specification: `.asdlc/design.json → components[name="hello-api"].openAPISpec`
+- Component design entry: `specs/design.json` under `components[name="hello-api"]`
+- OpenAPI specification: `specs/design.json → components[name="hello-api"].openAPISpec`
 - Component agent instructions contain additional implementation guidance for this service.
 
 ## Task dependencies
@@ -38,7 +38,7 @@ None.
 - **Type:** service
 - **Language/Stack:** Go
 - **App Path (within repo):** `/hello-api`
-- **Contract:** see `.asdlc/design.json` → `components[name="hello-api"].openAPISpec`
+- **Contract:** see `specs/design.json` → `components[name="hello-api"].openAPISpec`
 
 ## Project Structure Requirements
 Create a production-ready project structure under your component's app path:

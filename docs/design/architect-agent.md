@@ -385,7 +385,7 @@ Designs tagged before v5 will hit the new normalizer on first save. Bytes change
 
 ### Audit gap (known limitation)
 
-When a regen against a new spec produces zero validator-passing edits, no new tag is created. The existing `design-vM` tag's `source-spec` lineage continues to point to the spec it was originally generated against — there is no record that the user re-evaluated against `spec-v(M+k)`. For audit, consult agents-service request logs. Out of scope for Phase 1; if audit becomes a real ask, options include a `.asdlc/regen-log.json` committed on every regen attempt or annotated `design-regen-vM-against-spec-vN` tags. Document in the doc; defer.
+When a regen against a new spec produces zero validator-passing edits, no new tag is created. The existing `design-vM` tag's `source-spec` lineage continues to point to the spec it was originally generated against — there is no record that the user re-evaluated against `spec-v(M+k)`. For audit, consult agents-service request logs. Out of scope for Phase 1; if audit becomes a real ask, options include a `specs/regen-log.json` committed on every regen attempt or annotated `design-regen-vM-against-spec-vN` tags. Document in the doc; defer.
 
 ## 11. Failure modes
 

@@ -85,10 +85,10 @@ The BFF's `/webhooks/github` is reached via a smee.io channel (`GITHUB_WEBHOOK_P
 
 ## Artifact Storage and Versioning
 
-Specs and designs are stored as files under `.asdlc/` inside each project's cloned git repo (not PostgreSQL):
+Specs and designs are stored as files under `specs/` inside each project's cloned git repo (not PostgreSQL):
 
-- `.asdlc/requirements/` — `requirements.md` (required) + optional `functional-requirements.md`, `non-functional-requirements.md`, `user-stories.md`, `wireframes.{dsl,excalidraw}`, `domain-model.{dsl,excalidraw}`.
-- `.asdlc/design/` — `design.md` (root) + `components/<name>/design.md` (YAML frontmatter: `type`, `language`, `dependsOn`, `buildpack`, `appPath`, `entrypoint`, optional `api.security`, optional `auth.kind`) + `components/<name>/openapi.yaml` (services only).
+- `specs/requirements/` — `requirements.md` (required) + optional `functional-requirements.md`, `non-functional-requirements.md`, `user-stories.md`, `wireframes.{dsl,excalidraw}`, `domain-model.{dsl,excalidraw}`.
+- `specs/design/` — `design.md` (root) + `components/<name>/design.md` (YAML frontmatter: `type`, `language`, `dependsOn`, `buildpack`, `appPath`, `entrypoint`, optional `api.security`, optional `auth.kind`) + `components/<name>/openapi.yaml` (services only).
 
 The BFF reads/writes via `ArtifactStore`; commits go through `git-service`. `ComponentTask` + `ComponentConfig` live in PostgreSQL.
 

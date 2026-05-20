@@ -1,7 +1,7 @@
 package models
 
 // RequirementsBundle describes the multi-document requirements set stored at
-// `.asdlc/requirements/*.md`. The bundle is versioned together as `v<N>`
+// `specs/requirements/*.md`. The bundle is versioned together as `v<N>`
 // tags; each save produces one new tag covering the whole directory.
 type RequirementsBundle struct {
 	ProjectID         string            `json:"projectId"`

@@ -12,7 +12,7 @@ import (
 //
 //  1. RENAME component_tasks.task_depends_on → depends_on_components.
 //     The old column held GitHub issue titles authored by the tech-lead LLM;
-//     the new column holds component names sourced from the `.asdlc/design/`
+//     the new column holds component names sourced from the `specs/design/`
 //     tree (platform-authored, not LLM-authored). Persist-time validation in
 //     services/task_stream.go::persistAndIssue refuses generation if the
 //     name doesn't match design.Components[*].name.

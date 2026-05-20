@@ -32,7 +32,7 @@ const (
 	TaskEventCodingAgentFailed TaskEvent = "coding_agent.failed"
 	// Build dispatch was skipped because the task's own merge push contained
 	// no file under its design-declared appPath (read from
-	// `.asdlc/design/components/<name>/design.md` frontmatter). This is a
+	// `specs/design/components/<name>/design.md` frontmatter). This is a
 	// configuration/contract violation (architect emitted a path that
 	// doesn't match what the coding-agent committed) — failing loudly is
 	// better than orphaning the task in `building` with no WorkflowRun
@@ -133,7 +133,7 @@ var allowedTransitions = []stateTransition{
 	{models.TaskStatusInProgress, models.TaskStatusFailed, TaskEventCodingAgentFailed},
 	// Push containing this task's own merge SHA arrived, but the task's
 	// design-declared appPath (from
-	// `.asdlc/design/components/<name>/design.md` frontmatter) matched no
+	// `specs/design/components/<name>/design.md` frontmatter) matched no
 	// file in the push — build was never dispatched. Drives merged → failed
 	// so the orphan is visible rather than silently stuck in `building`.
 	{models.TaskStatusMerged, models.TaskStatusFailed, TaskEventBuildPathMismatch},

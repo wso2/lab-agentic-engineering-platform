@@ -208,7 +208,7 @@ export const restApi = {
     }
   },
 
-  // -- Requirements (multi-file directory under .asdlc/requirements/) -------
+  // -- Requirements (multi-file directory under specs/requirements/) -------
 
   async getRequirements(orgHandle: string, projectId: string): Promise<RequirementsBundle | undefined> {
     try {

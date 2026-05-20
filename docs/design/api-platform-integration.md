@@ -110,7 +110,7 @@ Pod
 | Per-org | IDP profile (kind, issuer, jwks_url, etc.) | App Factory BFF | new PostgreSQL table |
 | Per-org | OAuth publisher client (`asdlc-publisher-<orgHandle>`) | App Factory BFF → Thunder | created at org provisioning |
 | Per-org | Publisher client secret | OpenBao | `secret/asdlc/<orgId>/idp/publisher` |
-| Per-component | `design.md` frontmatter `api.security` | user (via console / agent) | `.asdlc/design/components/<name>/design.md` |
+| Per-component | `design.md` frontmatter `api.security` | user (via console / agent) | `specs/design/components/<name>/design.md` |
 | Per-component | `Component.traits[]` | App Factory BFF (`componentService.CreateComponent` / `ensureOCComponent`) | written at component create/update |
 | Per-component (per env) | `ReleaseBinding.traitEnvironmentConfigs.*` | App Factory BFF (`config_service.go` "Mirror onto each environment's ReleaseBinding") | written at deploy time |
 

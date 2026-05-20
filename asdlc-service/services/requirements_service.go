@@ -17,7 +17,7 @@ import (
 )
 
 // RequirementsService manages the multi-file requirements bundle stored at
-// `.asdlc/requirements/*.md`. The bundle is versioned together as `v<N>`
+// `specs/requirements/*.md`. The bundle is versioned together as `v<N>`
 // tags (one bump per save). Generation is skill-routed: `requirements.md`
 // is bootstrapped from a user prompt; sibling docs (functional, NFR, user
 // stories) are derived from existing files via document-generation skills.

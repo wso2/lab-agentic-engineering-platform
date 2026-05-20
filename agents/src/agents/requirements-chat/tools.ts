@@ -117,7 +117,7 @@ export function buildTools(
 
     create_file: tool({
       description:
-        "Create a brand-new markdown file under .asdlc/requirements/. Errors if the filename already exists or is not a .md file.",
+        "Create a brand-new markdown file under specs/requirements/. Errors if the filename already exists or is not a .md file.",
       inputSchema: z.object({
         name: z.string(),
         content: z.string(),

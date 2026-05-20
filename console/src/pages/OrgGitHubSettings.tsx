@@ -219,7 +219,7 @@ function NotConnectedPanel({ orgHandle, onConnected }: { orgHandle: string; onCo
   return (
     <Stack gap={2}>
       <Typography variant="body1" color="text.secondary">
-        Connect this organization to GitHub so the Agentic Engineering can provision repos, open issues, and run agents on your behalf.
+        Connect this organization to GitHub so WSO2 Labs Agentic Engineer can provision repos, open issues, and run agents on your behalf.
       </Typography>
 
       {/* App card — primary, recommended */}
@@ -239,7 +239,7 @@ function NotConnectedPanel({ orgHandle, onConnected }: { orgHandle: string; onCo
           <Alert severity="info" icon={<AlertCircle size={18} />} sx={{ mb: 2 }}>
             <Typography variant="body2" fontWeight={600}>Install on a GitHub Organization, not a personal account.</Typography>
             <Typography variant="caption" color="text.secondary">
-              The Agentic Engineering creates repositories on the connected GitHub account. GitHub does not let integrations create repos on personal user accounts — pick (or create) a GitHub Org you administer when prompted.
+              WSO2 Labs Agentic Engineer creates repositories on the connected GitHub account. GitHub does not let integrations create repos on personal user accounts — pick (or create) a GitHub Org you administer when prompted.
             </Typography>
           </Alert>
           <ConnectAppButton orgHandle={orgHandle} />

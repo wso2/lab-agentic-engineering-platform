@@ -76,7 +76,7 @@ func (s TaskStatus) IsTerminal() bool {
 //
 // As of the tech-lead agent revamp (docs/design/tech-lead-agent.md), the row
 // no longer snapshots component shape (OpenAPI, language, dependencies, etc.).
-// Dispatch reads the current design from the multi-file `.asdlc/design/`
+// Dispatch reads the current design from the multi-file `specs/design/`
 // tree on every run.
 type ComponentTask struct {
 	ID        string `gorm:"primaryKey;type:uuid;default:gen_random_uuid()" json:"id"`
@@ -84,7 +84,7 @@ type ComponentTask struct {
 	OrgID     string `gorm:"index;not null" json:"-"`
 
 	// Component identity — name only. Full component shape lives under
-	// `.asdlc/design/components/<ComponentName>/` (design.md +
+	// `specs/design/components/<ComponentName>/` (design.md +
 	// optional openapi.yaml).
 	ComponentName string `gorm:"not null" json:"componentName"`
 
@@ -104,7 +104,7 @@ type ComponentTask struct {
 	Body string `gorm:"type:text" json:"body,omitempty"`
 
 	// DependsOnComponents lists component names this task's component
-	// depends on, sourced directly from the `.asdlc/design/` tree
+	// depends on, sourced directly from the `specs/design/` tree
 	// (design.Components[*].DependsOn, parsed from per-component
 	// design.md frontmatter). The value is platform-authored,
 	// not LLM-authored, so gating cannot silently fail open on a

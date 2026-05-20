@@ -79,7 +79,7 @@ Local-dev uses **smee.io** as a webhook proxy. `setup-asdlc.sh` provisions a fre
 
 ## Spec/design artifact tags (unchanged)
 
-Spec and design artifacts remain stored as files in the project's cloned repo (`.asdlc/spec.md`, `.asdlc/design.json`). Tagging is done on a single shared clone owned by git-service, serialised by an in-process project lock. Per-task workspaces never touch this clone — they're for agent code work only.
+Spec and design artifacts remain stored as files in the project's cloned repo (`specs/spec.md`, `specs/design.json`). Tagging is done on a single shared clone owned by git-service, serialised by an in-process project lock. Per-task workspaces never touch this clone — they're for agent code work only.
 
 ## See also
 - `github-integration-evolution.md` — architectural truth (trust model, three-phase evolution).

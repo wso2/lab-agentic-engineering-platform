@@ -70,7 +70,7 @@
 - `tests/package.json` — add `"test:api"`, `"test:e2e"`, `"test:all"` scripts (cleanup/organize); add `jose` for JWT minting.
 - `tests/playwright.config.ts` — add `storageState` hook for reusing login across specs; respect `E2E_BASE_URL` env var.
 - `tests/vitest.config.ts` — add `sequence: { concurrent: false }` so shared DB isn't clobbered (one suite at a time).
-- `deployments/docker-compose.yml` — mount `${HOME}/.asdlc/test-fixtures:/data/test-fixtures` into `asdlc-api` and `git-service` so bare repos are readable by both sides.
+- `deployments/docker-compose.yml` — mount `${HOME}/specs/test-fixtures:/data/test-fixtures` into `asdlc-api` and `git-service` so bare repos are readable by both sides.
 - `tests/helpers/README.md` — short notes on the test setup; keeping in sync with spec §10.
 - `tests/e2e/changes.spec.ts` — **delete** (superseded by Task 13).
 
@@ -380,7 +380,7 @@ git commit -m "test: point helpers at port 9090 and inject JWT bearer"
 
 Every API test needs a clean git remote. This helper creates a bare repo on the host, seeds it with an initial commit on `main`, and produces a `file://` URL both the host (tests) and the containers (git-service/BFF) can read.
 
-Docker compose already mounts `${HOME}/.asdlc/repos:/data/repos`. We add a separate `${HOME}/.asdlc/test-fixtures:/data/test-fixtures` mount for test bare repos so they don't mix with real project clones.
+Docker compose already mounts `${HOME}/specs/repos:/data/repos`. We add a separate `${HOME}/specs/test-fixtures:/data/test-fixtures` mount for test bare repos so they don't mix with real project clones.
 
 **Files:**
 - Modify: `deployments/docker-compose.yml` — mount test-fixtures into `asdlc-api` and `git-service`.
@@ -388,18 +388,18 @@ Docker compose already mounts `${HOME}/.asdlc/repos:/data/repos`. We add a separ
 
 - [ ] **Step 1: Add the fixture mount to docker-compose**
 
-In `deployments/docker-compose.yml`, update the `asdlc-api` service volumes block (currently `- ${HOME}/.asdlc/repos:/data/repos`) to:
+In `deployments/docker-compose.yml`, update the `asdlc-api` service volumes block (currently `- ${HOME}/specs/repos:/data/repos`) to:
 ```yaml
     volumes:
-      - ${HOME}/.asdlc/repos:/data/repos
-      - ${HOME}/.asdlc/test-fixtures:/data/test-fixtures
+      - ${HOME}/specs/repos:/data/repos
+      - ${HOME}/specs/test-fixtures:/data/test-fixtures
 ```
 
 And the same for `git-service`:
 ```yaml
     volumes:
-      - ${HOME}/.asdlc/repos:/data/repos
-      - ${HOME}/.asdlc/test-fixtures:/data/test-fixtures
+      - ${HOME}/specs/repos:/data/repos
+      - ${HOME}/specs/test-fixtures:/data/test-fixtures
 ```
 
 - [ ] **Step 2: Create `tests/helpers/fixture.ts`**
@@ -410,7 +410,7 @@ And the same for `git-service`:
  * and exposes a file:// URL that git-service (running in Docker) can read via the
  * /data/test-fixtures mount, AND that the host-side test code can also read directly.
  *
- * Host path: ${HOME}/.asdlc/test-fixtures/<name>.git
+ * Host path: ${HOME}/specs/test-fixtures/<name>.git
  * Container path: /data/test-fixtures/<name>.git
  */
 import { execFileSync } from 'node:child_process';
@@ -698,7 +698,7 @@ describe('POST /changes', () => {
   let fx: ProjectFixture | null = null;
   afterEach(() => fx?.cleanup());
 
-  it('creates a change/* branch on the remote and commits .asdlc/change.json', async () => {
+  it('creates a change/* branch on the remote and commits specs/change.json', async () => {
     fx = await createProjectFixture('create-change');
 
     const { status, data } = await apiPost<{ id: string; branch: string; stage: string; title: string }>(
@@ -714,7 +714,7 @@ describe('POST /changes', () => {
     const branches = listRemoteBranches(fx.repo);
     expect(branches).toContain(data.branch);
 
-    const raw = readFileAtRef(fx.repo, data.branch, '.asdlc/change.json');
+    const raw = readFileAtRef(fx.repo, data.branch, 'specs/change.json');
     expect(raw).toBeDefined();
     const parsed = JSON.parse(raw!) as Record<string, unknown>;
     expect(parsed.id).toBe(data.id);
@@ -758,7 +758,7 @@ describe('PUT change artifacts', () => {
   let fx: ChangeFixture | null = null;
   afterEach(() => fx?.cleanup());
 
-  it('PUT spec writes .asdlc/spec.md on the change branch', async () => {
+  it('PUT spec writes specs/spec.md on the change branch', async () => {
     fx = await createChangeFixture('put-spec');
     const content = '# Spec\n\nBuild the widget.\n';
 
@@ -768,11 +768,11 @@ describe('PUT change artifacts', () => {
     );
 
     expect(status).toBe(200);
-    const blob = readFileAtRef(fx.repo, fx.changeBranch, '.asdlc/spec.md');
+    const blob = readFileAtRef(fx.repo, fx.changeBranch, 'specs/spec.md');
     expect(blob).toBe(content);
   });
 
-  it('PUT design writes .asdlc/design.json on the change branch', async () => {
+  it('PUT design writes specs/design.json on the change branch', async () => {
     fx = await createChangeFixture('put-design');
     const design = {
       components: [{ name: 'api', type: 'service' }],
@@ -785,12 +785,12 @@ describe('PUT change artifacts', () => {
     );
 
     expect(status).toBe(200);
-    const blob = readFileAtRef(fx.repo, fx.changeBranch, '.asdlc/design.json');
+    const blob = readFileAtRef(fx.repo, fx.changeBranch, 'specs/design.json');
     expect(blob).toBeDefined();
     expect(JSON.parse(blob!)).toMatchObject(design);
   });
 
-  it('PUT plan writes .asdlc/plan.json on the change branch', async () => {
+  it('PUT plan writes specs/plan.json on the change branch', async () => {
     fx = await createChangeFixture('put-plan');
     const plan = {
       strategy: 'ship small',
@@ -803,7 +803,7 @@ describe('PUT change artifacts', () => {
     );
 
     expect(status).toBe(200);
-    const blob = readFileAtRef(fx.repo, fx.changeBranch, '.asdlc/plan.json');
+    const blob = readFileAtRef(fx.repo, fx.changeBranch, 'specs/plan.json');
     expect(blob).toBeDefined();
     expect(JSON.parse(blob!)).toMatchObject(plan);
   });
@@ -958,7 +958,7 @@ describe('POST /changes/{id}/approve', () => {
     expect(approve.status).toBe(200);
 
     // main now contains the spec; change branch is gone.
-    const mainSpec = readFileAtRef(fx.repo, 'main', '.asdlc/spec.md');
+    const mainSpec = readFileAtRef(fx.repo, 'main', 'specs/spec.md');
     expect(mainSpec).toContain('Spec v1');
     expect(listRemoteBranches(fx.repo)).not.toContain(fx.changeBranch);
   });
@@ -1027,9 +1027,9 @@ describe('parallel changes', () => {
     );
 
     // Each branch has its own spec.md; main is untouched.
-    expect(readFileAtRef(fx.repo, a.data.branch, '.asdlc/spec.md')).toBe('A content\n');
-    expect(readFileAtRef(fx.repo, b.data.branch, '.asdlc/spec.md')).toBe('B content\n');
-    expect(readFileAtRef(fx.repo, 'main', '.asdlc/spec.md')).toBeUndefined();
+    expect(readFileAtRef(fx.repo, a.data.branch, 'specs/spec.md')).toBe('A content\n');
+    expect(readFileAtRef(fx.repo, b.data.branch, 'specs/spec.md')).toBe('B content\n');
+    expect(readFileAtRef(fx.repo, 'main', 'specs/spec.md')).toBeUndefined();
   });
 });
 ```
@@ -1069,7 +1069,7 @@ describe('merge conflict at approve', () => {
   it('returns 409 with conflict file list when the branch has diverged', async () => {
     fx = await createProjectFixture('conflict');
 
-    // Create two parallel changes off main (both see an empty .asdlc/spec.md state).
+    // Create two parallel changes off main (both see an empty specs/spec.md state).
     const a = await apiPost<{ id: string; branch: string }>(
       `/api/v1/organizations/${fx.orgId}/projects/${fx.projectName}/changes`,
       { title: 'A' },
@@ -1081,7 +1081,7 @@ describe('merge conflict at approve', () => {
     expect(a.status).toBe(201);
     expect(b.status).toBe(201);
 
-    // Both write to .asdlc/spec.md.
+    // Both write to specs/spec.md.
     await apiPut(`/api/v1/organizations/${fx.orgId}/projects/${fx.projectName}/changes/${a.data.id}/spec`, {
       content: 'from A\n',
     });
@@ -1098,7 +1098,7 @@ describe('merge conflict at approve', () => {
     );
     expect(approveA.status).toBe(200);
 
-    // Now approve B — must conflict on .asdlc/spec.md.
+    // Now approve B — must conflict on specs/spec.md.
     await apiPost(`/api/v1/organizations/${fx.orgId}/projects/${fx.projectName}/changes/${b.data.id}/submit-for-review`, {});
     await apiPost(`/api/v1/organizations/${fx.orgId}/projects/${fx.projectName}/changes/${b.data.id}/review/run`, {});
     const approveB = await apiPost<{ conflicts?: string[]; message?: string }>(
@@ -1108,7 +1108,7 @@ describe('merge conflict at approve', () => {
 
     expect(approveB.status).toBe(409);
     expect(Array.isArray(approveB.data.conflicts)).toBe(true);
-    expect(approveB.data.conflicts).toContain('.asdlc/spec.md');
+    expect(approveB.data.conflicts).toContain('specs/spec.md');
   });
 });
 ```
@@ -1401,7 +1401,7 @@ test.describe('Submit for review → Approve & merge', () => {
     expect(changeBranchGone).toBe(true);
 
     // main has Spec v2.
-    const mainSpec = readFileAtRef(fx.repo, 'main', '.asdlc/spec.md');
+    const mainSpec = readFileAtRef(fx.repo, 'main', 'specs/spec.md');
     expect(mainSpec).toContain('Spec v2');
   });
 });
@@ -1636,7 +1636,7 @@ npm run test:all          # both
 ## How it works
 
 - **Bare-repo fixtures:** `tests/helpers/fixture.ts` creates a throwaway git
-  bare repo on disk under `~/.asdlc/test-fixtures/<name>.git` and mounts it
+  bare repo on disk under `~/specs/test-fixtures/<name>.git` and mounts it
   into both `git-service` and `asdlc-api` as `/data/test-fixtures/...`. Tests
   use `file://` URLs; `git-service`'s `TEST_MODE` accepts them.
 - **JWT:** Tests mint an unsigned HS256 token with a `client_id` claim. The

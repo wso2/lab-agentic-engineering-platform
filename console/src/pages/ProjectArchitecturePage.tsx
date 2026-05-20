@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate, useOutletContext, useParams } from 'react-router-dom';
+import { useNavigate, useParams } from 'react-router-dom';
 import {
   Box,
   Button,
@@ -32,15 +32,11 @@ import {
   saveDesignDraft,
 } from '../lib/designDraftStorage';
 
-interface LayoutContext {
-  setSidebarCollapsed: (collapsed: boolean) => void;
-}
-
 const AUTO_SAVE_DEBOUNCE_MS = 1500;
 const DESIGN_ROOT_FILE = 'design.md';
 
 // Tree-display tweaks for the design Explorer. The on-disk layout is
-// `.asdlc/design/components/<name>/{design.md,openapi.yaml}` but a "Components"
+// `specs/design/components/<name>/{design.md,openapi.yaml}` but a "Components"
 // folder row in the sidebar adds nothing the user cares about, so we collapse
 // it. Each component then renders at top level with a package icon.
 const ARCHITECTURE_TRANSPARENT_FOLDERS = new Set(['components']);
@@ -69,9 +65,6 @@ function getArchitectureFileLabel(path: string): string | undefined {
 // ---------------------------------------------------------------------------
 
 export default function ProjectArchitecturePage() {
-  const { setSidebarCollapsed } = useOutletContext<LayoutContext>();
-  useEffect(() => setSidebarCollapsed(true), [setSidebarCollapsed]);
-
   const navigate = useNavigate();
   const { orgId, projectId } = useParams();
   const routeOrgId = orgId ?? 'default';

@@ -257,7 +257,7 @@ services:
       # fails on the pre-flight.
       KUBECONFIG: "/app/.kube/config"
     volumes:
-      - ${HOME}/.asdlc/repos:/data/repos
+      - ${HOME}/specs/repos:/data/repos
       # GitHub App private key — read at startup, contents seeded into OpenBao.
       # Touched by start.sh if absent so the mount always exists.
       - ./github-app-private-key.pem:/etc/github-app/private-key.pem:ro

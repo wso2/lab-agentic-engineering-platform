@@ -166,7 +166,7 @@ func (s *projectService) GetProjectStatus(ctx context.Context, orgName, projectN
 		return status, nil
 	}
 
-	// Check requirements (any markdown doc under .asdlc/requirements/ counts).
+	// Check requirements (any markdown doc under specs/requirements/ counts).
 	files, err := s.store.ListRequirements(ctx, orgName, projectName)
 	if err != nil && !IsNotFound(err) {
 		return nil, fmt.Errorf("list requirements: %w", err)

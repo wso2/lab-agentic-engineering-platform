@@ -124,7 +124,7 @@ export function TasksPageHeader({
                         <Typography variant="body2" fontWeight={600}>Implement via Remote Agents</Typography>
                         <Typography variant="caption" color="text.secondary">
                           {anthropicReady
-                            ? 'Platform spawns Claude agents on the host to work on every task.'
+                            ? 'Platform spawns Coding agents on the host to work on every task.'
                             : (
                               <>
                                 Anthropic API key required —{' '}
@@ -146,7 +146,7 @@ export function TasksPageHeader({
                   <Box>
                     <Typography variant="body2" fontWeight={600}>Implement Locally</Typography>
                     <Typography variant="caption" color="text.secondary">
-                      Use the ASDLC plugin in your own Claude Code session.
+                      Use the Platofrm plugin in your own Coding Agent session.
                     </Typography>
                   </Box>
                 </MenuItem>

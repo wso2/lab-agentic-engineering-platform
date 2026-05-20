@@ -45,14 +45,14 @@ After this refactor, end users observe **no change**:
 1. Calls `RemoteWorkerService.dispatchOne` (`services/remote_worker_service.go:172-315`), which:
    - Verifies GitHub Issue exists.
    - Creates feature branch (idempotent on `BranchName`).
-   - Seeds `.asdlc/task.json` commit (so a draft PR can be opened).
+   - Seeds `specs/task.json` commit (so a draft PR can be opened).
    - Creates draft PR (idempotent on `PullRequestNumber`).
    - Ensures the OC Component for the user-app exists (with `AutoBuild=false`).
    - Mints fresh task JWT (RS256, 24h).
    - **POSTs to `app-factory-remote-worker:/dispatch`** with payload: `{taskId, orgId, projectId, componentName, branchName, repoURL, bearer, identity{name,email,login}, gitServiceURL, prompt}`.
    - Marks `DispatchedAt`, sets task status → `in_progress`.
 2. `app-factory-remote-worker` (TS, `src/index.ts` + `src/routes/dispatch.ts`):
-   - Provisions `~/asdlc-workspace/{orgId}/{projectId}/{taskId}/`: `.git/` (cloned via PAT from one-shot `/credentials/refresh`), `.gh-config/hosts.yml`, `.asdlc/{bearer, credhelper.sh, gh}` (chmod-restricted).
+   - Provisions `~/asdlc-workspace/{orgId}/{projectId}/{taskId}/`: `.git/` (cloned via PAT from one-shot `/credentials/refresh`), `.gh-config/hosts.yml`, `specs/{bearer, credhelper.sh, gh}` (chmod-restricted).
    - Spawns Claude Agent SDK `query()` with `allowedTools: [Read, Write, Edit, Bash, Glob, Grep]`, `cwd: <workspace>`, env passed by file path (no token in env).
    - Agent edits files, commits, pushes via `gh` wrapper, runs `gh pr ready`.
    - Pod's task registry tracks completion `{exitCode, error}`. **No callback to BFF on success.**
@@ -150,7 +150,7 @@ Image published as `ghcr.io/wso2/app-factory-coding-agent-runner:{tag}`. Tag pol
 
 ### 3.2 Per-task auth — keep RS256 task JWT, no changes
 
-BFF mints the JWT exactly as today (`taskTokenManager`). Argo passes it as a parameter; the runner pod reads it from env (`ASDLC_BEARER`). The pod writes it to `.asdlc/bearer` (chmod 600) for the `gh` wrapper and credential helper to consume. Same flow, same key, same expiry.
+BFF mints the JWT exactly as today (`taskTokenManager`). Argo passes it as a parameter; the runner pod reads it from env (`ASDLC_BEARER`). The pod writes it to `specs/bearer` (chmod 600) for the `gh` wrapper and credential helper to consume. Same flow, same key, same expiry.
 
 ### 3.3 GitHub credentials — keep `/credentials/refresh` against git-service
 
@@ -269,7 +269,7 @@ Two retry concepts apply, at different layers:
 │   volumeMounts: workspace (emptyDir)                             │
 │                                                                  │
 │   1. provisionWorkspace() — clone (PAT from /credentials/refresh)│
-│      writes .asdlc/{bearer, credhelper.sh, gh}                   │
+│      writes specs/{bearer, credhelper.sh, gh}                   │
 │   2. runAgent() — Claude Agent SDK query()                       │
 │      tools: Read, Write, Edit, Bash, Glob, Grep                  │
 │      cwd: workspace                                              │

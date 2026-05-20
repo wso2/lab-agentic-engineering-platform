@@ -24,8 +24,8 @@ This task implements the **hello-api** service, a Go REST API component that pro
 
 ## References
 
-- `.asdlc/requirements/requirements.md` — describes the single `/hello` endpoint requirement and the JSON greeting format.
-- `.asdlc/design.json` — the `components[name="hello-api"]` entry contains the `componentAgentInstructions` field with implementation guidance.
+- `specs/requirements/requirements.md` — describes the single `/hello` endpoint requirement and the JSON greeting format.
+- `specs/design.json` — the `components[name="hello-api"]` entry contains the `componentAgentInstructions` field with implementation guidance.
 
 ## Task dependencies
 
@@ -38,7 +38,7 @@ None.
 - **Type:** service
 - **Language/Stack:** Go
 - **App Path (within repo):** `hello-api`
-- **Contract:** see `.asdlc/design.json` → `components[name="hello-api"].openAPISpec`
+- **Contract:** see `specs/design.json` → `components[name="hello-api"].openAPISpec`
 
 ## Local Developer Setup
 Optional — only if you want to run this task on your laptop instead of letting the platform's coding-agent run it. Install the `asdlc` skill into Claude Code (`claude plugin install <repo>/remote-worker/plugin`); it carries the workflow, constraints, and deny-list. The agent itself never touches auth.

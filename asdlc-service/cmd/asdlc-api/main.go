@@ -82,7 +82,7 @@ func main() {
 
 	// Phase 3 — tech-lead agent revamp. Drops snapshot fields from
 	// component_tasks (component shape now read from the multi-file
-	// `.asdlc/design/` tree on dispatch), adds body + lineage + batch
+	// `specs/design/` tree on dispatch), adds body + lineage + batch
 	// fields. Idempotent.
 	if err := migrations.RunPhase3TechLead(db); err != nil {
 		slog.Error("phase3_tech_lead migration failed", "error", err)

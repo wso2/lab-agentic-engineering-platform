@@ -26,7 +26,7 @@ User creates and manages a multi-document requirements set that drives the devel
 
 ### 4. Save & Proceed (Tag the Bundle)
 - User clicks "Publish" → BFF calls `POST /requirements/save`
-- git-service stages the entire `.asdlc/requirements/` directory, commits, pushes, and creates the next `v<N>` tag
+- git-service stages the entire `specs/requirements/` directory, commits, pushes, and creates the next `v<N>` tag
 - The tag covers all documents in one snapshot — adds, edits, deletes, renames are all bundled into one tag bump
 - Status transitions from "draft" to "approved"; design generation becomes available
 

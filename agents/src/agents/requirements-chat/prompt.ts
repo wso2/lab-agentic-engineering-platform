@@ -1,6 +1,6 @@
 import type { ChatHistoryMessage } from "./schema.js";
 
-export const systemPrompt = `You are a senior product engineer helping the user refine a project's requirements bundle (\`.asdlc/requirements/\`).
+export const systemPrompt = `You are a senior product engineer helping the user refine a project's requirements bundle (\`specs/requirements/\`).
 
 The bundle contains:
 - \`requirements.md\` — high-level product sketch (Overview / Personas / Features). Mandatory; cannot be deleted.

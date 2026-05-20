@@ -219,7 +219,7 @@ func (c *designController) GetDesignBundleAtTag(w http.ResponseWriter, r *http.R
 	utils.WriteSuccessResponse(w, http.StatusOK, bundle)
 }
 
-// UpdateDesignFile writes a single file under .asdlc/design/.
+// UpdateDesignFile writes a single file under specs/design/.
 func (c *designController) UpdateDesignFile(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("orgHandle")
 	project := r.PathValue("projectName")
@@ -247,7 +247,7 @@ func (c *designController) UpdateDesignFile(w http.ResponseWriter, r *http.Reque
 	utils.WriteSuccessResponse(w, http.StatusOK, bundle)
 }
 
-// DeleteDesignFile removes a single file under .asdlc/design/. Refuses to
+// DeleteDesignFile removes a single file under specs/design/. Refuses to
 // delete the root design.md.
 func (c *designController) DeleteDesignFile(w http.ResponseWriter, r *http.Request) {
 	org := r.PathValue("orgHandle")

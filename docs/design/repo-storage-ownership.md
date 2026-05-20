@@ -1,26 +1,26 @@
 # Repo Storage Ownership — git-service as Sole Owner of `/data/repos`
 
-> **Note (post-v4.1):** the wireframes feature has since been removed from the platform end-to-end. References to `.asdlc/wireframes/*`, `WriteWireframe`, the `wireframes` artifact endpoints, and the spec-save extra-staging logic in this document are historical only.
+> **Note (post-v4.1):** the wireframes feature has since been removed from the platform end-to-end. References to `specs/wireframes/*`, `WriteWireframe`, the `wireframes` artifact endpoints, and the spec-save extra-staging logic in this document are historical only.
 
-> **Note (multi-document requirements refactor):** the spec artifact has since been renamed and restructured. There is **no longer** a `.asdlc/spec.md`; requirements are stored as a directory of markdown files at `.asdlc/requirements/{requirements.md, functional-requirements.md, non-functional-requirements.md, user-stories.md}`. The tag scheme has changed from per-artifact prefixes (`spec-v*`, `design-v*`) to:
-> - Requirements: `v<N>` — one save tags the whole `.asdlc/requirements/` directory snapshot.
+> **Note (multi-document requirements refactor):** the spec artifact has since been renamed and restructured. There is **no longer** a `specs/spec.md`; requirements are stored as a directory of markdown files at `specs/requirements/{requirements.md, functional-requirements.md, non-functional-requirements.md, user-stories.md}`. The tag scheme has changed from per-artifact prefixes (`spec-v*`, `design-v*`) to:
+> - Requirements: `v<N>` — one save tags the whole `specs/requirements/` directory snapshot.
 > - Design: `v<N>-<M>` — N is the source requirements version, M is the design revision under that N. Saving design without an existing `v<N>` returns 409.
 >
-> Lineage is now encoded in the design tag name itself (no `source-spec:` annotation lines); the `Lineage` request/response field has been removed. Any references in this document to `.asdlc/spec.md`, `spec-v*`, `design-v*`, `parseLineage`, `buildLineageMessage`, or `Lineage` are historical context for the v4.1 design — see `git-service/services/artifact_service.go` and `artifact_versioning.go` for current behaviour.
+> Lineage is now encoded in the design tag name itself (no `source-spec:` annotation lines); the `Lineage` request/response field has been removed. Any references in this document to `specs/spec.md`, `spec-v*`, `design-v*`, `parseLineage`, `buildLineageMessage`, or `Lineage` are historical context for the v4.1 design — see `git-service/services/artifact_service.go` and `artifact_versioning.go` for current behaviour.
 
 > **Status: v4.1 (final)** — extends v3.1 with the local-developer flow fix; fourth review pass landed "ship after fixes" with all items folded in here. v4.1 deletes the dead `hostRepoBase` plumbing and extends the issue body with a "Local Developer Setup" section sourced from `GitRepository.RepoURL` + `task.BranchName` + `task.AppPath`. The section is gated on `BranchName != ""` (it's only rendered at dispatch-time re-render, not at first issue creation), the existing "How To Submit" preamble is rephrased to remove the contradiction the reviewer caught, the auth block is `gh auth status || gh auth login` with the write-access scope spelled out, and the skill (`SKILL.md:8`) gets a one-line edit pointing local-flow developers at the issue body's setup section. Both code and skill changes ride PR 2.
 
 ## Problem
 
-Today the BFF (`asdlc-service`) and `git-service` **both** bind-mount `~/.asdlc/repos` → `/data/repos` and read/write the same on-disk git working trees. This works in docker-compose (single host) but breaks in a real Kubernetes deployment: two Pods cannot reliably share a host directory, and even with a shared `ReadWriteMany` PVC the two services would race on the same working tree (BFF doing `os.WriteFile` while git-service runs `git add`/`git commit`).
+Today the BFF (`asdlc-service`) and `git-service` **both** bind-mount `~/specs/repos` → `/data/repos` and read/write the same on-disk git working trees. This works in docker-compose (single host) but breaks in a real Kubernetes deployment: two Pods cannot reliably share a host directory, and even with a shared `ReadWriteMany` PVC the two services would race on the same working tree (BFF doing `os.WriteFile` while git-service runs `git add`/`git commit`).
 
 The audit confirmed:
 
-- BFF's `ArtifactStore` (`asdlc-service/services/artifact_store.go`) is the **only** remaining BFF code that touches the working tree. It does `os.ReadFile` / `os.WriteFile` / `os.ReadDir` on `.asdlc/spec.md`, `.asdlc/design.json`, and `.asdlc/wireframes/*`.
+- BFF's `ArtifactStore` (`asdlc-service/services/artifact_store.go`) is the **only** remaining BFF code that touches the working tree. It does `os.ReadFile` / `os.WriteFile` / `os.ReadDir` on `specs/spec.md`, `specs/design.json`, and `specs/wireframes/*`.
 - Every other git operation (commit, push, pull, tag, branches, PRs, issues) already goes through git-service HTTP.
 - BFF and git-service independently compute the same path layout `{REPO_BASE_PATH}/{orgId}/{projectId}` — two sources of truth.
 - `remote-worker` does **not** read `/data/repos`; it clones each task into its own per-task workspace. Out of scope.
-- **Pre-existing bug** (caught in review): `spec_service.go:231-237` passes both `Files: [".asdlc/spec.md"]` and `Directory: ".asdlc/wireframes"` to `Commit`, but `git_ops_service.go:209-218` only stages `Directory` when `Files` is empty. Wireframes are silently not committed as part of spec save today; the working tree is dirty when the user lands on the design step. v2 fixes this by collapsing the call into a single atomic save.
+- **Pre-existing bug** (caught in review): `spec_service.go:231-237` passes both `Files: ["specs/spec.md"]` and `Directory: "specs/wireframes"` to `Commit`, but `git_ops_service.go:209-218` only stages `Directory` when `Files` is empty. Wireframes are silently not committed as part of spec save today; the working tree is dirty when the user lands on the design step. v2 fixes this by collapsing the call into a single atomic save.
 
 ## Goal
 
@@ -44,7 +44,7 @@ The path layout `{base}/{orgId}/{projectId}` is private to git-service. The dupl
 The v1 proposal exposed `GET/PUT/DELETE /files?path=...`. Three concrete problems:
 
 1. **No atomic save.** `SaveAndProceed` is `Commit → Push → ListTags → hasChanged → CreateTag` — five separate critical sections. Two concurrent saves can interleave to produce skipped or duplicated versions, and a `WriteSpec` that succeeds but whose `Commit` fails leaves a dirty tree inconsistent with the tag history.
-2. **Domain knowledge stays in two places.** `.asdlc/spec.md`, the `spec-v` tag prefix, the lineage marker `source-spec: ...` in tag messages — all of this leaks across the boundary if the BFF still constructs paths and tag names. git-service is *already* artifact-aware (`ListTags` filters by prefix; `GetFileAtTag` knows the tag-and-path shape) — the line was already crossed.
+2. **Domain knowledge stays in two places.** `specs/spec.md`, the `spec-v` tag prefix, the lineage marker `source-spec: ...` in tag messages — all of this leaks across the boundary if the BFF still constructs paths and tag names. git-service is *already* artifact-aware (`ListTags` filters by prefix; `GetFileAtTag` knows the tag-and-path shape) — the line was already crossed.
 3. **Pre-existing bug stays hidden.** A generic file API doesn't fix the spec-save-doesn't-commit-wireframes bug. A domain `save` endpoint that owns staging end-to-end does.
 
 ### API surface on git-service
@@ -68,14 +68,14 @@ Concrete semantics pinned down in v3:
 - **`sha` is `git hash-object` of the working-tree blob.** Stable across replica restarts (no mtime dependence). The `PUT` accepts an optional `ifMatch: <sha>`; mismatch returns `412 Precondition Failed`. Streaming clients pass the `sha` returned by the previous `PUT` to get optimistic concurrency control on the working-tree write path. (Partly mitigates the `streamGenerateSpec` race that's otherwise deferred.)
 - **`lineage` is structured in *all* responses.** `GET /versions`, `GET /versions/{tag}`, and `POST /save` return `lineage: {sourceSpec, sourceDesign}` as fields. The on-tag-message format (`source-spec: spec-vN\nsource-design: design-vM`) is private to git-service; the BFF never parses tag bodies. This deletes `parseLineage` and `buildTagMessage` from `asdlc-service/services/versioning.go`.
 - **`discard` on a never-tagged artifact returns `404`** (`no saved version to revert to`), matching today's behavior in `spec_service.go:298-301`. On success it returns the reverted content plus the status the BFF would have computed.
-- **`design`-specific note:** `DesignFile.SourceSpec` (the field embedded in `.asdlc/design.json` by `StreamGenerateDesign` for UI display of "draft generated from spec-vN") is **not** authoritative for tag metadata. The request-body `lineage` on `save` is the only input git-service uses when writing a tag. The save handler does not read or modify the in-file `sourceSpec`. If the two disagree, the request body wins for what gets tagged; the in-file value continues to drive only the "draft was generated from" UI label.
+- **`design`-specific note:** `DesignFile.SourceSpec` (the field embedded in `specs/design.json` by `StreamGenerateDesign` for UI display of "draft generated from spec-vN") is **not** authoritative for tag metadata. The request-body `lineage` on `save` is the only input git-service uses when writing a tag. The save handler does not read or modify the in-file `sourceSpec`. If the two disagree, the request body wins for what gets tagged; the in-file value continues to drive only the "draft was generated from" UI label.
 - **`PUT /artifacts/{spec,design}` is bytes-in, bytes-out.** The handler does not parse JSON, validate schemas, or rewrite embedded fields like `sourceSpec`. It writes the supplied bytes via `tmpfile + rename`. Schema validation lives in the BFF / agents-service producers; git-service stays domain-aware only at the *artifact-type* level (which file goes where, which tag prefix to use), not at the *content-shape* level.
 
 The atomic `save` handler — under one mutex hold — does:
 
 0. **Self-heal previous tag-push failures.** `git push origin --tags` (no-op if all local tags are already on remote). This is the must-fix from review pass 2: a previous save can have committed and pushed but failed to push the tag, leaving `spec-v{n}` local-only. Without this step, the next save's `hasChanged` check sees the local tag and silently no-ops, so the missing remote tag never recovers.
-1. Write `content` to `tmpfile + rename` into `.asdlc/spec.md`. (Resolves disk-full / partial-write hazard.)
-2. `git add .asdlc/spec.md` and, for the spec save, `git add .asdlc/wireframes/` (this is the wireframes-commit fix).
+1. Write `content` to `tmpfile + rename` into `specs/spec.md`. (Resolves disk-full / partial-write hazard.)
+2. `git add specs/spec.md` and, for the spec save, `git add specs/wireframes/` (this is the wireframes-commit fix).
 3. `git commit` with the supplied message + author from credential identity. If `nothing to commit` and the previous tag's commit equals HEAD, return `{status: "unchanged", version, tag}` (no work to do).
 4. `git push origin <default>`.
 5. `git fetch --tags`, list `spec-v*`, compute next version.
@@ -98,17 +98,17 @@ Step 0 cost note: doing `git push origin --tags` on every save is wasteful in th
 
 ### Wireframes — explicit batching
 
-Wireframes stream in async; today's flow is "many `WriteWireframe` calls; later one `Commit directory:.asdlc/wireframes`". The review flagged a partial-batch hazard if a future flow streams *N* wireframes in parallel and the user clicks Save mid-batch. Fix:
+Wireframes stream in async; today's flow is "many `WriteWireframe` calls; later one `Commit directory:specs/wireframes`". The review flagged a partial-batch hazard if a future flow streams *N* wireframes in parallel and the user clicks Save mid-batch. Fix:
 
 | Method | Path | Behavior |
 |---|---|---|
-| `PUT` | `…/artifacts/wireframes/{name}` | Atomic single-file write (`tmpfile + rename`) into `.asdlc/wireframes/{name}`. |
+| `PUT` | `…/artifacts/wireframes/{name}` | Atomic single-file write (`tmpfile + rename`) into `specs/wireframes/{name}`. |
 | `GET` | `…/artifacts/wireframes` | List names + sizes. |
 | `GET` | `…/artifacts/wireframes/{name}` | Read one. |
 
-Wireframes are committed by the **spec** save (step 2 above stages `.asdlc/wireframes/`). They have no independent tag stream. This matches today's intent and fixes the silent commit-drop bug.
+Wireframes are committed by the **spec** save (step 2 above stages `specs/wireframes/`). They have no independent tag stream. This matches today's intent and fixes the silent commit-drop bug.
 
-If we ever stream a real batch (multiple files), introduce `?staged=true` writes into `.asdlc/wireframes/.staging/` plus an explicit `POST /artifacts/wireframes/promote` that renames the staging dir under the per-project mutex. Out of scope for this design; called out so the API doesn't paint us into a corner.
+If we ever stream a real batch (multiple files), introduce `?staged=true` writes into `specs/wireframes/.staging/` plus an explicit `POST /artifacts/wireframes/promote` that renames the staging dir under the per-project mutex. Out of scope for this design; called out so the API doesn't paint us into a corner.
 
 ### Path validation
 
@@ -116,7 +116,7 @@ The new endpoints accept `{name}` only for wireframes, not arbitrary paths. The 
 
 - `name` matches `^[a-zA-Z0-9._-]+$` (no path separators, no `..`).
 - File size cap (5 MiB) to bound memory.
-- Allow-list is implicit in routing — there's no path string the caller can supply that escapes `.asdlc/`.
+- Allow-list is implicit in routing — there's no path string the caller can supply that escapes `specs/`.
 
 Spec/design endpoints take no path at all.
 
@@ -185,7 +185,7 @@ PR 2 grep checklist (so nothing slips through):
 ### Config / env removed
 
 - `REPO_BASE_PATH` env from BFF (Dockerfile, docker-compose, helm).
-- `${HOME}/.asdlc/repos:/data/repos` bind mount on `asdlc-api`.
+- `${HOME}/specs/repos:/data/repos` bind mount on `asdlc-api`.
 - `mkdir -p /data/repos` in `asdlc-service/Dockerfile:12`.
 - `RepoBasePath` field from `config.Config`.
 
@@ -200,7 +200,7 @@ asdlc-api:
 git-service:
   # KEEP — git-service is now the only owner.
   volumes:
-    - ${HOME}/.asdlc/repos:/data/repos
+    - ${HOME}/specs/repos:/data/repos
   environment:
     REPO_BASE_PATH: "/data/repos"
 ```
@@ -235,7 +235,7 @@ In k8s:
 - **Streaming uploads.** Specs/designs are KB; wireframes tens of KB.
 - **Read caching in BFF.** Add only with a profile.
 - **Wireframe batch promotion (`?staged=true`).** API shape is reserved; not implemented until we have multi-file streaming.
-- **Restricting `PUT /artifacts/spec` to a streaming-session principal.** Today any Service-JWT principal can clobber `.asdlc/spec.md` directly without going through `save`. The BFF is the only such principal, so the blast radius is bounded; tightening this would require a second JWT audience for streaming and is deferred. Flagged so a future endpoint addition doesn't widen it accidentally.
+- **Restricting `PUT /artifacts/spec` to a streaming-session principal.** Today any Service-JWT principal can clobber `specs/spec.md` directly without going through `save`. The BFF is the only such principal, so the blast radius is bounded; tightening this would require a second JWT audience for streaming and is deferred. Flagged so a future endpoint addition doesn't widen it accidentally.
 - **Binary artifacts.** All current artifacts are UTF-8 text. If we ever add binary artifacts (images, archives), they need a separate endpoint with `application/octet-stream`, not retrofitted `Accept`-negotiation onto the text endpoints.
 - **Removing `REMOTE_WORKER_REPO_BASE_PATH`.** Tracked under the broader localism inventory; called out below.
 
@@ -251,11 +251,11 @@ In k8s:
    - Replace `RemoveAll` re-clone with clone-and-rename; refuse destructive re-clone if working tree non-empty; clean orphan `.tmpclone-*` at startup.
    - Startup pre-warm with worker pool = 10; `clones_pending`/`clones_failed` gauges.
    - Drop the old (pre-PR-0) routes that PR 0 left as compat shims.
-   - **Test**: regression test that asserts `.asdlc/wireframes/*.html` lands in the spec-save commit (the silent-drop bug must not recur).
+   - **Test**: regression test that asserts `specs/wireframes/*.html` lands in the spec-save commit (the silent-drop bug must not recur).
 3. **PR 2 — BFF.** Switch `ArtifactStore` to HTTP; collapse `SaveAndProceed` flows; thin `versioning.go` (delete `parseLineage`, `buildTagMessage`, in-process tag-message parsing); remove `REPO_BASE_PATH`. Replace `if content == ""` checks with `errors.Is(err, ErrArtifactNotFound)` (the `("", nil)` quirk in `artifact_store.go:46-48` goes away).
 
    **Also in PR 2 — local-developer flow fix:**
-   - Delete `hostRepoBase` plumbing (`task_service.go:42, 54, 65, 394`; `issue_body.go:33`'s second parameter; `RemoteWorkerRepoBasePath` config field). Wider `grep` before merge: confirm `REMOTE_WORKER_REPO_BASE_PATH` is removed from BFF Dockerfile, `deployments/docker-compose.yml:69`, `deployments/scripts/setup.sh`, `.env.example`, and any helm values — `docker-compose.yml` has a `${REMOTE_WORKER_REPO_BASE_PATH:-${HOME}/.asdlc/repos}` interpolation that must go away alongside the Go field.
+   - Delete `hostRepoBase` plumbing (`task_service.go:42, 54, 65, 394`; `issue_body.go:33`'s second parameter; `RemoteWorkerRepoBasePath` config field). Wider `grep` before merge: confirm `REMOTE_WORKER_REPO_BASE_PATH` is removed from BFF Dockerfile, `deployments/docker-compose.yml:69`, `deployments/scripts/setup.sh`, `.env.example`, and any helm values — `docker-compose.yml` has a `${REMOTE_WORKER_REPO_BASE_PATH:-${HOME}/specs/repos}` interpolation that must go away alongside the Go field.
    - Extend `buildIssueBody` to accept `repoURL` + `repoSlug` and emit the "Local Developer Setup" section (gated on `task.BranchName != ""`).
    - Rephrase the existing "How To Submit" preamble in the same file to remove the contradiction with the new section.
    - Hoist `gitClient.GetRepo` out of the per-task loop in `GenerateTasks`; fetch once, pass `repoURL` + `repoSlug` into the loop.
@@ -269,7 +269,7 @@ PR 1 and PR 2 land in the same release. PR 0 ships ahead, in its own release. No
 The original v1 wording flagged this as an "open prerequisite" — that the issue body templates a host path which stops existing under k8s. Audit revealed the framing was wrong on the first half and right on the second half:
 
 - **`hostRepoBase` is dead code.** `buildIssueBody` (`asdlc-service/services/issue_body.go:33`) explicitly discards its second parameter (`_ string`). No host path is in any issue body today. `taskService.hostRepoBase` (`task_service.go:42`), `config.RemoteWorkerRepoBasePath`, and the `REMOTE_WORKER_REPO_BASE_PATH` env are vestigial — they were planned but never actually consumed.
-- **The lurking UX problem is real, just located elsewhere.** The local-flow plugin's skill (`remote-worker/plugin/skills/asdlc/SKILL.md:8`) asserts: *"The current working directory is a per-task workspace: a fresh clone of the project's GitHub repo with the task's feature branch already checked out, and `git` + `gh` already authenticated."* Today this assertion happens to hold for local-flow developers because docker-compose's bind mount puts the platform's clone at `~/.asdlc/repos/{orgId}/{projectId}` on their laptop. Under k8s the platform's clone lives on a PVC in the cluster, not on the laptop. The skill's precondition fails silently — a developer running `claude` in an arbitrary directory will get nonsense behaviour from the skill instead of a clear "you need to clone first" signal.
+- **The lurking UX problem is real, just located elsewhere.** The local-flow plugin's skill (`remote-worker/plugin/skills/asdlc/SKILL.md:8`) asserts: *"The current working directory is a per-task workspace: a fresh clone of the project's GitHub repo with the task's feature branch already checked out, and `git` + `gh` already authenticated."* Today this assertion happens to hold for local-flow developers because docker-compose's bind mount puts the platform's clone at `~/specs/repos/{orgId}/{projectId}` on their laptop. Under k8s the platform's clone lives on a PVC in the cluster, not on the laptop. The skill's precondition fails silently — a developer running `claude` in an arbitrary directory will get nonsense behaviour from the skill instead of a clear "you need to clone first" signal.
 
 ### Fix
 

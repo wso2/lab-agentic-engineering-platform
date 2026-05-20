@@ -1,7 +1,7 @@
-# Artifact Store v2 — clone-less `.asdlc/` persistence
+# Artifact Store v2 — clone-less `specs/` persistence
 
 **Status:** Approved for V1 implementation. Subsequent versions track in §0.
-**Replaces:** the long-lived `git-service` working copy for `.asdlc/` reads, writes, and saves. Adjacent design: `docs/design/git-integration.md`, `docs/design/api-service.md`, `docs/design/github-integration-phase2.md` (credential trust model — preserved here).
+**Replaces:** the long-lived `git-service` working copy for `specs/` reads, writes, and saves. Adjacent design: `docs/design/git-integration.md`, `docs/design/api-service.md`, `docs/design/github-integration-phase2.md` (credential trust model — preserved here).
 **Out of scope:** the coding-agent's per-task ephemeral feature-branch clone (untouched), build dispatch / project board / PR / issue flows (already pure-API).
 
 ## 0. Phased delivery
@@ -25,15 +25,15 @@ The full design here lands across multiple versions. Implementers should read ea
 
 ## 1. Motivation
 
-`git-service` maintains a long-lived local clone per project under `${REPO_BASE_PATH}/<orgID>/<projectID>/`. The clone is the source of truth for `.asdlc/` reads, the staging surface for `.asdlc/` writes, and the working tree from which Save commits + pushes.
+`git-service` maintains a long-lived local clone per project under `${REPO_BASE_PATH}/<orgID>/<projectID>/`. The clone is the source of truth for `specs/` reads, the staging surface for `specs/` writes, and the working tree from which Save commits + pushes.
 
 The clone is **never** pulled when remote `main` advances. That single missing invariant causes a class of bugs, not one. Three observed today:
 
 1. **Non-fast-forward push after merge** — when a coding-agent PR merges on remote `main`, the next Save commits on top of stale main and `git push` is rejected. UI: *"Failed to save design."* This is the immediate trigger for the redesign.
-2. **`git add -A` silently re-introduces deleted files.** If the merged PR deleted a `.asdlc/` file, the clone's stale working tree still has the bytes; `git add -A` re-stages them and Save quietly resurrects the file.
+2. **`git add -A` silently re-introduces deleted files.** If the merged PR deleted a `specs/` file, the clone's stale working tree still has the bytes; `git add -A` re-stages them and Save quietly resurrects the file.
 3. **`treesEqualAtPath` lies about "unchanged".** Unchanged-detection compares the *stale* local HEAD to the latest local tag. When remote has moved, both sides of the compare are wrong — Save returns "no-op" against a tag that is no longer the canonical version.
 
-The architectural fix is to remove the clone for the `.asdlc/` lifecycle and use the GitHub API directly. `git-service` stays the only thing that holds GitHub credentials; the BFF↔git-service boundary (no token-bearing value crosses it) is preserved exactly as Phase 2 left it.
+The architectural fix is to remove the clone for the `specs/` lifecycle and use the GitHub API directly. `git-service` stays the only thing that holds GitHub credentials; the BFF↔git-service boundary (no token-bearing value crosses it) is preserved exactly as Phase 2 left it.
 
 ## 2. Goals & non-goals
 
@@ -82,7 +82,7 @@ The architectural fix is to remove the clone for the `.asdlc/` lifecycle and use
        Contents API + Git Data API + Refs/Tags API
 ```
 
-The clone is gone for `.asdlc/`. Everything that touches `.asdlc/` either reads from Postgres drafts or makes a GitHub API call through git-service.
+The clone is gone for `specs/`. Everything that touches `specs/` either reads from Postgres drafts or makes a GitHub API call through git-service.
 
 ## 4. Data model
 
@@ -179,7 +179,7 @@ Response includes `{content, blobSHA, base_tag, latest_tag, versions_behind, eta
 
 ### 6.2 Directory listing
 
-`GET /artifacts/requirements?ref=...`. Implementation: one `GetTree(repo, treeSHAOfRef, recursive=true)` filtered to `.asdlc/requirements/*.md`. Tree call is one round-trip per ref. Cached on the same TTL as single-file reads keyed by `(owner, repo, treeSHA)` (immutable: tree SHA implies content).
+`GET /artifacts/requirements?ref=...`. Implementation: one `GetTree(repo, treeSHAOfRef, recursive=true)` filtered to `specs/requirements/*.md`. Tree call is one round-trip per ref. Cached on the same TTL as single-file reads keyed by `(owner, repo, treeSHA)` (immutable: tree SHA implies content).
 
 For `ref=draft`, overlay draft rows on top of the `main` listing: drafts hide tombstoned files, surface drafts-not-yet-on-main, and tag every file with `{drafted: bool, deleted: bool, version}`.
 
@@ -435,7 +435,7 @@ BEGIN TXN + advisory_xact_lock
   //     removed no-op tombstones, so every sha:null here is a real deletion.)
   entries = []
   FOR draft IN drafts:
-    path = ".asdlc/requirements/" + draft.file_name
+    path = "specs/requirements/" + draft.file_name
     IF draft.deleted:
       entries.append({path: path, mode: "100644", type: "blob", sha: null})
     ELSE:
@@ -739,7 +739,7 @@ After:
 | State | Meaning |
 |---|---|
 | `pending` | Credentials not yet set, or repo creation in flight. |
-| `ready` | GitHub repo exists, credentials resolve, `GET /contents/.asdlc/` returns 200 or 404 (both fine). |
+| `ready` | GitHub repo exists, credentials resolve, `GET /contents/specs/` returns 200 or 404 (both fine). |
 | `error` | Credentials invalid, or repo not accessible. `error_message` carries detail. |
 
 Migration: an in-place backfill flips every `ready` row to `ready` (no-op) and every `cloning` row that has a clone on disk to `ready`. Failed/orphaned `cloning` rows surface as `error`.
@@ -756,8 +756,8 @@ Six steps, each its own deploy. Steps 1–3 are reversible; step 6 is the point 
 **Step 2: Backfill prep.**
 - Add a maintenance command `git-service migrate-drafts` that walks every `git_repositories.status='ready'` row and:
   1. Resolves the live `ClonePath` (re-reading the record under the per-project lock, in case `REPO_BASE_PATH` changed).
-  2. Runs `git status --porcelain` on the clone. Untracked + modified files under `.asdlc/` → snapshot into draft tables with `base_tag = <latest local tag>, updated_by = "migration"`.
-  3. Runs `git log <latest-tag>..HEAD -- .asdlc/` to find commits that landed on local main but were never tagged (the `pushAllTags` failure mode). If any → **create the missing tag** during backfill (Tag API), not as a draft snapshot. This closes the lost-tag case.
+  2. Runs `git status --porcelain` on the clone. Untracked + modified files under `specs/` → snapshot into draft tables with `base_tag = <latest local tag>, updated_by = "migration"`.
+  3. Runs `git log <latest-tag>..HEAD -- specs/` to find commits that landed on local main but were never tagged (the `pushAllTags` failure mode). If any → **create the missing tag** during backfill (Tag API), not as a draft snapshot. This closes the lost-tag case.
   4. Idempotent on re-run.
 - Run dry-run first; report per-project status. Fix outliers manually.
 
@@ -821,7 +821,7 @@ Draft rows expire **7 days after `updated_at`** with a soft-warn banner ("Your d
 
 Canonicalisation is **content-shape-aware** (JSON for `design.json`; passthrough for markdown). Per the existing service boundary (Phase 2 §1.4 — git-service is artifact-type-aware but not content-shape-aware), canonicalisation correctly lives in BFF, not git-service. The BFF runs `normalizeDesignJSON` on every design PutFile and is a no-op on requirements PutFile.
 
-**Markdown line endings:** requirements files are stored byte-exact (`content TEXT`), including line endings. Two editors writing `\r\n` vs `\n` for the same content will produce different blob SHAs and trigger spurious `version` deltas in cross-tab polls. Mitigation: **the BFF normalises line endings to `\n` on every requirements PutFile** before the draft UPSERT (one-line transform; matches what GitHub's web editor does). Applies to both `.md` and `.excalidraw` (the two extensions accepted under `.asdlc/requirements/` per `allowedRequirementExts`); excalidraw scenes are JSON so the normalisation is semantically a no-op but byte-stabilising for the dedup path. Documented here so we don't litigate it at PR time.
+**Markdown line endings:** requirements files are stored byte-exact (`content TEXT`), including line endings. Two editors writing `\r\n` vs `\n` for the same content will produce different blob SHAs and trigger spurious `version` deltas in cross-tab polls. Mitigation: **the BFF normalises line endings to `\n` on every requirements PutFile** before the draft UPSERT (one-line transform; matches what GitHub's web editor does). Applies to both `.md` and `.excalidraw` (the two extensions accepted under `specs/requirements/` per `allowedRequirementExts`); excalidraw scenes are JSON so the normalisation is semantically a no-op but byte-stabilising for the dedup path. Documented here so we don't litigate it at PR time.
 
 ## 17. Decision log
 
@@ -833,7 +833,7 @@ User-confirmed product decisions (this design):
 
 Architectural decisions:
 
-- Clone removal scoped to `.asdlc/` only. The coding-agent pod-side feature-branch clone is untouched.
+- Clone removal scoped to `specs/` only. The coding-agent pod-side feature-branch clone is untouched.
 - Drafts in Postgres, not on a remote `drafts` branch or in-memory in BFF.
 - Author = OC user (via `<id>@users.app-factory.dev` fallback for V1), committer = credential identity. Same identity used as tag tagger.
 - Postgres advisory lock around Save; `If-Match: <version>` around PutFile/Delete.

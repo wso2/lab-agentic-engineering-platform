@@ -149,7 +149,7 @@ type DeploymentList struct {
 
 // ComponentOpenAPI is the response shape returned by
 // GET /api/v1/.../components/{name}/openapi. The spec is the raw YAML string
-// from `.asdlc/design/components/<name>/openapi.yaml` (already canonicalised
+// from `specs/design/components/<name>/openapi.yaml` (already canonicalised
 // on write by openapi_normalize.go), shipped verbatim so the console's
 // swagger-ui can parse it without an extra round-trip.
 type ComponentOpenAPI struct {

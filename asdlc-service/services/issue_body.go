@@ -81,7 +81,7 @@ func buildIssueBody(task *models.ComponentTask, comp *models.DesignComponent, _r
 	sb.WriteString("---\n\n")
 
 	// Component reference card — points the agent at the multi-file design
-	// tree under `.asdlc/design/` rather than inlining contracts/specs.
+	// tree under `specs/design/` rather than inlining contracts/specs.
 	sb.WriteString("## Component Reference\n")
 	sb.WriteString(fmt.Sprintf("- **Name:** %s\n", task.ComponentName))
 	if comp != nil {
@@ -90,11 +90,11 @@ func buildIssueBody(task *models.ComponentTask, comp *models.DesignComponent, _r
 		if comp.AppPath != "" {
 			sb.WriteString(fmt.Sprintf("- **App Path (within repo):** `%s`\n", normalizeAppPath(comp.AppPath)))
 		}
-		sb.WriteString(fmt.Sprintf("- **Design:** `.asdlc/design/components/%s/design.md`\n", task.ComponentName))
+		sb.WriteString(fmt.Sprintf("- **Design:** `specs/design/components/%s/design.md`\n", task.ComponentName))
 		if comp.OpenAPISpec != "" {
-			sb.WriteString(fmt.Sprintf("- **Contract:** `.asdlc/design/components/%s/openapi.yaml`\n", task.ComponentName))
+			sb.WriteString(fmt.Sprintf("- **Contract:** `specs/design/components/%s/openapi.yaml`\n", task.ComponentName))
 		}
-		sb.WriteString("- **System overview:** `.asdlc/design/design.md`\n")
+		sb.WriteString("- **System overview:** `specs/design/design.md`\n")
 	}
 	sb.WriteString("\n")
 

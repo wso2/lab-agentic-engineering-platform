@@ -585,7 +585,7 @@ For a "todo with users" spec, the architect's structured output must
 have exactly this shape (verified to deploy):
 
 ```yaml
-# .asdlc/design/components/todo-api/design.md frontmatter
+# specs/design/components/todo-api/design.md frontmatter
 type: service
 language: Go
 appPath: todo-api
@@ -598,7 +598,7 @@ api:
 ```
 
 ```yaml
-# .asdlc/design/components/todo-web/design.md frontmatter
+# specs/design/components/todo-web/design.md frontmatter
 type: web-app
 language: TypeScript / React (or vanilla JS — whatever is simplest)
 appPath: todo-web
@@ -638,7 +638,7 @@ auth:
 For the **service** component task:
 
 > ## Scope
-> - Implement the OpenAPI contract (see `.asdlc/design/components/todo-api/openapi.yaml`).
+> - Implement the OpenAPI contract (see `specs/design/components/todo-api/openapi.yaml`).
 > - Do NOT implement `/auth/login`, `/auth/register`, or any auth endpoint. The API Platform gateway validates JWTs and injects `X-User-Id` from the JWT `sub` claim.
 > - Read `X-User-Id` from every request; reject (401) when missing.
 > - Per-user data (todos) MUST be keyed on `X-User-Id`.

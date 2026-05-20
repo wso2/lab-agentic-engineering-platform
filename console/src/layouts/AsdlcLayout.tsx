@@ -299,12 +299,14 @@ export default function AsdlcLayout() {
               onClick={() => navigate(organizationOverviewPath(routeOrgId))}
               sx={{ cursor: 'pointer', lineHeight: 1 }}
             >
-              <Box component="span" sx={{ fontWeight: 700, fontSize: '1.25rem', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
-                Agentic
+              <Box component="span" sx={{ lineHeight: 1.1, whiteSpace: 'nowrap' }}>
+                <Box component="span" sx={{ fontWeight: 700, fontSize: '1.25rem' }}>WSO2</Box>
+                <Box component="span" sx={{ fontWeight: 400, fontSize: '1rem' }}> Labs</Box>
+
               </Box>
               <Box component="span" sx={{ fontSize: '0.95rem', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
-                <Box component="span" sx={{ fontWeight: 700 }}>Engineering</Box>
-                <Box component="span" sx={{ fontWeight: 400 }}> Platform</Box>
+                <Box component="span" sx={{ fontWeight: 700 }}>Agentic</Box>
+                <Box component="span" sx={{ fontWeight: 400 }}> Engineer</Box>
               </Box>
             </Stack>
           </Header.Brand>
@@ -703,7 +705,7 @@ export default function AsdlcLayout() {
 
       <AppShell.Footer>
         <Footer
-          copyright={`\u00A9 ${new Date().getFullYear()} Agentic Engineering. All rights reserved.`}
+          copyright={`\u00A9 ${new Date().getFullYear()} WSO2 Labs Agentic Engineer. All rights reserved.`}
           termsUrl="#terms"
           privacyUrl="#privacy"
           sx={{ py: 0.5 }}

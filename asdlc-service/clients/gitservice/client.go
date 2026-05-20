@@ -95,9 +95,9 @@ type Client interface {
 
 	// ----- Artifact endpoints -----
 	//
-	// Requirements live as a multi-file directory (`.asdlc/requirements/*`)
+	// Requirements live as a multi-file directory (`specs/requirements/*`)
 	// versioned together as `v<N>` tags. Design is also multi-file
-	// (`.asdlc/design/design.md` + `.asdlc/design/components/<name>/*`)
+	// (`specs/design/design.md` + `specs/design/components/<name>/*`)
 	// versioned as `v<N>-<M>` where N is the source requirements version.
 	// The save endpoint takes no body — content is staged from the working
 	// tree, populated via per-file PUT/DELETE.
@@ -121,7 +121,7 @@ type Client interface {
 	DeleteRequirementsSnapshot(ctx context.Context, orgID, projectID, snapshotID string) error
 	ReadRequirementsSnapshotFile(ctx context.Context, orgID, projectID, snapshotID, filename string) (*RequirementsSnapshotFile, error)
 
-	// Design (multi-file). `path` is relative to `.asdlc/design/` (e.g.
+	// Design (multi-file). `path` is relative to `specs/design/` (e.g.
 	// `design.md` or `components/user-api/design.md`).
 	ListDesign(ctx context.Context, orgID, projectID string) (map[string]string, error)
 	GetDesignFile(ctx context.Context, orgID, projectID, path string) (*ArtifactFile, error)
@@ -979,7 +979,7 @@ func (c *client) doJSON(ctx context.Context, method, url string, body any, out a
 	return resp.StatusCode, nil
 }
 
-// Requirements (multi-file directory under .asdlc/requirements/, tagged v<N>)
+// Requirements (multi-file directory under specs/requirements/, tagged v<N>)
 
 type requirementsListResp struct {
 	Files map[string]string `json:"files"`
@@ -1112,7 +1112,7 @@ func (c *client) ReadRequirementsSnapshotFile(ctx context.Context, orgID, projec
 	return &out, nil
 }
 
-// Design (multi-file under .asdlc/design/, tagged v<N>-<M>)
+// Design (multi-file under specs/design/, tagged v<N>-<M>)
 
 type designListResp struct {
 	Files map[string]string `json:"files"`

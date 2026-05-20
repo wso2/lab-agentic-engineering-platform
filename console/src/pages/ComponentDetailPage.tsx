@@ -628,7 +628,7 @@ export default function ComponentDetailPage() {
                         />
                       </Stack>
                     </Box>
-                    {/* App path now lives in .asdlc/design.json — surfaced
+                    {/* App path now lives in specs/design.json — surfaced
                         per-component in the architecture page, not duplicated
                         on the task detail. */}
                     <Box>

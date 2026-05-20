@@ -30,7 +30,7 @@ backend. We want to turn it — starting with the **Requirements** page —
 into a real brainstorming assistant.
 
 On the Requirements page the user works with up to six artefact files
-laid out under `.asdlc/requirements/`:
+laid out under `specs/requirements/`:
 
 | File | Kind | Generator skill | Notes |
 | --- | --- | --- | --- |
@@ -77,7 +77,7 @@ turns' work, and never lose a manual keystroke to an agent write.
   with **Discard turn** (new — granular to a single chat turn) /
   **Discard all** (existing — drops all drafts).
 - No collab-vs-agent or generate-vs-agent races. While a chat turn
-  is in flight, all *other* writers to `.asdlc/requirements/` are
+  is in flight, all *other* writers to `specs/requirements/` are
   blocked.
 - Chat history is scoped per project and persists across navigation
   inside a browser session (`localStorage`).
@@ -96,7 +96,7 @@ turns' work, and never lose a manual keystroke to an agent write.
   content remains available between chat turns but is **suspended**
   for the duration of a turn (§4.5).
 - Anything beyond the requirements directory. The agent never touches
-  `.asdlc/design/`, OC primitives, or GitHub.
+  `specs/design/`, OC primitives, or GitHub.
 
 ## 3. UX design
 
@@ -192,7 +192,7 @@ Add two things to the existing composer:
 
 1. **Files-in-scope tag.** The composer already shows `project:` +
    `context:` chips. Add `files: 4`. Click → popover lists every file
-   in `.asdlc/requirements/`; user can uncheck. Default: all files
+   in `specs/requirements/`; user can uncheck. Default: all files
    selected. Out-of-scope files are not inlined into the agent's
    prompt and cannot be edited by the turn (the agent's
    `str_replace` tool rejects writes to filenames outside scope).
@@ -537,7 +537,7 @@ surfaces this to the user.
 2. Generate a turn ID (`t_` + ULID).
 3. Capture a **snapshot ref** by calling a new git-service endpoint
    (`POST /api/v1/.../artifacts/snapshots`) that writes the current
-   `.asdlc/requirements/` tree object to
+   `specs/requirements/` tree object to
    `refs/asdlc/reqchat/<turn-id>`. This is a no-checkout, no-commit
    `update-ref` of a tree-pointing tag-like ref. Cheap (single
    ref write, content-addressable, GC-eligible after 7 days).

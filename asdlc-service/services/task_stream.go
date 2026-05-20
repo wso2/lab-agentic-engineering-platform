@@ -455,7 +455,7 @@ func (s *taskService) persistAndIssue(
 		}
 		// Strip openAPISpec — the YAML can be huge and the prompt explicitly
 		// tells the model to reference the on-disk
-		// `.asdlc/design/components/<name>/openapi.yaml` rather than inline
+		// `specs/design/components/<name>/openapi.yaml` rather than inline
 		// it. Removing it from the slice saves tokens and removes temptation.
 		compForPrompt := comp
 		compForPrompt.OpenAPISpec = ""

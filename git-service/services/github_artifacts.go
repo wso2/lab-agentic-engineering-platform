@@ -351,7 +351,7 @@ func (c *githubClient) GetTree(ctx context.Context, owner, repo string, cred cre
 		return nil, fmt.Errorf("decode get-tree: %w", err)
 	}
 	if parsed.Truncated {
-		// .asdlc/ is tiny; truncation means a misuse (saving requirements across
+		// specs/ is tiny; truncation means a misuse (saving requirements across
 		// a 100k-entry tree). Fail loud so we don't silently miss entries.
 		return nil, fmt.Errorf("github get-tree: response truncated (tree too large)")
 	}

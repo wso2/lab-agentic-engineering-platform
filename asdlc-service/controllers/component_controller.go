@@ -182,7 +182,7 @@ func (c *componentController) GetBuildLogs(w http.ResponseWriter, r *http.Reques
 }
 
 // GetComponentOpenAPI returns the OpenAPI spec for a service component
-// from `.asdlc/design/components/<name>/openapi.yaml`. Status codes:
+// from `specs/design/components/<name>/openapi.yaml`. Status codes:
 //   - 200 → {componentName, componentType, spec}
 //   - 404 → design missing OR no component matches the slug
 //   - 409 → component exists but isn't a "service" (body carries componentType

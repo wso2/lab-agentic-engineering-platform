@@ -72,7 +72,7 @@ export const TechLeadDetailItem = z.object({
   title: z.string(),
   rationale: z.string(),
   // The component's design entry assembled from
-  // `.asdlc/design/components/<name>/{design.md,openapi.yaml}` and shipped
+  // `specs/design/components/<name>/{design.md,openapi.yaml}` and shipped
   // as a JSON slice for the prompt. Includes openAPISpec, appPath,
   // buildpack, etc. — the model only renders references, never inlines YAML.
   designSlice: z.string(),

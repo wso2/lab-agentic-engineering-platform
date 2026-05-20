@@ -19,7 +19,7 @@ The previous task-generator (`generateObject` per component, called serially fro
 The redesign:
 - Splits generation into a **plan** phase (streamed array) and a **detail** phase (parallel streamed markdown bodies). UI cards land in seconds; bodies stream in afterwards.
 - Treats each generation run as an **append-only batch** of new tasks. Prior tasks are immutable history. No "preserve verbatim" instruction, no diff-edit semantics on tasks.
-- Keeps `.asdlc/design.json` as the single source of truth for component shape, OpenAPI, buildpack, etc. Task rows hold only task-level state.
+- Keeps `specs/design.json` as the single source of truth for component shape, OpenAPI, buildpack, etc. Task rows hold only task-level state.
 
 ## 2. Scope
 
@@ -190,7 +190,7 @@ Write the GitHub issue body in markdown using this structure:
   ## What
   ## Acceptance criteria
   ## Implementation notes
-  ## Contracts (refer to .asdlc/design.json — do not duplicate the spec inline)
+  ## Contracts (refer to specs/design.json — do not duplicate the spec inline)
   ## Dependencies
 ```
 
@@ -394,13 +394,13 @@ You write the GitHub issue body for one task. Structure:
   ## What         (one paragraph)
   ## Acceptance criteria  (testable bullets — what "done" means)
   ## Implementation notes (gotchas, key considerations)
-  ## Contracts          (reference .asdlc/design.json — do not inline the
+  ## Contracts          (reference specs/design.json — do not inline the
                           OpenAPI spec; cite the path / operation / schema)
   ## Dependencies      (other tasks in this batch, by title)
 
 Rules:
   - Refer to OpenAPI specs by path/operation, not by inlining YAML.
-    The implementing agent will read the spec from .asdlc/design.json.
+    The implementing agent will read the spec from specs/design.json.
   - Acceptance criteria are testable. "Returns 200 on /health" — not "is
     healthy".
   - Do NOT include local developer setup, branch checkout, or "Closes #N".

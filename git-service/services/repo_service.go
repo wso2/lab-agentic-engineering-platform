@@ -80,7 +80,7 @@ func (s *repoService) CreateRepo(ctx context.Context, orgID, projectID, projectN
 	}
 
 	slug := slugifyProjectName(projectName)
-	description := fmt.Sprintf("ASDLC project %s", projectName)
+	description := fmt.Sprintf("WSO2 Labs Agentic Engineer project %s", projectName)
 
 	repoName, cloneURL, err := s.createGitHubRepoWithRetry(ctx, cred, slug, description)
 	if err != nil {

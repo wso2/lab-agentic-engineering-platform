@@ -26,7 +26,7 @@ import (
 )
 
 // saveDesignViaAPI implements §8.2 (Git Data API path) for V1: the working
-// tree under `.asdlc/design/` is the draft surface (root `design.md` plus
+// tree under `specs/design/` is the draft surface (root `design.md` plus
 // per-component `design.md` / `openapi.yaml`). We compute the changeset
 // against local-clone HEAD, apply it over current main via blob+tree+commit,
 // then create the next `v<N>-<M>` annotated tag.
@@ -49,7 +49,7 @@ func (s *artifactService) saveDesignViaAPI(
 		return nil, fmt.Errorf("resolve credential: %w", err)
 	}
 
-	// 1. Validate the root design document exists. An empty `.asdlc/design/`
+	// 1. Validate the root design document exists. An empty `specs/design/`
 	// can't be saved — at minimum the top-level `design.md` must be present.
 	rootAbs := filepath.Join(clonePath, DesignDir, designRootFile)
 	if _, err := os.Stat(rootAbs); err != nil {
@@ -248,7 +248,7 @@ func (s *artifactService) saveDesignViaAPI(
 }
 
 // saveRequirementsViaAPI implements §8.3 (Git Data API path) for V1. The
-// working tree under `.asdlc/requirements/` is the draft surface; we compute
+// working tree under `specs/requirements/` is the draft surface; we compute
 // the delta against the local clone's HEAD (which reflects what we last
 // saved), then apply that delta over current main via the Git Data API.
 //
@@ -429,7 +429,7 @@ func (s *artifactService) saveRequirementsViaAPI(
 			return nil, fmt.Errorf("commit + update ref: %w", err)
 		}
 	} else {
-		// First-ever tag on a fresh repo with no `.asdlc/requirements/` changes.
+		// First-ever tag on a fresh repo with no `specs/requirements/` changes.
 		newCommitSHA = mainCommitSHA
 	}
 
@@ -670,7 +670,7 @@ func diffWorkingTreeAgainstHEAD(ctx context.Context, clonePath, subdir string) (
 	}
 
 	// Paths from `git status` are repo-root-relative (e.g.
-	// `.asdlc/design/components/foo/design.md`). Strip the `subdir/` prefix
+	// `specs/design/components/foo/design.md`). Strip the `subdir/` prefix
 	// so `Name` carries the path *within* subdir — including any directory
 	// nesting — rather than just the basename. `filepath.Base` here would
 	// silently drop `components/foo/` and collapse every nested file onto

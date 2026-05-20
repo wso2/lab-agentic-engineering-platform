@@ -1194,9 +1194,9 @@ Each PR ships with a self-contained E2E that drives the **full project lifecycle
 1. Login as `admin@openchoreo.dev`.
 2. Create a new project. → triggers `git-service` repo provision on `asdlc-repos` via the active credential.
 3. Generate spec via the BusinessAnalyst agent.
-4. Click **Save & Proceed** → BFF commits `.asdlc/spec.md`, pushes, creates annotated tag `spec-v1`. **Verify**: GitHub repo at `https://github.com/asdlc-repos/{repo}` shows the file at the tagged commit.
+4. Click **Save & Proceed** → BFF commits `specs/spec.md`, pushes, creates annotated tag `spec-v1`. **Verify**: GitHub repo at `https://github.com/asdlc-repos/{repo}` shows the file at the tagged commit.
 5. Generate design via the Architect agent.
-6. **Save & Proceed** on design → BFF commits `.asdlc/design.json`, creates `design-v1` tag with `source-spec: spec-v1` in the tag message. **Verify**: tag and message present on GitHub.
+6. **Save & Proceed** on design → BFF commits `specs/design.json`, creates `design-v1` tag with `source-spec: spec-v1` in the tag message. **Verify**: tag and message present on GitHub.
 7. Generate tasks → one GitHub issue per component, each with a feature branch + draft PR `Closes #N`. **Verify**: issues and draft PRs visible on GitHub.
 8. Click **Start Implementation** → remote-worker dispatches; agent commits, pushes, runs `gh pr ready`.
 9. Webhook `pull_request.ready_for_review` → task transitions to `ready_for_review`.
