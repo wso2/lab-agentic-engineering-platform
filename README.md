@@ -58,6 +58,10 @@ tools and skills it needs. The flow:
 - **Model-agnostic.** You can pick the LLM behind each agent and mix providers
   across the lifecycle.
 
+## Demo
+
+https://github.com/user-attachments/assets/9723e5a5-c187-49b5-886e-50c217da6c28
+
 ## What's in the repo
 
 | Path | Role |
@@ -225,3 +229,4 @@ Feedback goes via GitHub issues on
 ## License
 
 Apache 2.0 — see [`LICENSE`](./LICENSE).
+
