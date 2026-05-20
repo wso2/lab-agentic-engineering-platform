@@ -62,8 +62,6 @@ tools and skills it needs. The flow:
 
 https://github.com/user-attachments/assets/9723e5a5-c187-49b5-886e-50c217da6c28
 
-
-
 ## What's in the repo
 
 | Path | Role |
