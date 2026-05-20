@@ -703,7 +703,7 @@ export default function AsdlcLayout() {
 
       <AppShell.Footer>
         <Footer
-          copyright={`\u00A9 ${new Date().getFullYear()} Agentic Engineering Platform. All rights reserved.`}
+          copyright={`\u00A9 ${new Date().getFullYear()} Agentic Engineering. All rights reserved.`}
           termsUrl="#terms"
           privacyUrl="#privacy"
           sx={{ py: 0.5 }}

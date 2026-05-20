@@ -108,7 +108,7 @@ export default function OrgOverviewPage() {
             No projects yet
           </Typography>
           <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-            Create your first project to get started with the Agentic Engineering Platform workflow.
+            Create your first project to get started with the Agentic Engineering workflow.
           </Typography>
           <Button
             variant="contained"
