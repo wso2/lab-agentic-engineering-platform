@@ -6,7 +6,7 @@
 > data models change without notice, and entire subsystems may be ripped out between
 > commits. There are no stability guarantees. Do not deploy this as-is.
 
-Repository: [`wso2/lab-agentic-engineering-platform`](https://github.com/wso2/lab-agentic-engineering-platform)
+Repository: [`wso2/labs-agentic-engineer`](https://github.com/wso2/labs-agentic-engineer)
 
 An AI-driven, spec-driven engineering platform built on top of
 [OpenChoreo](https://github.com/openchoreo/openchoreo). It explores what an
