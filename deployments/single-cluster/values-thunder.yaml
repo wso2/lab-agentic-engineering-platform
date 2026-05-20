@@ -1,0 +1,383 @@
+# Shared Thunder helm values for k3d dev setups.
+# Only overrides that differ from Thunder chart defaults.
+
+fullnameOverride: thunder
+
+# Thunder v0.23.0+ manages its own HTTPRoute
+httproute:
+  enabled: true
+  parentRefs:
+    - name: gateway-default
+      namespace: openchoreo-control-plane
+  hostnames:
+    - thunder.openchoreo.localhost
+    - ${PUBLIC_THUNDER_HOST}
+
+# Not using nginx ingress in openchoreo
+ingress:
+  enabled: false
+
+# SQLite requires a single writer pod
+deployment:
+  replicaCount: 1
+
+hpa:
+  enabled: false
+
+configuration:
+  server:
+    httpOnly: true
+    publicUrl: "${PUBLIC_THUNDER_URL}"
+
+  gateClient:
+    hostname: "${PUBLIC_THUNDER_HOST}"
+    port: ${PUBLIC_THUNDER_PORT}
+    scheme: "${PUBLIC_THUNDER_SCHEME}"
+
+  database:
+    config:
+      type: sqlite
+      sqliteOptions: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+    runtime:
+      type: sqlite
+      sqliteOptions: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+    user:
+      type: sqlite
+      sqliteOptions: "_journal_mode=WAL&_busy_timeout=5000&_pragma=foreign_keys(1)"
+
+  cors:
+    allowedOrigins:
+      - "http://openchoreo.localhost:8080"
+      - "http://localhost:7007"
+      - "http://localhost:8090"
+      - "${PUBLIC_THUNDER_URL}"
+      - "${PUBLIC_CONSOLE_URL}"
+
+  passkey:
+    allowedOrigins:
+      - "http://openchoreo.localhost:8080"
+
+  # Thunder 0.34.0 added a Consent Server that defaults to PostgreSQL. We don't
+  # run a separate Postgres for it — keep everything on SQLite alongside the
+  # main Thunder DBs. Mirrors agent-manager's wso2-amp-thunder-extension config.
+  consent:
+    enabled: true
+    baseUrl: "http://localhost:9090/api/v1"
+    timeout: 5
+    maxRetries: 3
+    server:
+      port: 9090
+      hostname: "localhost"
+    database:
+      type: sqlite
+      sqlitePath: "repository/database/consentdb.db"
+      sqliteOptions: "_pragma=journal_mode(WAL)&_pragma=cache_size(-16000)"
+
+setup:
+  enabled: true
+  # Keep the setup Job around after a failure so we can read its logs.
+  preserveJob: true
+  ttlSecondsAfterFinished: 86400
+
+# Bootstrap scripts — run inside the Thunder setup Job after the built-in
+# 01-default-resources.sh / 02-sample-resources.sh (which ship with the
+# image). Each script sources `common.sh` for log_* helpers + thunder_api_call.
+#
+# We currently rely on the default Thunder admin (`admin` / `admin`, in the
+# `Administrators` group) which the ClusterAuthzRoleBinding installed by
+# setup-asdlc.sh maps to the `admin` ClusterAuthzRole. No platform-users
+# bootstrap script is needed for v1 dev.
+#
+# 59-asdlc-oauth-apps.sh registers ALL six OAuth applications the platform
+# needs in a single pass: workload-publisher (consumed by OC dockerfile-builder
+# ClusterWorkflow), asdlc-api (BFF service principal), asdlc-bff-to-{git,
+# agents,remote-worker} (BFF outbound Service JWT clients), and asdlc-console
+# (public PKCE client for the React app). Adding a new client = one line in
+# CONFIDENTIAL_APPS or PUBLIC_APPS at the top of the script.
+bootstrap:
+  scripts:
+    59-asdlc-oauth-apps.sh: |
+      #!/bin/bash
+      set -e
+      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+      source "${SCRIPT_DIR}/common.sh"
+
+      # ──────────────────────────────────────────────────────────────────
+      # App registry. Each row is pipe-delimited.
+      #   CONFIDENTIAL_APPS: name|description|clientId|clientSecret
+      #     → client_credentials grant, no auth flow, no redirects.
+      #   PUBLIC_APPS:        name|description|clientId|redirectUris(CSV)|userAttributes(CSV)
+      #     → authorization_code + refresh_token, PKCE, public, uses
+      #       default-basic-flow.
+      # Adding a new OAuth client = add one row below.
+      # ──────────────────────────────────────────────────────────────────
+
+      CONFIDENTIAL_APPS=(
+        "Workload Publisher|OpenChoreo Workload Publisher Client (used by dockerfile-builder generate-workload-cr step)|openchoreo-workload-publisher-client|openchoreo-workload-publisher-secret"
+        "OpenChoreo Observer Resource Reader|Client used by the BFF to fetch tokens for the OC Observer service (live workflow logs). Bound by the openchoreo-observer-resource-reader-client-binding ClusterAuthzRoleBinding.|openchoreo-observer-resource-reader-client|openchoreo-observer-resource-reader-client-secret"
+        "ASDLC API Service|ASDLC API Service - service-to-service client for OpenChoreo|asdlc-api-client|asdlc-api-client-secret"
+        "ASDLC BFF to git-service|BFF outbound Service JWT, audience: git-service|asdlc-bff-to-git-service|asdlc-bff-to-git-service-secret"
+        "ASDLC BFF to agents-service|BFF outbound Service JWT, audience: agents-service|asdlc-bff-to-agents-service|asdlc-bff-to-agents-service-secret"
+        "ASDLC BFF to remote-worker|BFF outbound Service JWT, audience: remote-worker|asdlc-bff-to-remote-worker|asdlc-bff-to-remote-worker-secret"
+        "ASDLC Local Dev Seeder|Local-dev convenience client used by scripts/seed-dev.sh to POST GitHub PAT + Anthropic key to the default org. Not used by any platform code path.|asdlc-local-dev-seeder|asdlc-local-dev-seeder-secret"
+        "ASDLC System Client|System-level Thunder admin client used by the BFF (clients/thundersvc) to mint scope=system tokens for the publisher-app lifecycle (POST /applications). Bound to the Thunder Administrator role by the 60-asdlc-system-role.sh bootstrap script. See docs/design/api-platform-integration.md §6 Phase 3 (D7).|asdlc-system-client|asdlc-system-client-secret"
+      )
+
+      PUBLIC_APPS=(
+        "ASDLC Console|ASDLC Platform Console|asdlc-console-client|http://localhost:8090,${PUBLIC_CONSOLE_URL}|given_name,family_name,username,groups,ouId,ouName,ouHandle"
+      )
+
+      # ──────────────────────────────────────────────────────────────────
+      # Fetch OU_ID once. AUTH_FLOW_ID is fetched lazily only when
+      # PUBLIC_APPS is non-empty — confidential clients don't need it.
+      # Hard-exit (not silent skip) if either lookup fails.
+      # ──────────────────────────────────────────────────────────────────
+
+      log_info "Fetching default organization unit..."
+      RESPONSE=$(thunder_api_call GET "/organization-units/tree/default")
+      HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
+      if [ "$HTTP_CODE" != "200" ]; then
+        log_error "Failed to fetch default OU (HTTP $HTTP_CODE): $BODY"; exit 1
+      fi
+      OU_ID=$(echo "$BODY" | grep -o '"handle":"default"[^}]*"id":"[^"]*"\|"id":"[^"]*"[^}]*"handle":"default"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      if [ -z "$OU_ID" ]; then
+        log_error "Could not extract default OU ID from response: $BODY"; exit 1
+      fi
+      log_info "Using OU ID: $OU_ID"
+
+      AUTH_FLOW_ID=""
+      if [ ${#PUBLIC_APPS[@]} -gt 0 ]; then
+        log_info "Fetching default-basic-flow authentication flow ID..."
+        RESPONSE=$(thunder_api_call GET "/flows?flowType=AUTHENTICATION&limit=200")
+        HTTP_CODE="${RESPONSE: -3}"; BODY="${RESPONSE%???}"
+        if [ "$HTTP_CODE" != "200" ]; then
+          log_error "Failed to fetch auth flows (HTTP $HTTP_CODE): $BODY"; exit 1
+        fi
+        AUTH_FLOW_ID=$(echo "$BODY" | sed 's/},{/}\n{/g' | grep '"handle":"default-basic-flow"' | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+        if [ -z "$AUTH_FLOW_ID" ]; then
+          log_error "Could not find default-basic-flow auth flow"; exit 1
+        fi
+        log_info "Using auth flow ID: $AUTH_FLOW_ID"
+      fi
+
+      # ──────────────────────────────────────────────────────────────────
+      # csv_to_json_array "a,b,c" → ["a","b","c"]
+      # ──────────────────────────────────────────────────────────────────
+
+      csv_to_json_array() {
+        local input="$1"
+        local IFS=','
+        local arr=()
+        local item
+        for item in $input; do
+          arr+=("\"${item}\"")
+        done
+        local out
+        IFS=','
+        out="${arr[*]}"
+        echo "[${out}]"
+      }
+
+      # ──────────────────────────────────────────────────────────────────
+      # upsert_app CLIENT_ID PAYLOAD
+      #   Shared GET-check-PUT-or-POST tail. Returns 1 on HTTP failure.
+      # ──────────────────────────────────────────────────────────────────
+
+      upsert_app() {
+        local client_id="$1"
+        local payload="$2"
+
+        local response
+        response=$(thunder_api_call GET "/applications")
+        local body="${response%???}"
+
+        if echo "$body" | grep -q "\"clientId\":\"${client_id}\""; then
+          local app_id
+          app_id=$(echo "$body" | sed 's/},{/}\n{/g' | grep "\"clientId\":\"${client_id}\"" | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+          log_info "App '${client_id}' exists (${app_id}), updating..."
+          response=$(thunder_api_call PUT "/applications/${app_id}" "$payload")
+          local http_code="${response: -3}"
+          if [ "$http_code" != "200" ]; then
+            log_error "Update failed (HTTP $http_code): ${response%???}"; return 1
+          fi
+        else
+          log_info "App '${client_id}' does not exist, creating..."
+          response=$(thunder_api_call POST "/applications" "$payload")
+          local http_code="${response: -3}"
+          if ! { [ "$http_code" = "201" ] || [ "$http_code" = "200" ]; }; then
+            log_error "Create failed (HTTP $http_code): ${response%???}"; return 1
+          fi
+        fi
+        log_success "App '${client_id}' configured"
+      }
+
+      # ──────────────────────────────────────────────────────────────────
+      # ensure_confidential_app NAME DESC CLIENT_ID CLIENT_SECRET
+      # ──────────────────────────────────────────────────────────────────
+
+      ensure_confidential_app() {
+        local name="$1"
+        local description="$2"
+        local client_id="$3"
+        local client_secret="$4"
+
+        local payload
+        payload=$(cat <<JSON
+      {
+        "name": "${name}",
+        "description": "${description}",
+        "ouId": "${OU_ID}",
+        "inboundAuthConfig": [{
+          "type": "oauth2",
+          "config": {
+            "clientId": "${client_id}",
+            "clientSecret": "${client_secret}",
+            "grantTypes": ["client_credentials"],
+            "tokenEndpointAuthMethod": "client_secret_post",
+            "pkceRequired": false,
+            "publicClient": false,
+            "token": {"accessToken": {"validityPeriod": 3600}}
+          }
+        }]
+      }
+      JSON
+      )
+        upsert_app "${client_id}" "${payload}"
+      }
+
+      # ──────────────────────────────────────────────────────────────────
+      # ensure_public_app NAME DESC CLIENT_ID REDIRECT_URIS_CSV USER_ATTRS_CSV
+      #   Public PKCE client (authorization_code + refresh_token).
+      # ──────────────────────────────────────────────────────────────────
+
+      ensure_public_app() {
+        local name="$1"
+        local description="$2"
+        local client_id="$3"
+        local redirect_uris_csv="$4"
+        local user_attrs_csv="$5"
+
+        local redirect_uris_json
+        redirect_uris_json=$(csv_to_json_array "${redirect_uris_csv}")
+        local user_attrs_json
+        user_attrs_json=$(csv_to_json_array "${user_attrs_csv}")
+
+        local payload
+        payload=$(cat <<JSON
+      {
+        "name": "${name}",
+        "description": "${description}",
+        "ouId": "${OU_ID}",
+        "authFlowId": "${AUTH_FLOW_ID}",
+        "inboundAuthConfig": [{
+          "type": "oauth2",
+          "config": {
+            "clientId": "${client_id}",
+            "redirectUris": ${redirect_uris_json},
+            "grantTypes": ["authorization_code", "refresh_token"],
+            "responseTypes": ["code"],
+            "tokenEndpointAuthMethod": "none",
+            "pkceRequired": true,
+            "publicClient": true,
+            "token": {
+              "accessToken": {"validityPeriod": 86400, "userAttributes": ${user_attrs_json}},
+              "idToken":     {"validityPeriod": 86400, "userAttributes": ${user_attrs_json}}
+            }
+          }
+        }]
+      }
+      JSON
+      )
+        upsert_app "${client_id}" "${payload}"
+      }
+
+      # ──────────────────────────────────────────────────────────────────
+      # Run.
+      # ──────────────────────────────────────────────────────────────────
+
+      for row in "${CONFIDENTIAL_APPS[@]}"; do
+        IFS='|' read -r _name _desc _client_id _client_secret <<<"$row"
+        ensure_confidential_app "$_name" "$_desc" "$_client_id" "$_client_secret"
+      done
+
+      for row in "${PUBLIC_APPS[@]}"; do
+        IFS='|' read -r _name _desc _client_id _redirect_uris _user_attrs <<<"$row"
+        ensure_public_app "$_name" "$_desc" "$_client_id" "$_redirect_uris" "$_user_attrs"
+      done
+
+      log_success "All OAuth applications configured"
+
+    # Assigns the Administrator role to the asdlc-system-client OAuth app so
+    # the BFF (via clients/thundersvc.getSystemToken) can mint scope=system
+    # tokens and call Thunder's admin /applications endpoints to manage per-
+    # org publisher apps. Mirrors the agent-manager precedent in
+    # wso2-amp-thunder-extension's 56-amp-system-client.sh. Idempotent.
+    60-asdlc-system-role.sh: |
+      #!/bin/bash
+      set -e
+      SCRIPT_DIR="$(dirname "${BASH_SOURCE[0]:-$0}")"
+      source "${SCRIPT_DIR}/common.sh"
+
+      SYSTEM_CLIENT_ID="asdlc-system-client"
+
+      # ── Resolve the system app's internal id by its clientId. ───────────
+      log_info "Looking up app id for ${SYSTEM_CLIENT_ID}..."
+      RESPONSE=$(thunder_api_call GET "/applications")
+      HTTP_CODE="${RESPONSE: -3}"
+      BODY="${RESPONSE%???}"
+      if [[ "$HTTP_CODE" != "200" ]]; then
+        log_error "Failed to list applications (HTTP $HTTP_CODE): $BODY"
+        exit 1
+      fi
+      # Each app has at least one inboundAuthConfig with clientId=<our id>.
+      # Match the surrounding application's `id`. Greedy enough to survive
+      # ordering changes; brittle to format changes but mirrors the
+      # agent-manager approach.
+      SYSTEM_APP_ID=$(echo "$BODY" \
+        | sed 's/},{/}\n{/g' \
+        | grep -F "\"clientId\":\"${SYSTEM_CLIENT_ID}\"" \
+        | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+
+      if [[ -z "$SYSTEM_APP_ID" ]]; then
+        log_error "Could not find application with clientId=${SYSTEM_CLIENT_ID}"
+        log_error "Make sure 59-asdlc-oauth-apps.sh ran first."
+        exit 1
+      fi
+      log_info "Found ${SYSTEM_CLIENT_ID} app id: $SYSTEM_APP_ID"
+
+      # ── Resolve the Administrator role id. ──────────────────────────────
+      log_info "Looking up Administrator role..."
+      RESPONSE=$(thunder_api_call GET "/roles")
+      HTTP_CODE="${RESPONSE: -3}"
+      BODY="${RESPONSE%???}"
+      if [[ "$HTTP_CODE" != "200" ]]; then
+        log_error "Failed to fetch roles (HTTP $HTTP_CODE): $BODY"
+        exit 1
+      fi
+      ADMIN_ROLE_ID=$(echo "$BODY" \
+        | sed 's/},{/}\n{/g' \
+        | grep '"name":"Administrator"' \
+        | grep -o '"id":"[^"]*"' | head -1 | cut -d'"' -f4)
+      if [[ -z "$ADMIN_ROLE_ID" ]]; then
+        log_error "Could not find Administrator role"
+        exit 1
+      fi
+      log_info "Found Administrator role id: $ADMIN_ROLE_ID"
+
+      # ── Assign the system app to Administrator. Idempotent on 409. ──────
+      log_info "Assigning ${SYSTEM_CLIENT_ID} to Administrator role..."
+      ASSIGN_PAYLOAD='{"assignments":[{"id":"'${SYSTEM_APP_ID}'","type":"app"}]}'
+      RESPONSE=$(thunder_api_call POST "/roles/${ADMIN_ROLE_ID}/assignments/add" "$ASSIGN_PAYLOAD")
+      HTTP_CODE="${RESPONSE: -3}"
+      case "$HTTP_CODE" in
+        200|201|204)
+          log_success "${SYSTEM_CLIENT_ID} bound to Administrator role"
+          ;;
+        409)
+          log_info "${SYSTEM_CLIENT_ID} already bound — skipping"
+          ;;
+        *)
+          log_error "Failed to assign role (HTTP $HTTP_CODE): ${RESPONSE%???}"
+          exit 1
+          ;;
+      esac

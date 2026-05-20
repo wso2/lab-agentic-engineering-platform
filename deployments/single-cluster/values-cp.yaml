@@ -1,0 +1,29 @@
+# Control Plane values for k3d single-cluster setup
+openchoreoApi:
+  http:
+    hostnames:
+      - api.openchoreo.localhost
+  config:
+    server:
+      publicUrl: "http://api.openchoreo.localhost:8080"
+
+gateway:
+  httpPort: 8080
+  httpsPort: 8443
+  tls:
+    enabled: false
+
+backstage:
+  enabled: true
+  baseUrl: "http://openchoreo.localhost:8080"
+  http:
+    hostnames:
+      - openchoreo.localhost
+  secretName: backstage-secrets
+
+security:
+  oidc:
+    issuer: "${PUBLIC_THUNDER_URL}"
+    jwksUrl: "http://thunder-service.thunder.svc.cluster.local:8090/oauth2/jwks"
+    authorizationUrl: "http://thunder.openchoreo.localhost:8080/oauth2/authorize"
+    tokenUrl: "http://thunder.openchoreo.localhost:8080/oauth2/token"

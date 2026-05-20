@@ -1,0 +1,16 @@
+apiVersion: openchoreo.dev/v1alpha1
+metadata:
+  name: app-factory-console
+endpoints:
+  - name: http
+    type: HTTP
+    port: 3000
+    visibility:
+      - external
+dependencies:
+  endpoints:
+    - component: app-factory-api
+      name: http
+      visibility: project
+      envBindings:
+        address: ASDLC_API_PROXY_URL

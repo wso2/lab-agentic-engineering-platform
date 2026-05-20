@@ -1,0 +1,8 @@
+# oapi-codegen configuration for OpenChoreo types generation.
+# DO NOT EDIT generated files (gen/*.gen.go). Regenerate via `make gen-oc-client`.
+package: gen
+output: clients/openchoreo/gen/types.gen.go
+generate:
+  models: true
+  client: false
+  embedded-spec: false

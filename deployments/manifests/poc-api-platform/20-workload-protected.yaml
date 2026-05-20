@@ -1,0 +1,24 @@
+# Workload for the protected (JWT-required) hello-world.
+# Identical to the public Workload — the difference between protected/public
+# lives entirely in the ReleaseBinding's traitEnvironmentConfigs.jwtAuth.
+apiVersion: openchoreo.dev/v1alpha1
+kind: Workload
+metadata:
+  name: poc-protected-workload
+  namespace: default
+spec:
+  owner:
+    projectName: poc-api-platform
+    componentName: poc-protected
+  container:
+    image: mendhak/http-https-echo:35
+    env:
+      - key: HTTP_PORT
+        value: "8080"
+  endpoints:
+    http:
+      type: HTTP
+      port: 8080
+      visibility:
+        - external
+      basePath: /

@@ -1,0 +1,292 @@
+# WSO2 API Platform API Configuration Trait for OpenChoreo
+#
+# This trait adds WSO2 API Platform API management to components by:
+#   - Creating a kgateway Backend pointing to the WSO2 API Platform router
+#   - Creating a WSO2 RestApi resource that defines the API in the gateway
+#   - Patching the HTTPRoute backendRef to route traffic through the WSO2 router
+#   - Patching the HTTPRoute URL rewrite to use the derived API context path
+#
+# WSO2 API Platform does not implement the Kubernetes Gateway API. It runs alongside
+# the default kgateway, which continues to handle Gateway/HTTPRoute resources. Traffic
+# is redirected through the WSO2 router via a kgateway Backend resource.
+#
+# Derived values (not user-configurable):
+#   - displayName: <environment>-<namespace>-<componentName>-<endpointName>
+#   - context:     /<environment>-<namespace>-<componentName>-<endpointName>
+#   - version:     v1.0
+#   - upstream:    http://<componentName>.<namespace>:<endpointName port>
+#   - operations:  All methods (GET, POST, PUT, PATCH, DELETE, OPTIONS) on /*
+#
+# Policy configuration (per-environment via ReleaseBinding traitEnvironmentConfigs):
+#   - cors:       CORS headers (enabled by default with wildcard origins)
+#   - jwtAuth:    JWT authentication (disabled by default)
+#   - rateLimit:  Request rate limiting (disabled by default)
+#   - addHeaders: Custom request/response headers (disabled by default)
+#
+# Prerequisites:
+#   - WSO2 API Platform gateway installed in the data plane (see README.md)
+#   - WSO2 API Platform CRDs available (RestApi, APIGateway)
+#   - kgateway installed (default) with Backend CRD support
+#   - ComponentType must have HTTPRoute resources for the patch to target
+#   - "api-configuration" must be listed in the ComponentType's allowedTraits
+#   - Component must have at least one endpoint defined in its Workload
+#   - The endpointName parameter must match a key in the Workload's endpoints map
+#
+# Usage:
+#   1. Apply this trait to the control plane
+#   2. Add "api-configuration" to the ComponentType's allowedTraits
+#   3. Reference the trait in the Component's traits with endpointName parameter
+#   4. Configure policies per-environment in the ReleaseBinding's traitEnvironmentConfigs
+#   See component.yaml and release-binding for complete usage examples.
+
+---
+apiVersion: openchoreo.dev/v1alpha1
+kind: ClusterTrait
+metadata:
+  name: api-configuration
+spec:
+  environmentConfigs:
+    openAPIV3Schema:
+      type: object
+      $defs:
+        # --- cors policy ---
+        # Configures CORS headers for the API.
+        # Enabled by default with wildcard origins, methods, and headers.
+        # Note: when allowCredentials is true, wildcards cannot be used for
+        # origins, methods, or headers (WSO2 API Platform restriction).
+        CorsConfig:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: true
+            allowedOrigins:
+              type: array
+              items:
+                type: string
+              default: ["*"]
+            allowedMethods:
+              type: array
+              items:
+                type: string
+              default: ["*"]
+            allowedHeaders:
+              type: array
+              items:
+                type: string
+              default: ["*"]
+            allowCredentials:
+              type: boolean
+              default: false
+
+        # --- jwt-auth policy ---
+        # Validates JWT access tokens in API requests.
+        # System-level key manager configuration is set in the gateway-configuration ConfigMap
+        # (`jwtauth_v1` block). The trait emits `jwt-auth v1` so each RestApi
+        # can pin which issuers + audiences it trusts, fixing the C5
+        # multi-IDP footgun (without this filter every RestApi accepts
+        # tokens from every keymanager registered cluster-wide).
+        #
+        # Per Phase 6 of docs/design/api-platform-integration.md:
+        #   - `issuers`  : list of OIDC issuer URLs this API trusts.
+        #                  Empty → fall back to v0 semantics (accept any
+        #                  cluster-configured keymanager). Phase 7 fills
+        #                  this with the org's IDP profile issuer.
+        #   - `audience` : list of accepted `aud` claim values. Empty
+        #                  ⇒ skip the audience check. Thunder hardcodes
+        #                  aud="application" (C8), so the discriminator
+        #                  is `client_id` instead and this field stays
+        #                  empty for Thunder-backed components.
+        JwtAuthConfig:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: false
+            issuers:
+              type: array
+              items:
+                type: string
+              default: []
+            audience:
+              type: array
+              items:
+                type: string
+              default: []
+
+        # --- basic-ratelimit policy ---
+        # Restricts request rates using one or more time windows.
+        # duration uses Go duration format (e.g., "1s", "1m", "1h", "24h").
+        RateLimitEntry:
+          type: object
+          properties:
+            requests:
+              type: integer
+            duration:
+              type: string
+
+        RateLimitConfig:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: false
+            limits:
+              type: array
+              items:
+                $ref: "#/$defs/RateLimitEntry"
+              default: []
+
+        # --- add-headers policy ---
+        # Adds arbitrary headers to the request or response.
+        HeaderEntry:
+          type: object
+          properties:
+            name:
+              type: string
+            value:
+              type: string
+
+        AddHeadersConfig:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+              default: false
+            requestHeaders:
+              type: array
+              items:
+                $ref: "#/$defs/HeaderEntry"
+              default: []
+            responseHeaders:
+              type: array
+              items:
+                $ref: "#/$defs/HeaderEntry"
+              default: []
+
+      properties:
+        cors:
+          $ref: "#/$defs/CorsConfig"
+          default: {}
+        jwtAuth:
+          $ref: "#/$defs/JwtAuthConfig"
+          default: {}
+        rateLimit:
+          $ref: "#/$defs/RateLimitConfig"
+          default: {}
+        addHeaders:
+          $ref: "#/$defs/AddHeadersConfig"
+          default: {}
+
+  parameters:
+    openAPIV3Schema:
+      type: object
+      properties:
+        # Name of the workload endpoint this trait targets.
+        # Must match an endpoint key defined in the Workload spec.
+        endpointName:
+          type: string
+        operations:
+          type: array
+          default:
+            - method: GET
+              path: "/*"
+            - method: POST
+              path: "/*"
+            - method: PUT
+              path: "/*"
+            - method: PATCH
+              path: "/*"
+            - method: DELETE
+              path: "/*"
+            - method: OPTIONS
+              path: "/*"
+          items:
+            type: object
+            properties:
+              method:
+                type: string
+              path:
+                type: string
+        upstreamPort:
+          type: integer
+          default: 0
+          description: "Override upstream port. 0 = use endpoint port from workload."
+        upstreamBasePath:
+          type: string
+          default: ""
+          description: "Base path appended to the upstream URL."
+      required:
+        - endpointName
+
+  creates:
+    # --- Backend: kgateway static backend pointing to WSO2 API Platform router ---
+    # This Backend resource tells kgateway to forward traffic to the WSO2 API Platform
+    # router instead of directly to the component's Service. The HTTPRoute's backendRef
+    # is patched (below) to reference this Backend.
+    - template:
+        apiVersion: gateway.kgateway.dev/v1alpha1
+        kind: Backend
+        metadata:
+          name: ${metadata.componentName}-${parameters.endpointName}-api-gw-backend
+          namespace: ${metadata.namespace}
+        spec:
+          type: Static
+          static:
+            hosts:
+              - host: api-platform-default-gateway-gateway-runtime.openchoreo-data-plane
+                port: 8080
+
+    # --- RestApi: WSO2 API Platform API definition ---
+    # Registers the API in the WSO2 gateway. The displayName, context, and version are
+    # derived from the component metadata. The upstream URL points to the component's
+    # Service using the endpoint port. Policies are conditionally included based
+    # on the enabled flags in the environmentConfigs.
+    - template:
+        apiVersion: gateway.api-platform.wso2.com/v1alpha1
+        kind: RestApi
+        metadata:
+          name: ${metadata.name}-${parameters.endpointName}
+          namespace: ${metadata.namespace}
+        spec:
+          displayName: ${metadata.environmentName}-${metadata.componentNamespace}-${metadata.componentName}-${parameters.endpointName}
+          version: v1.0
+          context: /${metadata.environmentName}-${metadata.componentNamespace}-${metadata.componentName}-${parameters.endpointName}
+          upstream:
+            main:
+              url: "http://${metadata.componentName}.${metadata.namespace}:${parameters.upstreamPort > 0 ? parameters.upstreamPort : workload.endpoints[parameters.endpointName].port}${parameters.upstreamBasePath}"
+          policies: >-
+            ${(environmentConfigs.cors.enabled ? [{"name": "cors", "version": "v1", "params": {"allowedOrigins": environmentConfigs.cors.allowedOrigins, "allowedMethods": environmentConfigs.cors.allowedMethods, "allowedHeaders": environmentConfigs.cors.allowedHeaders, "allowCredentials": environmentConfigs.cors.allowCredentials}}] : [])
+              + (environmentConfigs.jwtAuth.enabled ? [{"name": "jwt-auth", "version": "v1", "params": {"issuers": environmentConfigs.jwtAuth.issuers, "audiences": environmentConfigs.jwtAuth.audience, "claimMappings": {"sub": "x-user-id", "username": "x-user-name", "ouHandle": "x-user-ou"}}}] : [])
+              + (environmentConfigs.rateLimit.enabled ? [{"name": "basic-ratelimit", "version": "v1", "params": {"limits": environmentConfigs.rateLimit.limits}}] : [])
+              + (environmentConfigs.addHeaders.enabled ? [{"name": "add-headers", "version": "v1", "params": {"requestHeaders": environmentConfigs.addHeaders.requestHeaders, "responseHeaders": environmentConfigs.addHeaders.responseHeaders}}] : [])}
+          operations: ${parameters.operations}
+
+  patches:
+    # --- Patch HTTPRoute: Replace backendRef with WSO2 router Backend ---
+    # Replaces the component's Service in the HTTPRoute backendRef with the kgateway
+    # Backend pointing to the WSO2 API Platform router. This redirects all traffic
+    # through the WSO2 router for policy enforcement before reaching the upstream service.
+    #
+    # The where clause matches the HTTPRoute by endpoint-name label, ensuring
+    # only the correct endpoint's route is patched in multi-endpoint components.
+    - target:
+        group: gateway.networking.k8s.io
+        version: v1
+        kind: HTTPRoute
+        where: '${resource.metadata.labels["openchoreo.dev/endpoint-name"] == parameters.endpointName}'
+      operations:
+        - op: replace
+          path: /spec/rules/0/backendRefs/[?(@.name=='${metadata.componentName}')]
+          value:
+            group: gateway.kgateway.dev
+            kind: Backend
+            name: ${metadata.componentName}-${parameters.endpointName}-api-gw-backend
+        # --- Patch HTTPRoute: Update URL rewrite to derived API context path ---
+        # Sets the replacePrefixMatch to /<environment>-<namespace>-<componentName>-<endpointName>,
+        # matching the RestApi context so the WSO2 router can route correctly.
+        - op: replace
+          path: /spec/rules/0/filters/0/urlRewrite/path
+          value:
+            type: ReplacePrefixMatch
+            replacePrefixMatch: /${metadata.environmentName}-${metadata.componentNamespace}-${metadata.componentName}-${parameters.endpointName}

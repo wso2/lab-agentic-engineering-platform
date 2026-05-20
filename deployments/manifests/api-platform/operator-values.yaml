@@ -1,0 +1,44 @@
+# Helm values for the WSO2 API Platform gateway-operator chart.
+# Used by setup-prerequisites.sh: helm install api-platform-operator <chart> --values <this>.
+#
+# Phase 6 — bumped to gateway chart 1.0.1 + image tags 1.0.0 so the
+# trait's `jwt-auth v1` emission lands on a runtime that recognises
+# v1. The controller 1.0.0 expects an AES-GCM encryption key at boot
+# — we provide it via the chart's native `encryptionKeys` block, which
+# mounts a Secret at `/app/data/aesgcm-keys/`. The Secret itself
+# (api-platform-controller-aesgcm-key) is provisioned by
+# setup-prerequisites.sh.
+gateway:
+  helm:
+    chartName: "oci://ghcr.io/wso2/api-platform/helm-charts/gateway"
+    chartVersion: "1.0.1"
+  values:
+    gateway:
+      # Auto-generate the AES-GCM encryption key on first boot. Combined
+      # with the encryptionKeys block below this means a clean cluster
+      # comes up without out-of-band key provisioning; production should
+      # set this to false and pre-provision the Secret via ExternalSecret.
+      developmentMode: true
+      controller:
+        image:
+          tag: "1.0.0"
+        encryptionKeys:
+          enabled: true
+          secretName: api-platform-controller-aesgcm-key
+          mountPath: /app/data/aesgcm-keys
+      router:
+        image:
+          tag: "1.0.0"
+      policyEngine:
+        image:
+          tag: "1.0.0"
+      gatewayRuntime:
+        image:
+          tag: "1.0.0"
+        deployment:
+          # OC's component NetworkPolicies (auto-generated per Component)
+          # allow ingress only from pods labeled
+          # `openchoreo.dev/system-component`. Tag the runtime so
+          # gateway → upstream traffic isn't blocked.
+          podLabels:
+            openchoreo.dev/system-component: api-gateway

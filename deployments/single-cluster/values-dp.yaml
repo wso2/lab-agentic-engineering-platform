@@ -1,0 +1,6 @@
+# Data Plane values for k3d single-cluster setup
+gateway:
+  httpPort: 19080
+  httpsPort: 19443
+  tls:
+    enabled: false

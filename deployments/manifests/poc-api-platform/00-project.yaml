@@ -1,0 +1,11 @@
+# POC project for API Platform + Thunder JWT validation.
+# Both hello-world Components (poc-public, poc-protected) live under it.
+apiVersion: openchoreo.dev/v1alpha1
+kind: Project
+metadata:
+  name: poc-api-platform
+  namespace: default
+spec:
+  deploymentPipelineRef:
+    kind: DeploymentPipeline
+    name: default

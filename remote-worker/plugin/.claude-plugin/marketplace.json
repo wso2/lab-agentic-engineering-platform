@@ -1,0 +1,14 @@
+{
+  "name": "asdlc",
+  "owner": {
+    "name": "ASDLC"
+  },
+  "plugins": [
+    {
+      "name": "asdlc",
+      "source": "./",
+      "version": "0.2.0",
+      "description": "ASDLC task execution skill for agents working a platform-dispatched component task."
+    }
+  ]
+}
