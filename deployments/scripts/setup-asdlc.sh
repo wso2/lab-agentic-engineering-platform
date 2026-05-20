@@ -406,7 +406,7 @@ gen_hex32() {
 # don't suddenly fail HMAC validation (and the BFF's task signing key keeps the
 # same JWKS so in-flight Task JWTs still verify).
 existing_val() {
-    [ -f "$ENV_FILE" ] || return
+    [ -f "$ENV_FILE" ] || return 0
     grep -E "^$1=" "$ENV_FILE" | head -1 | cut -d= -f2-
 }
 
