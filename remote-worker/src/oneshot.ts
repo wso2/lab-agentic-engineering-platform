@@ -42,6 +42,7 @@ function readDispatchFromEnv(): DispatchRequest {
   const identityEmail = requireEnv("ASDLC_IDENTITY_EMAIL");
   const identityLogin = process.env.ASDLC_IDENTITY_LOGIN || "";
   const correlationId = process.env.ASDLC_CORRELATION_ID || randomUUID();
+  const databaseServiceUrl = process.env.ASDLC_DATABASE_SERVICE_URL || undefined;
 
   if (!isUUID(taskId)) throw new Error(`ASDLC_TASK_ID is not a valid UUID: ${taskId}`);
   if (!isSlug(orgId)) throw new Error(`ASDLC_ORG_ID is not a valid slug: ${orgId}`);
@@ -61,6 +62,7 @@ function readDispatchFromEnv(): DispatchRequest {
     gitServiceUrl,
     prompt,
     correlationId,
+    databaseServiceUrl,
   };
 }
 

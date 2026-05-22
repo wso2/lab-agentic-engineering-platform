@@ -2,9 +2,12 @@ package services
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wso2/asdlc/git-service/models"
 	"github.com/wso2/asdlc/git-service/pkg/credentials"
@@ -61,7 +64,62 @@ func (s *issueService) CreateIssue(ctx context.Context, projectID string, req Cr
 		}
 	}
 
-	issue, err := s.github.CreateIssue(ctx, owner, repoName, cred, req)
+	// Retry GitHub issue creation with exponential back-off, but only when
+	// the server explicitly rejected the request (rate limits, validation).
+	// Those rejections guarantee the issue was NOT created, so retrying is
+	// safe. Transport-level failures are ambiguous — GitHub may have already
+	// accepted the request — so we probe for an existing open issue with the
+	// same title before re-attempting, preventing duplicate issues.
+	var issue *IssueResult
+	for attempt := 1; attempt <= 3; attempt++ {
+		issue, err = s.github.CreateIssue(ctx, owner, repoName, cred, req)
+		if err == nil {
+			break
+		}
+
+		var he *HTTPStatusError
+		if errors.As(err, &he) {
+			// Rate-limit and validation rejections are explicit server decisions:
+			// the issue was NOT created, so retrying after back-off is safe.
+			if he.StatusCode == http.StatusTooManyRequests ||
+				he.StatusCode == http.StatusForbidden ||
+				he.StatusCode == http.StatusUnprocessableEntity {
+				if attempt < 3 {
+					slog.WarnContext(ctx, "create github issue rate-limited; retrying",
+						"project", projectID, "attempt", attempt, "status", he.StatusCode, "error", err)
+					delay := time.Duration(attempt*2) * time.Second
+					select {
+					case <-ctx.Done():
+						return nil, ctx.Err()
+					case <-time.After(delay):
+					}
+					continue
+				}
+			}
+			// Other HTTP errors (401, 404, 5xx) are permanent failures or
+			// too ambiguous to retry safely.
+			break
+		}
+
+		// Transport-level error: we don't know whether GitHub received and
+		// processed the request. Probe for an existing open issue with the
+		// same title; if found, return it to avoid creating a duplicate.
+		if existing, probeErr := s.findExistingIssue(ctx, owner, repoName, cred, req.Title); probeErr == nil && existing != nil {
+			slog.InfoContext(ctx, "recovered existing issue after transport error; skipping retry",
+				"project", projectID, "issue", existing.URL, "attempt", attempt)
+			return existing, nil
+		}
+		if attempt < 3 {
+			slog.WarnContext(ctx, "create github issue transport error; retrying",
+				"project", projectID, "attempt", attempt, "error", err)
+			delay := time.Duration(attempt*2) * time.Second
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(delay):
+			}
+		}
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -110,13 +168,36 @@ func (s *issueService) ensureBoard(ctx context.Context, gitRepo *models.GitRepos
 	return githubProjectID, nil
 }
 
+// addIssueToProject adds the issue to the GitHub Project board with up to 3
+// attempts and exponential backoff. GitHub's secondary rate limit throttles
+// rapid addProjectV2ItemById mutations (common when generating many tasks at
+// once), so retrying with a short pause recovers most failures without user
+// intervention.
 func (s *issueService) addIssueToProject(ctx context.Context, githubProjectID string, issue *IssueResult, token string) {
 	if issue.NodeID == "" || s.githubV2 == nil || githubProjectID == "" {
 		slog.WarnContext(ctx, "skipping board add: missing project id or issue node id", "issue", issue.URL)
 		return
 	}
-	if err := s.githubV2.AddIssueToProject(ctx, githubProjectID, issue.NodeID, token); err != nil {
-		slog.WarnContext(ctx, "failed to add issue to GitHub project board", "issue", issue.URL, "error", err)
+	const maxAttempts = 3
+	delay := time.Second
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		err := s.githubV2.AddIssueToProject(ctx, githubProjectID, issue.NodeID, token)
+		if err == nil {
+			return
+		}
+		if attempt == maxAttempts {
+			slog.WarnContext(ctx, "failed to add issue to GitHub project board after retries",
+				"issue", issue.URL, "attempts", attempt, "error", err)
+			return
+		}
+		slog.WarnContext(ctx, "add issue to board failed, retrying",
+			"issue", issue.URL, "attempt", attempt, "delay", delay, "error", err)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+		delay *= 2
 	}
 }
 
@@ -166,6 +247,19 @@ func (s *issueService) EditIssueBody(ctx context.Context, projectID string, numb
 		return err
 	}
 	return s.github.EditIssueBody(ctx, owner, repoName, cred, number, body)
+}
+
+func (s *issueService) findExistingIssue(ctx context.Context, owner, repo string, cred credentials.Credential, title string) (*IssueResult, error) {
+	issues, err := s.github.ListIssues(ctx, owner, repo, cred, nil)
+	if err != nil {
+		return nil, err
+	}
+	for _, iss := range issues {
+		if iss.Title == title && iss.State == "open" {
+			return &IssueResult{Number: iss.Number, URL: iss.URL, NodeID: iss.NodeID}, nil
+		}
+	}
+	return nil, nil
 }
 
 // resolveRepoAndCredential looks up the project's git repository, parses its

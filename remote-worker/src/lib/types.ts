@@ -22,4 +22,6 @@ export interface DispatchRequest {
   prompt: string;
   /** Optional correlation ID for distributed tracing. Forwarded to git-service via credhelper. */
   correlationId?: string;
+  /** URL of the database-service MCP endpoint. Used for database provisioning tasks. */
+  databaseServiceUrl?: string;
 }

@@ -7,153 +7,156 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"time"
 )
 
+type DatabaseInfo struct {
+	ID            string   `json:"id"`
+	ReferenceID   string   `json:"referenceId"`
+	Components    []string `json:"components"`
+	DBType        string   `json:"dbType"`
+	RequestedName string   `json:"requestedName"`
+	DBName        string   `json:"actualDbName,omitempty"`
+	Host          string   `json:"host,omitempty"`
+	Port          int      `json:"port,omitempty"`
+	Username      string   `json:"username,omitempty"`
+	Password      string   `json:"password,omitempty"`
+	Status        string   `json:"status"`
+}
+
 // Client calls the database-service.
 type Client interface {
-	ProvisionDatabase(ctx context.Context, projectName string) (*DatabaseCredentials, error)
-	TestConnection(ctx context.Context, creds *DatabaseCredentials) error
-}
-
-// DatabaseCredentials contains the database connection details.
-type DatabaseCredentials struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-// ProvisionDatabaseRequest is sent to the database-service to provision a new database.
-type ProvisionDatabaseRequest struct {
-	ProjectName string `json:"projectName"`
-}
-
-// ProvisionDatabaseResponse is the response from provisioning a database.
-type ProvisionDatabaseResponse struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-// TestConnectionRequest is sent to test a database connection.
-type TestConnectionRequest struct {
-	Host     string `json:"host"`
-	Port     int    `json:"port"`
-	Database string `json:"database"`
-	Username string `json:"username"`
-	Password string `json:"password"`
-}
-
-// TestConnectionResponse is the response from testing a connection.
-type TestConnectionResponse struct {
-	Status  string `json:"status"`
-	Message string `json:"message"`
+	// RegisterDatabase pre-registers a database in pending state after task generation.
+	RegisterDatabase(ctx context.Context, orgID, projectID, referenceID, componentName, dbType, requestedName string) error
+	// ListByProject returns all database records for a project.
+	ListByProject(ctx context.Context, orgID, projectID string) ([]*DatabaseInfo, error)
+	// UpdateDatabaseStatus sets the status of the database identified by referenceID.
+	UpdateDatabaseStatus(ctx context.Context, referenceID, status string) error
 }
 
 type client struct {
 	baseURL    string
+	bearer     string
 	httpClient *http.Client
 }
 
-func NewClient(baseURL string) Client {
+func NewClient(baseURL, bearer string) Client {
 	return &client{
 		baseURL: baseURL,
+		bearer:  bearer,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
 	}
 }
 
-func (c *client) ProvisionDatabase(ctx context.Context, projectName string) (*DatabaseCredentials, error) {
-	req := ProvisionDatabaseRequest{
-		ProjectName: projectName,
+func (c *client) authorize(req *http.Request) {
+	if c.bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearer)
 	}
-
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, fmt.Errorf("marshal request: %w", err)
-	}
-
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/databases/provision", bytes.NewReader(body))
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
-
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
-	if err != nil {
-		return nil, fmt.Errorf("provision database request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusCreated {
-		return nil, fmt.Errorf("provision database failed with status %d: %s", resp.StatusCode, string(respBody))
-	}
-
-	var provResp ProvisionDatabaseResponse
-	if err := json.Unmarshal(respBody, &provResp); err != nil {
-		return nil, fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	return &DatabaseCredentials{
-		Host:     provResp.Host,
-		Port:     provResp.Port,
-		Database: provResp.Database,
-		Username: provResp.Username,
-		Password: provResp.Password,
-	}, nil
 }
 
-func (c *client) TestConnection(ctx context.Context, creds *DatabaseCredentials) error {
-	req := TestConnectionRequest{
-		Host:     creds.Host,
-		Port:     creds.Port,
-		Database: creds.Database,
-		Username: creds.Username,
-		Password: creds.Password,
-	}
+type registerDatabaseRequest struct {
+	ReferenceID   string `json:"referenceId"`
+	OrgID         string `json:"orgId"`
+	ProjectID     string `json:"projectId"`
+	DBType        string `json:"dbType"`
+	RequestedName string `json:"requestedName"`
+	ComponentName string `json:"componentName"`
+}
 
-	body, err := json.Marshal(req)
+func (c *client) RegisterDatabase(ctx context.Context, orgID, projectID, referenceID, componentName, dbType, requestedName string) error {
+	body, err := json.Marshal(registerDatabaseRequest{
+		ReferenceID:   referenceID,
+		OrgID:         orgID,
+		ProjectID:     projectID,
+		DBType:        dbType,
+		RequestedName: requestedName,
+		ComponentName: componentName,
+	})
 	if err != nil {
 		return fmt.Errorf("marshal request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/databases/test-connection", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/api/v1/databases/register", bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	resp, err := c.httpClient.Do(httpReq)
+	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("test connection request failed: %w", err)
+		return fmt.Errorf("register database request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
-	respBody, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("read response body: %w", err)
+	if resp.StatusCode != http.StatusCreated {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("register database failed with status %d: %s", resp.StatusCode, string(b))
 	}
-
-	var testResp TestConnectionResponse
-	if err := json.Unmarshal(respBody, &testResp); err != nil {
-		return fmt.Errorf("unmarshal response: %w", err)
-	}
-
-	if testResp.Status != "success" {
-		return fmt.Errorf("connection test failed: %s", testResp.Message)
-	}
-
 	return nil
+}
+
+func (c *client) UpdateDatabaseStatus(ctx context.Context, referenceID, status string) error {
+	body, err := json.Marshal(map[string]string{"status": status})
+	if err != nil {
+		return fmt.Errorf("marshal request: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/api/v1/databases/%s/status", c.baseURL, referenceID)
+	req, err := http.NewRequestWithContext(ctx, "PATCH", url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("update database status request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("update database status failed with status %d: %s", resp.StatusCode, string(b))
+	}
+	return nil
+}
+
+func (c *client) ListByProject(ctx context.Context, orgID, projectID string) ([]*DatabaseInfo, error) {
+	base, err := url.Parse(c.baseURL + "/api/v1/databases")
+	if err != nil {
+		return nil, fmt.Errorf("parse base url: %w", err)
+	}
+	q := url.Values{}
+	q.Set("org_id", orgID)
+	q.Set("project_id", projectID)
+	base.RawQuery = q.Encode()
+	req, err := http.NewRequestWithContext(ctx, "GET", base.String(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	c.authorize(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("list databases request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("list databases failed with status %d: %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Databases []*DatabaseInfo `json:"databases"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("unmarshal response: %w", err)
+	}
+	return result.Databases, nil
 }

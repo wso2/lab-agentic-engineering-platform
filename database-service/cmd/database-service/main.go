@@ -13,7 +13,10 @@ import (
 	"github.com/wso2/asdlc/database-service/api"
 	"github.com/wso2/asdlc/database-service/config"
 	"github.com/wso2/asdlc/database-service/controllers"
+	"github.com/wso2/asdlc/database-service/middleware/jwtassertion"
 	"github.com/wso2/asdlc/database-service/services"
+
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -32,12 +35,43 @@ func main() {
 		cfg.MySQLPort,
 	)
 
+	// PostgreSQL-backed registry (required for BFF list/register/status endpoints)
+	pg, err := services.OpenPostgres(cfg.DatabaseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to connect to postgres: %v\n", err)
+		os.Exit(1)
+	}
+	defer pg.Close()
+
+	registryService := services.NewDatabaseRegistryService(pg)
+	if err := registryService.Migrate(context.Background()); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to migrate databases table: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Composite DatabaseService used by the MCP server.
+	dbService := services.NewDatabaseService(registryService, dbProvisioningService, cfg.MySQLHost, cfg.MySQLPort)
+
 	// Controllers
 	dbCtrl := controllers.NewDatabaseController(dbProvisioningService)
+	regCtrl := controllers.NewRegistryController(registryService)
+
+	// JWKS cache for task JWT verification.
+	var jwksCache *jwtassertion.JWKSCache
+	if cfg.BFFJWKSURL != "" {
+		jwksCache = jwtassertion.NewJWKSCache(cfg.BFFJWKSURL)
+	} else {
+		slog.Warn("BFF_JWKS_URL not set — all protected routes will reject requests with 401")
+	}
 
 	// Handler
 	handler := api.NewHandler(api.AppParams{
-		DatabaseCtrl: dbCtrl,
+		DatabaseCtrl:    dbCtrl,
+		RegistryCtrl:    regCtrl,
+		DatabaseSvc:     dbService,
+		JWKS:            jwksCache,
+		TaskJWTIssuer:   cfg.TaskJWTIssuer,
+		TaskJWTAudience: cfg.TaskJWTAudience,
 	})
 
 	server := &http.Server{

@@ -4,6 +4,7 @@ import { alpha, Box, Button, CircularProgress, IconButton, PageContent, Typograp
 import { AlertTriangle, CheckCircle, ChevronRight, Clock, Info, X } from '@wso2/oxygen-ui-icons-react';
 import { useProjectBoard } from '../hooks/useProjectBoard';
 import { AnimatedBanner } from '../components/tasks/AnimatedBanner';
+import { DatabaseArtifactsPanel } from '../components/tasks/DatabaseArtifactsPanel';
 import { TaskSection } from '../components/tasks/TaskSection';
 import { TasksPageHeader } from '../components/tasks/TasksPageHeader';
 import type { SectionConfig } from '../components/tasks/types';
@@ -24,6 +25,7 @@ export default function ProjectTasksPage() {
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(SECTIONS.map(s => [s.key, s.key === 'todo' || s.key === 'inProgress']))
   );
+  const [hasArtifacts, setHasArtifacts] = useState(false);
   const prevCountsRef = useRef<Record<string, number>>({});
 
   const {
@@ -96,6 +98,8 @@ export default function ProjectTasksPage() {
     );
   }
 
+  const allTasks = [...board.todo, ...board.inProgress, ...board.done, ...board.onHold, ...board.failed];
+
   const failedCount     = board.failed.length;
   const inProgressCount = board.inProgress.length;
   const todoCount       = board.todo.length;
@@ -112,8 +116,16 @@ export default function ProjectTasksPage() {
   }
 
   return (
-    <PageContent sx={{ height: '100%', display: 'flex', flexDirection: 'column' }}>
-      <Box sx={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, overflow: 'hidden' }}>
+    <PageContent fullWidth noPadding sx={{ display: 'flex', flexDirection: 'column' }}>
+      <Box sx={{
+        display: 'grid',
+        gridTemplateColumns: hasArtifacts ? '1fr 260px' : '1fr 0px',
+        alignItems: 'start',
+        transition: 'grid-template-columns 0.35s ease',
+      }}>
+
+        {/* Left: tasks column */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', minWidth: 0, pl: 2, pr: 2, pt: 2 }}>
 
         <TasksPageHeader
           projectId={projectId ?? ''}
@@ -337,7 +349,7 @@ export default function ProjectTasksPage() {
         </AnimatedBanner>
 
         {/* Task sections */}
-        <Box sx={{ flex: 1, overflowY: 'auto', pr: 0.25 }}>
+        <Box>
           {totalTasks === 0 && !isGenerating && !generateBanner && (
             <Box
               sx={{
@@ -380,6 +392,11 @@ export default function ProjectTasksPage() {
             </Box>
           ))}
         </Box>
+
+        </Box>{/* end left tasks column */}
+
+        {/* Right: database artifacts panel */}
+        <DatabaseArtifactsPanel orgId={orgId ?? ''} projectId={projectId ?? ''} tasks={allTasks} onHasArtifacts={setHasArtifacts} />
 
       </Box>
     </PageContent>

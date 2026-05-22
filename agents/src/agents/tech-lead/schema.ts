@@ -8,6 +8,7 @@ export const SlimDesignComponent = z.object({
   componentType: z.string(),
   language: z.string(),
   dependsOn: z.array(z.string()),
+  dbEngine: z.string().optional(),
 });
 
 export type SlimDesignComponent = z.infer<typeof SlimDesignComponent>;

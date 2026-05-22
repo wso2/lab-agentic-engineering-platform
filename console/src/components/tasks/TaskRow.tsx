@@ -47,9 +47,9 @@ export function TaskRow({ task, section, orgId, projectId, index }: TaskRowProps
           borderColor: 'divider',
           bgcolor: 'background.paper',
           opacity: 0.55,
-          ...CARD_ANIMATION,
+          animation: 'taskFadeInWaiting 0.22s ease both',
           animationDelay,
-          '@keyframes taskFadeIn': {
+          '@keyframes taskFadeInWaiting': {
             from: { opacity: 0, transform: 'translateY(5px)' },
             to:   { opacity: 0.55, transform: 'translateY(0)' },
           },

@@ -40,8 +40,8 @@ type Config struct {
 	TaskTokenSigningKey string
 	// TaskTokenIssuer is the iss claim on issued Task JWTs (e.g. "asdlc-bff").
 	TaskTokenIssuer string
-	// TaskTokenAudience is the aud claim — fixed to "git-service" today, the
-	// only verifier of Task JWTs.
+	// TaskTokenAudience is the aud claim on issued Task JWTs. Verified by
+	// git-service (/credentials/refresh) and database-service (/mcp, /api).
 	TaskTokenAudience string
 
 	// Phase 2 PR D §9.3 — build watcher git_clone_failed_auth retry budget.
@@ -101,6 +101,10 @@ type Config struct {
 	// verification-failed callback and only records the diagnostic on the
 	// GitHub issue.
 	AgentPlatformURL string
+
+	// AgentDatabaseServiceURL is the URL the coding-agent runner pod uses to
+	// reach the database-service MCP endpoint.
+	AgentDatabaseServiceURL string
 
 	// JWKS settings for inbound JWT verification — Thunder publishes the
 	// User JWT and Service JWT signing key at JWKSURL; verifiers refresh

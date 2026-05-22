@@ -57,6 +57,10 @@ const (
 	// shows on the board, and the operator clicks Retry to re-dispatch
 	// (transition back to in_progress).
 	TaskStatusVerificationFailed TaskStatus = "verification_failed"
+	// TaskStatusTesting is an intermediate state for database provisioning
+	// tasks. The agent has successfully called create_database and is now
+	// running test_connection against the provisioned database.
+	TaskStatusTesting TaskStatus = "testing"
 )
 
 // IsTerminal reports whether the status is a terminal state. Terminal states
@@ -67,6 +71,13 @@ func (s TaskStatus) IsTerminal() bool {
 		return true
 	}
 	return false
+}
+
+// IsTestingStatus reports whether the status is "testing" (database
+// provisioning intermediate state). Kept separate from IsTerminal because
+// testing is non-terminal (the db-deployed/db-failed callbacks advance it).
+func (s TaskStatus) IsTestingStatus() bool {
+	return s == TaskStatusTesting
 }
 
 // ComponentTask is one implementation task targeting a single component.
@@ -87,6 +98,10 @@ type ComponentTask struct {
 	// `specs/design/components/<ComponentName>/` (design.md +
 	// optional openapi.yaml).
 	ComponentName string `gorm:"not null" json:"componentName"`
+
+	// ComponentType mirrors the componentType field from .asdlc/design.json
+	// at task-generation time.
+	ComponentType string `json:"componentType,omitempty"`
 
 	// Title is the GitHub issue title. Used as the dependsOn key within a
 	// batch and surfaces in the UI / kanban.

@@ -7,6 +7,7 @@ endpoints:
     port: 8080
     visibility:
       - project
+      - internal
 dependencies:
   endpoints:
     - component: app-factory-git-service

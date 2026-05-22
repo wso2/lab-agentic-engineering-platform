@@ -227,6 +227,7 @@ type componentFrontmatter struct {
 	Type          string               `yaml:"type"`
 	Language      string               `yaml:"language,omitempty"`
 	DependsOn     []string             `yaml:"dependsOn,omitempty"`
+	DbEngine      string               `yaml:"dbEngine,omitempty"`
 	Buildpack     string               `yaml:"buildpack,omitempty"`
 	AppPath       string               `yaml:"appPath,omitempty"`
 	Entrypoint    string               `yaml:"entrypoint,omitempty"`
@@ -394,6 +395,7 @@ func assembleComponent(name, designMd string, files map[string]string) (models.D
 		ComponentType:              cfm.Type,
 		Language:                   cfm.Language,
 		DependsOn:                  dependsOn,
+		DbEngine:                   cfm.DbEngine,
 		Entrypoint:                 cfm.Entrypoint,
 		Buildpack:                  cfm.Buildpack,
 		AppPath:                    cfm.AppPath,
@@ -453,6 +455,7 @@ func SplitDesign(d *DesignFile) (map[string]string, error) {
 			Type:       comp.ComponentType,
 			Language:   comp.Language,
 			DependsOn:  comp.DependsOn,
+			DbEngine:   comp.DbEngine,
 			Buildpack:  comp.Buildpack,
 			AppPath:    comp.AppPath,
 			Entrypoint: comp.Entrypoint,

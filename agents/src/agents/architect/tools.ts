@@ -238,6 +238,39 @@ export function buildTools(
         }),
     }),
 
+    set_db_engine: tool({
+      description:
+        "Set the database engine for a 'database' component. Must be called after add_component for a database component.",
+      inputSchema: z.object({
+        name: z.string().describe("Name of the database component"),
+        engine: z
+          .enum(["mysql", "mongodb"])
+          .describe(
+            "Database engine: 'mysql' for relational/transactional workloads, 'mongodb' for document/flexible-schema workloads",
+          ),
+      }),
+      execute: async ({ name, engine }) =>
+        guard(() => {
+          if (!doc.hasComponent(name)) {
+            return { error: "not-found" };
+          }
+          const entry = doc.getComponent(name);
+          if (entry.slim.componentType !== "database") {
+            return {
+              error: "not-a-database",
+              message: `${name} is not a database component`,
+            };
+          }
+          doc.setDbEngine(name, engine);
+          sse.send("component-updated", {
+            name,
+            patch: { dbEngine: engine },
+            openapiInvalidated: false,
+          });
+          return { ok: true };
+        }),
+    }),
+
     set_openapi: tool({
       description:
         "Set the OpenAPI 3.0.3 YAML for a 'service' component. Rejected with {error:'not-applicable'} for 'web-app' components — frontends have no wire contract. If the new spec is semantically equal to the current one, returns {changed: false} and emits no SSE event — do not retry in that case.",
@@ -256,6 +289,13 @@ export function buildTools(
               error: "not-applicable",
               message:
                 "web-app components do not get an OpenAPI spec — describe screens / flows / which services they call in componentAgentInstructions instead.",
+            };
+          }
+          if (entry.slim.componentType === "database") {
+            return {
+              error: "not-applicable",
+              message:
+                "database components do not get an OpenAPI spec — they have no HTTP contract.",
             };
           }
           const result = doc.setOpenApi(name, contents);

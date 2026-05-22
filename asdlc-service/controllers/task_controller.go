@@ -35,6 +35,16 @@ type TaskController interface {
 	VerificationFailed(w http.ResponseWriter, r *http.Request)
 	Retry(w http.ResponseWriter, r *http.Request)
 
+	// Database provisioning callbacks — called by the agent with its
+	// per-task JWT. Same auth pattern as VerificationFailed.
+	DbTesting(w http.ResponseWriter, r *http.Request)
+	DbDeployed(w http.ResponseWriter, r *http.Request)
+	DbFailed(w http.ResponseWriter, r *http.Request)
+
+	// ListDatabaseArtifacts returns provisioned database metadata + health status
+	// for all database component tasks in the project.
+	ListDatabaseArtifacts(w http.ResponseWriter, r *http.Request)
+
 	// Progress endpoints — task-execution-progress.md §5.2.
 	GetTaskAgentProgress(w http.ResponseWriter, r *http.Request)
 	GetTaskBuildProgress(w http.ResponseWriter, r *http.Request)
@@ -436,4 +446,120 @@ func (c *taskController) ExecTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteSuccessResponse(w, http.StatusOK, map[string]string{"status": "task execution started"})
+}
+
+func (c *taskController) ListDatabaseArtifacts(w http.ResponseWriter, r *http.Request) {
+	org := r.PathValue("orgHandle")
+	project := r.PathValue("projectName")
+	if !requireOrgHandle(w, org) || !requireProjectName(w, project) {
+		return
+	}
+
+	items, err := c.service.ListDatabaseArtifacts(r.Context(), org, project)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "list database artifacts failed", "error", err, "org", org, "project", project)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to list database artifacts")
+		return
+	}
+	if items == nil {
+		items = []services.DatabaseArtifactItem{}
+	}
+
+	type response struct {
+		Databases []services.DatabaseArtifactItem `json:"databases"`
+	}
+	utils.WriteSuccessResponse(w, http.StatusOK, response{Databases: items})
+}
+
+// verifyTaskBearer is a shared helper that extracts and verifies the per-task
+// bearer JWT, returning the task ID claim on success or writing an error
+// response and returning "" on failure.
+func (c *taskController) verifyTaskBearer(w http.ResponseWriter, r *http.Request, taskID string) string {
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "bearer token required")
+		return ""
+	}
+	claims, err := c.taskTokens.Verify(authz[len(prefix):])
+	if err != nil {
+		slog.WarnContext(r.Context(), "db callback: invalid bearer", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid task bearer")
+		return ""
+	}
+	if claims.TaskID != taskID {
+		slog.WarnContext(r.Context(), "db callback: bearer subject mismatch",
+			"task", taskID, "claimTaskId", claims.TaskID)
+		utils.WriteErrorResponse(w, http.StatusForbidden, "task bearer does not match path")
+		return ""
+	}
+	return claims.TaskID
+}
+
+func (c *taskController) DbTesting(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.dispatchSvc == nil || c.taskTokens == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "db callbacks not configured")
+		return
+	}
+	if c.verifyTaskBearer(w, r, taskID) == "" {
+		return
+	}
+	if err := c.dispatchSvc.MarkDbTesting(r.Context(), taskID); err != nil {
+		slog.ErrorContext(r.Context(), "db-testing: apply transition failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to apply db_testing")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusAccepted, map[string]string{"status": "testing"})
+}
+
+func (c *taskController) DbDeployed(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.dispatchSvc == nil || c.taskTokens == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "db callbacks not configured")
+		return
+	}
+	if c.verifyTaskBearer(w, r, taskID) == "" {
+		return
+	}
+	if err := c.dispatchSvc.MarkDbDeployed(r.Context(), taskID); err != nil {
+		slog.ErrorContext(r.Context(), "db-deployed: apply transition failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to apply db_deployed")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusAccepted, map[string]string{"status": "deployed"})
+}
+
+type dbFailedRequest struct {
+	Diagnostic string `json:"diagnostic"`
+}
+
+func (c *taskController) DbFailed(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.dispatchSvc == nil || c.taskTokens == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "db callbacks not configured")
+		return
+	}
+	if c.verifyTaskBearer(w, r, taskID) == "" {
+		return
+	}
+	var req dbFailedRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	if err := c.dispatchSvc.MarkDbFailed(r.Context(), taskID, req.Diagnostic); err != nil {
+		slog.ErrorContext(r.Context(), "db-failed: apply transition failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to apply db_failed")
+		return
+	}
+	utils.WriteSuccessResponse(w, http.StatusAccepted, map[string]string{"status": "failed"})
 }

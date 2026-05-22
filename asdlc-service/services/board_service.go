@@ -161,6 +161,9 @@ func (s *boardService) GetBoard(ctx context.Context, orgID, projectID string) (*
 		case string(models.TaskStatusOnHold):
 			board.OnHold = append(board.OnHold, task)
 			continue
+		case string(models.TaskStatusDeployed):
+			board.Done = append(board.Done, task)
+			continue
 		case string(models.TaskStatusFailed),
 			string(models.TaskStatusRejected),
 			string(models.TaskStatusAbandoned),

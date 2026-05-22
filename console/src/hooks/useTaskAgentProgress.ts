@@ -20,7 +20,7 @@ export function useTaskAgentProgress(
     && taskStatus !== undefined
     && taskStatus !== 'pending'
     && taskStatus !== 'on_hold';
-  const isLive = taskStatus === 'in_progress';
+  const isLive = taskStatus === 'in_progress' || taskStatus === 'testing';
 
   const { lines, phase, final, isLoading, error } = useCursorPolling({
     queryKey: ['taskAgentProgress', orgId, projectId, taskId],

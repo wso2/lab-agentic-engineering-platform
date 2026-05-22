@@ -13,13 +13,28 @@ const STAGES: { key: TaskStatus | 'dispatched'; label: string }[] = [
   { key: 'deployed',         label: 'Deployed' },
 ];
 
+// Database provisioning pipeline — replaces the coding-agent pipeline for
+// componentType === 'database' tasks.
+const DB_STAGES: { key: TaskStatus | 'dispatched'; label: string }[] = [
+  { key: 'dispatched',  label: 'Provisioning' },
+  { key: 'in_progress', label: 'Creating' },
+  { key: 'testing',     label: 'Testing' },
+  { key: 'deployed',    label: 'Ready' },
+];
+
 const FAILURE_STATUSES: TaskStatus[] = ['rejected', 'failed', 'abandoned'];
 // Terminal success statuses: all stages should render as done (green, no pulse).
 const TERMINAL_SUCCESS_STATUSES: TaskStatus[] = ['deployed'];
 
-function stageIndex(status: TaskStatus | undefined): number {
+function stageIndex(status: TaskStatus | undefined, isDatabase?: boolean): number {
   if (!status) return 0;
   if (status === 'pending' || status === 'on_hold') return 0;
+  if (isDatabase) {
+    if (status === 'in_progress') return 1;
+    if (status === 'testing') return 2;
+    if (status === 'deployed') return 3;
+    return -1;
+  }
   if (status === 'in_progress') return 1;
   if (status === 'ready_for_review') return 2;
   if (status === 'merged') return 3;
@@ -29,15 +44,17 @@ function stageIndex(status: TaskStatus | undefined): number {
   return -1;
 }
 
-export function TaskPipelineStrip({ status }: { status: TaskStatus | undefined }) {
+export function TaskPipelineStrip({ status, componentType }: { status: TaskStatus | undefined; componentType?: string }) {
   const theme = useTheme();
+  const isDatabase = componentType === 'database';
+  const stages = isDatabase ? DB_STAGES : STAGES;
   const failed = status && FAILURE_STATUSES.includes(status);
   const allDone = status !== undefined && TERMINAL_SUCCESS_STATUSES.includes(status);
-  const idx = stageIndex(status);
+  const idx = stageIndex(status, isDatabase);
 
   return (
     <Stack direction="row" spacing={0.75} alignItems="center" sx={{ py: 1 }}>
-      {STAGES.map((stage, i) => {
+      {stages.map((stage, i) => {
         const isCurrent = !allDone && i === idx;
         const isDone = allDone || i < idx;
         const tone = failed

@@ -123,13 +123,22 @@ later comment resolves the same component, use the most recent.
 
 1. `gh issue view <url> --comments` — comments print after the body,
    oldest-first.
-2. Scan all comments whose heading is `## Dependency endpoint resolved`.
-3. For each upstream component name, keep the URL from the **most recent
+2. Scan all comments for two heading types:
+   - `## Dependency endpoint resolved` — upstream HTTP service URL.
+   - `## Database credentials resolved` — upstream database is ready. Use the
+     `org_id`, `project_id`, and `component` values listed in the comment body
+     to call `mcp__database-service__lookup_database(org_id, project_id, component)`
+     at implementation time. Write the returned host, port, username, password,
+     and dbName into your component's env/config (e.g. `.env`, a config file, or
+     the framework's idiomatic build-time constant mechanism). Do **not** copy
+     the raw credential values as hardcoded literals in source code.
+3. For each upstream component name, keep the values from the **most recent
    matching comment** — if the upstream redeployed, an earlier comment
-   may carry a stale URL. The freshest comment always wins.
+   may carry stale values. The freshest comment always wins.
 
-If the issue has no `## Dependency endpoint resolved` comments at all,
-this task has no dependencies — skip this section.
+If the issue has no `## Dependency endpoint resolved` or
+`## Database credentials resolved` comments, this task has no dependencies —
+skip this section.
 
 Treat each resolved URL as **authoritative** and bake it into your
 component as a **build-time constant**. Do not use any runtime injection
@@ -941,3 +950,54 @@ and every query must filter on it.
 | Issue has no `## Dependency endpoint resolved` comment for an upstream you need | Upstream's `workload.yaml` lacks `visibility: external` (the platform won't post a comment for an upstream with no external URL) | Add `external` to the upstream component's visibility list and re-deploy; the platform re-posts the comment when the upstream lands `deployed` again |
 | Endpoint URL injected by OC but bundle still uses old value | Vite bakes env vars at build time; pod env has no effect | Update `.env`, push, rebuild — runtime injection is not supported for SPA bundles |
 | `workload.yaml` was modified to add `dependencies.endpoints` | Following stale docs | Remove the block. v1 uses build-time constants only. OC's `dependencies.endpoints.visibility` enum is `{project, namespace}` only, so envBindings cannot inject an externally-reachable URL into the bundle anyway. |
+
+---
+
+## Database provisioning tasks
+
+When the component's `design.md` frontmatter has `componentType: database`, this is a
+**database provisioning task** — NOT a coding task. Do NOT write application code.
+
+The environment variable `ASDLC_DATABASE_SERVICE_URL` holds the base URL of the
+database-service MCP endpoint. The MCP is available under the `database-service` server name.
+
+### Workflow
+
+1. **Call `create_database`** via the `mcp__database-service__create_database` tool:
+   - `reference_id`: the task ID from `ASDLC_TASK_ID`
+   - `org_id` and `project_id`: from `ASDLC_ORG_ID` and `ASDLC_PROJECT_ID` env vars
+   - `db_type`: read from `.asdlc/design.json` at `components[name=<componentName>].dbEngine` (`mysql` or `mongodb`)
+   - `component_name`: the component name from `ASDLC_COMPONENT_NAME` (e.g. `expense-db`)
+
+2. **POST db-testing callback** to signal testing has begun:
+   ```bash
+   curl -s -X POST "${ASDLC_PLATFORM_URL}/api/v1/tasks/${ASDLC_TASK_ID}/db-testing" \
+     -H "Authorization: Bearer $(cat $ASDLC_BEARER_FILE)" \
+     -H "Content-Type: application/json" -d '{}'
+   ```
+
+3. **Call `test_connection`** via the `mcp__database-service__test_connection` tool with the
+   `reference_id` from step 1. The tool retries internally — call it exactly once and use the
+   result: `"healthy"` means success; any error means the connection failed definitively.
+
+4. **POST db-deployed callback** when the connection test passes:
+   ```bash
+   curl -s -X POST "${ASDLC_PLATFORM_URL}/api/v1/tasks/${ASDLC_TASK_ID}/db-deployed" \
+     -H "Authorization: Bearer $(cat $ASDLC_BEARER_FILE)" \
+     -H "Content-Type: application/json" -d '{}'
+   ```
+
+   On failure, POST db-failed instead:
+   ```bash
+   curl -s -X POST "${ASDLC_PLATFORM_URL}/api/v1/tasks/${ASDLC_TASK_ID}/db-failed" \
+     -H "Authorization: Bearer $(cat $ASDLC_BEARER_FILE)" \
+     -H "Content-Type: application/json" \
+     -d '{"diagnostic": "<error message>"}'
+   ```
+
+### Credentials at implementation time
+
+Services that depend on this database retrieve credentials by calling
+`mcp__database-service__lookup_database(org_id, project_id, component)`. They MUST NOT hardcode
+credentials — the lookup returns host, port, username, password, and dbName so the coding
+agent can bake them into the service's env/config.

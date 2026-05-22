@@ -66,6 +66,14 @@ spec:
             # the dispatch pre-flight (ApplyAnthropicWPSecret).
             # See docs/design/anthropic-key-dual-token.md §5.
             secretRef: { type: string }
+        databaseService:
+          type: object
+          properties:
+            # URL of the database-service MCP endpoint. Set only for
+            # database component tasks; empty for coding tasks.
+            url:
+              type: string
+              default: ""
   runTemplate:
     apiVersion: argoproj.io/v1alpha1
     kind: Workflow
@@ -111,6 +119,8 @@ spec:
           # pre-flight (no per-WorkflowRun ESO sync).
           - name: anthropic-secret-ref
             value: ${parameters.anthropic.secretRef}
+          - name: database-service-url
+            value: ${parameters.databaseService.url}
       entrypoint: run-agent
       templates:
         - name: run-agent
@@ -169,6 +179,8 @@ spec:
                 value: '{{workflow.parameters.platform-url}}'
               - name: ASDLC_CORRELATION_ID
                 value: '{{workflow.parameters.correlation-id}}'
+              - name: ASDLC_DATABASE_SERVICE_URL
+                value: '{{workflow.parameters.database-service-url}}'
               - name: WORKSPACE_BASE_PATH
                 value: /home/asdlc/asdlc-workspace
               - name: LOG_LEVEL

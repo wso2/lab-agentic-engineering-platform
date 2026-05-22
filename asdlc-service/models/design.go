@@ -7,11 +7,12 @@ type DesignComponent struct {
 	ComponentType              string         `json:"componentType"`
 	Language                   string         `json:"language"`
 	DependsOn                  []string       `json:"dependsOn"`
-	Entrypoint                 string         `json:"entrypoint"`
-	Buildpack                  string         `json:"buildpack"`
-	AppPath                    string         `json:"appPath"`
-	OpenAPISpec                string         `json:"openAPISpec"`
-	ComponentAgentInstructions string         `json:"componentAgentInstructions"`
+	DbEngine                   string         `json:"dbEngine,omitempty"`
+	Entrypoint                 string         `json:"entrypoint,omitempty"`
+	Buildpack                  string         `json:"buildpack,omitempty"`
+	AppPath                    string         `json:"appPath,omitempty"`
+	OpenAPISpec                string         `json:"openAPISpec,omitempty"`
+	ComponentAgentInstructions string         `json:"componentAgentInstructions,omitempty"`
 	Api                        *APISecurity   `json:"api,omitempty"`
 	Auth                       *ComponentAuth `json:"auth,omitempty"`
 	DependentApis              []DependentAPI `json:"dependentApis,omitempty"`

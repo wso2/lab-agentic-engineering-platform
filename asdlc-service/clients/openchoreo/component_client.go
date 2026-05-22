@@ -119,6 +119,9 @@ type CodingAgentParams struct {
 	// Empty means the runner won't call the BFF (the diagnostic still
 	// lands on the GitHub issue).
 	PlatformURL string
+	// DatabaseServiceURL is the base URL the runner pod uses to reach the
+	// database-service MCP endpoint.
+	DatabaseServiceURL string
 	// AnthropicSecretRef is the name of the per-org K8s Secret in
 	// workflows-<OrgName> carrying ANTHROPIC_API_KEY. Materialised by
 	// git-service in the dispatch pre-flight (see
@@ -1000,6 +1003,9 @@ func codingAgentParameters(p CodingAgentParams) map[string]interface{} {
 		},
 		"gitService": map[string]interface{}{
 			"url": p.GitServiceURL,
+		},
+		"databaseService": map[string]interface{}{
+			"url": p.DatabaseServiceURL,
 		},
 		"anthropic": map[string]interface{}{
 			"secretRef": p.AnthropicSecretRef,

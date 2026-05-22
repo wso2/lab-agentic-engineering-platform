@@ -49,6 +49,25 @@ type TaskService interface {
 	// design_service.SaveAndProceed after the design tag bump.
 	ReconcilePendingForDesignChange(ctx context.Context, orgID, projectID string) error
 	ExecTask(ctx context.Context, taskID string) error
+	// ListDatabaseArtifacts returns provisioned database metadata and health
+	// status for the artifacts panel on the Tasks page.
+	ListDatabaseArtifacts(ctx context.Context, orgID, projectID string) ([]DatabaseArtifactItem, error)
+}
+
+// DatabaseArtifactItem is the BFF's view of a database provisioned by the
+// database-service on behalf of a database component task.
+type DatabaseArtifactItem struct {
+	ID            string   `json:"id"`
+	ReferenceID   string   `json:"referenceId"`
+	Components    []string `json:"components"`
+	DBType        string   `json:"dbType,omitempty"`
+	RequestedName string   `json:"requestedName,omitempty"`
+	DBName        string   `json:"dbName,omitempty"`
+	Host          string   `json:"host,omitempty"`
+	Port          int      `json:"port,omitempty"`
+	Username      string   `json:"username,omitempty"`
+	Password      string   `json:"password,omitempty"`
+	Status        string   `json:"status"`
 }
 
 type taskService struct {
@@ -251,7 +270,9 @@ func topoSortComponents(components []models.DesignComponent) []models.DesignComp
 	}
 	return result
 }
-// ExecTask starts executing a task. For now, it just logs and doesn't perform any actions.
+// ExecTask is a no-op — database provisioning and coding-agent dispatch are
+// driven by DispatchService.DispatchTasks and the webhook/watcher pipeline.
+// The /exec endpoint is retained for backward compatibility.
 func (s *taskService) ExecTask(ctx context.Context, taskID string) error {
 	task, err := s.taskRepo.GetByID(ctx, taskID)
 	if err != nil {
@@ -260,51 +281,38 @@ func (s *taskService) ExecTask(ctx context.Context, taskID string) error {
 	if task == nil {
 		return ErrTaskNotFound
 	}
-
-	slog.InfoContext(ctx, "executing task",
-		"taskId", taskID,
-		"component", task.ComponentName,
-		"status", task.Status,
-		"title", task.Title)
-
-	if task.ExecType == "SYSTEM" {
-		slog.InfoContext(ctx, "Setting up environment for task execution",
-			"taskId", taskID, "title", task.Title)
-
-		if s.dbClient != nil {
-			// Provision database for the component
-			slog.InfoContext(ctx, "Provisioning database for component",
-				"taskId", taskID, "component", task.ComponentName)
-
-			dbCreds, err := s.dbClient.ProvisionDatabase(ctx, task.ProjectID)
-			if err != nil {
-				slog.ErrorContext(ctx, "failed to provision database",
-					"taskId", taskID, "component", task.ComponentName, "error", err)
-				return fmt.Errorf("provision database: %w", err)
-			}
-
-			slog.InfoContext(ctx, "Database provisioned successfully",
-				"taskId", taskID, "component", task.ComponentName,
-				"host", dbCreds.Host, "port", dbCreds.Port, "database", dbCreds.Database)
-
-			// Test the database connection
-			slog.InfoContext(ctx, "Testing database connection",
-				"taskId", taskID, "component", task.ComponentName)
-
-			if err := s.dbClient.TestConnection(ctx, dbCreds); err != nil {
-				slog.ErrorContext(ctx, "failed to test database connection",
-					"taskId", taskID, "component", task.ComponentName, "error", err)
-				return fmt.Errorf("test connection: %w", err)
-			}
-
-			slog.InfoContext(ctx, "Database connection test passed",
-				"taskId", taskID, "component", task.ComponentName)
-		} else {
-			slog.WarnContext(ctx, "Database client not configured, skipping database provisioning",
-				"taskId", taskID, "component", task.ComponentName)
-		}
-	}
+	slog.InfoContext(ctx, "exec_task called (no-op)",
+		"taskId", taskID, "component", task.ComponentName)
 	return nil
+}
+
+// ListDatabaseArtifacts returns provisioned database metadata for the
+// artifacts panel on the Tasks page.
+func (s *taskService) ListDatabaseArtifacts(ctx context.Context, orgID, projectID string) ([]DatabaseArtifactItem, error) {
+	if s.dbClient == nil {
+		return []DatabaseArtifactItem{}, nil
+	}
+	infos, err := s.dbClient.ListByProject(ctx, orgID, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list databases: %w", err)
+	}
+	items := make([]DatabaseArtifactItem, 0, len(infos))
+	for _, info := range infos {
+		items = append(items, DatabaseArtifactItem{
+			ID:            info.ID,
+			ReferenceID:   info.ReferenceID,
+			Components:    info.Components,
+			DBType:        info.DBType,
+			RequestedName: info.RequestedName,
+			DBName:        info.DBName,
+			Host:          info.Host,
+			Port:          info.Port,
+			Username:      info.Username,
+			Password:      info.Password,
+			Status:        info.Status,
+		})
+	}
+	return items, nil
 }
 
 // ensureIssueForTask creates a GitHub issue for a task if one has not already

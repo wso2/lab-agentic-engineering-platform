@@ -107,6 +107,28 @@ func NewTaskTokenManager(cfg TaskTokenConfig) (*TaskTokenManager, error) {
 	}, nil
 }
 
+// IssueServiceToken mints a long-lived service JWT for BFF → platform-service
+// calls (e.g. database-service registry endpoints). Uses the same signing key
+// and audience as task tokens so no additional JWKS endpoint is needed.
+func (m *TaskTokenManager) IssueServiceToken() (string, error) {
+	now := time.Now()
+	claims := jwt.RegisteredClaims{
+		Issuer:    m.issuer,
+		Subject:   m.issuer, // "asdlc-bff" identifies itself as caller
+		Audience:  jwt.ClaimStrings{m.audience},
+		IssuedAt:  jwt.NewNumericDate(now),
+		NotBefore: jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(365 * 24 * time.Hour)),
+	}
+	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = m.keyID
+	signed, err := tok.SignedString(m.privateKey)
+	if err != nil {
+		return "", fmt.Errorf("sign service token: %w", err)
+	}
+	return signed, nil
+}
+
 // Issue mints a Task JWT for the given task. The kid header lets verifiers
 // pick the right public key during rotation.
 func (m *TaskTokenManager) Issue(taskID, ocOrgID, projectID string) (string, error) {

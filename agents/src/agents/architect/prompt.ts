@@ -47,6 +47,18 @@ Call finalize() to end the session. If finalize returns validation issues, addre
       * The web-app's \`componentAgentInstructions\` MUST say: "OIDC Authorization Code + PKCE against the platform IDP. Bake the FOUR \`VITE_OIDC_*\` values from \`## OIDC client provisioned\` + \`VITE_API_BASE_URL\` from \`## Dependency endpoint resolved\` into \`<app-path>/.env\` BEFORE \`npm run build\` (or the framework's equivalent prefix). Read them via \`import.meta.env.VITE_*\` and throw at module top-level on missing — no silent \`?? ''\` fallback. Token exchange MUST go through the same-origin proxy at relative path \`/oidc/token\` (the SPA's own nginx proxies it to Thunder's \`/oauth2/token\`). Use the \`internalProxyPass\` value from \`## OIDC client provisioned\` as the literal \`proxy_pass\` target in \`nginx/default.conf\` — it MUST be an in-cluster Service FQDN, NOT \`\${VITE_OIDC_ISSUER}/oauth2/\` (the public hostname doesn't resolve from pod DNS; nginx fails with 'host not found in upstream'). The authorize redirect uses absolute \`VITE_OIDC_ISSUER\` (top-level navigation — no CORS). Attach \`Authorization: Bearer <access_token>\` to every \`VITE_API_BASE_URL\` call. Redirect URI is \`window.location.origin + '/callback'\`. DO NOT use envsubst, \`/etc/nginx/templates/\`, \`/env-config.js\`, \`window.__ENV__\`, or \`workload.yaml\` \`configurations.env\` — the OIDC pattern is build-time bake only, identical to the dependency-URL pattern. See the \`asdlc\` SKILL's OIDC-SPA section for the reference \`.env\`, \`nginx/default.conf\`, and \`src/auth.ts\`." NEVER write a \`/login\` form that POSTs credentials to the API.
   - For username/password specs that explicitly forbid an external IDP (rare — only when the spec literally says "self-contained, no platform IDP, embedded credentials"), fall back to folding \`/auth/login\` into the API service. This is the legacy path; default to OIDC.
   - **Do NOT introduce a separate storage / database / persistence component.** Persistence belongs inside the component that owns the data, using an embedded SQLite database stored on the component's local filesystem. Call this out in that component's componentAgentInstructions (which file/table, what it stores). Do not add a "db" or "storage-service" component.
+
+# Rules for database components
+  - When a service needs persistent storage, add a componentType "database" component alongside it.
+  - Naming convention: <service-name>-db (e.g. order-service → order-service-db).
+  - Call add_component with componentType "database" and no entrypoint, buildpack, appPath, or componentAgentInstructions.
+  - Immediately after add_component, call set_db_engine to set the engine:
+      - "mysql" for relational/transactional workloads (structured data, joins, ACID).
+      - "mongodb" for document/flexible-schema workloads (unstructured or varying schemas, high write throughput).
+  - The service that uses the database declares it in dependsOn (e.g. order-service dependsOn order-service-db).
+  - Do NOT call set_openapi for database components — they have no HTTP contract.
+  - Database components need NO language, buildpack, appPath, entrypoint, or componentAgentInstructions. Omit those fields when calling add_component.
+
   - **No scheduled-task / cronjob components.** If the spec calls for periodic / cron / batch work, fold it into the owning service (e.g. a background goroutine kicked off at startup, or an HTTP endpoint that a future scheduler can poke). Call this out in that service's componentAgentInstructions.
 
 # Dependent APIs (external upstreams — NOT siblings)

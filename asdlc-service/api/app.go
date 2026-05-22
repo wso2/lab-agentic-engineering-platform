@@ -117,8 +117,12 @@ func NewHandler(params AppParams) http.Handler {
 	// F3c — per-task verification-failed callback. Outside the Thunder JWT
 	// (the runner pod has no user identity); authenticated inside the
 	// handler with the per-task RS256 bearer the runner already holds.
+	// Database provisioning callbacks follow the same auth pattern.
 	if params.TaskController != nil {
 		mux.HandleFunc("POST /api/v1/tasks/{taskId}/verification-failed", params.TaskController.VerificationFailed)
+		mux.HandleFunc("POST /api/v1/tasks/{taskId}/db-testing",          params.TaskController.DbTesting)
+		mux.HandleFunc("POST /api/v1/tasks/{taskId}/db-deployed",         params.TaskController.DbDeployed)
+		mux.HandleFunc("POST /api/v1/tasks/{taskId}/db-failed",           params.TaskController.DbFailed)
 	}
 
 	// App-mode connect callback — outside JWT. The signed connect-state JWT

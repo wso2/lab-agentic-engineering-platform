@@ -361,7 +361,8 @@ func pickStepTs(step models.WorkflowRunTask) string {
 }
 
 func isAgentActive(task *models.ComponentTask) bool {
-	return task.Status == string(models.TaskStatusInProgress)
+	return task.Status == string(models.TaskStatusInProgress) ||
+		task.Status == string(models.TaskStatusTesting)
 }
 
 func isBuildActive(task *models.ComponentTask) bool {

@@ -439,6 +439,7 @@ func (s *taskService) persistAndIssue(
 			ProjectID:           projectID,
 			OrgID:               orgID,
 			ComponentName:       p.ComponentName,
+			ComponentType:       comp.ComponentType,
 			Title:               p.Title,
 			Rationale:           p.Rationale,
 			DependsOnComponents: models.StringSlice(deps),
@@ -503,6 +504,34 @@ func (s *taskService) persistAndIssue(
 		}()
 	}
 	wg.Wait()
+
+	// T4b: Pre-register database components with the database-service so
+	// the MCP tool has a record to update when the agent calls create_database.
+	// Best-effort: a failure here does not abort the stream — the database task
+	// will still surface in the UI, the agent will just get a 404 from the
+	// database-service when it tries to provision.
+	if s.dbClient != nil {
+		for i := range rows {
+			row := &rows[i]
+			comp := byName[strings.ToLower(row.Task.ComponentName)]
+			if comp.ComponentType != "database" {
+				continue
+			}
+			if err := s.dbClient.RegisterDatabase(
+				ctx,
+				orgID,
+				projectID,
+				row.Task.ID,
+				row.Task.ComponentName,
+				comp.DbEngine,
+				comp.Name,
+			); err != nil {
+				slog.WarnContext(ctx, "pre-register database failed",
+					"task", row.Task.ID, "component", row.Task.ComponentName, "error", err)
+			}
+		}
+	}
+
 	return rows, nil
 }
 
@@ -804,6 +833,7 @@ func buildPlanRequest(
 			ComponentType: c.ComponentType,
 			Language:      c.Language,
 			DependsOn:     dep,
+			DbEngine:      c.DbEngine,
 		}
 	}
 
@@ -897,6 +927,7 @@ func buildDetailRequest(
 				ComponentType: dep.ComponentType,
 				Language:      dep.Language,
 				DependsOn:     depDeps,
+				DbEngine:      dep.DbEngine,
 			})
 		}
 

@@ -11,8 +11,18 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PLUGIN_PATH = path.resolve(__dirname, "../../plugin");
 
 // Phase 0 allowed-tools: git, gh, build/test/lint via Bash; standard file
-// tools. MCP is retired.
-const ALLOWED_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"];
+// tools. Database-service MCP tools are added whenever
+// ASDLC_DATABASE_SERVICE_URL is set — for both database provisioning tasks
+// (create_database, test_connection) and implementation tasks whose component
+// depends on a database (lookup_database to retrieve credentials at
+// implementation time).
+const BASE_TOOLS = ["Read", "Write", "Edit", "Bash", "Glob", "Grep"];
+const DB_MCP_TOOLS = [
+  "mcp__database-service__get_pending_database",
+  "mcp__database-service__create_database",
+  "mcp__database-service__lookup_database",
+  "mcp__database-service__test_connection",
+];
 
 export interface RunResult {
   exitCode: number;
@@ -38,6 +48,8 @@ export function runClaudeQuery(
   // The bearer rides through a file (ASDLC_BEARER_FILE) so the agent's
   // SDK transcripts can't leak it; the curl snippet reads the file at
   // call time.
+  const databaseServiceUrl = req.databaseServiceUrl ?? process.env.ASDLC_DATABASE_SERVICE_URL ?? "";
+
   const childEnv: Record<string, string> = {
     ...(process.env as Record<string, string>),
     PATH: `${layout.asdlcDir}:${process.env.PATH ?? ""}`,
@@ -47,7 +59,21 @@ export function runClaudeQuery(
     ASDLC_PLATFORM_URL: process.env.ASDLC_PLATFORM_URL ?? "",
     ASDLC_GIT_SERVICE_URL: req.gitServiceUrl,
     ASDLC_CORRELATION_ID: req.correlationId ?? "",
+    ASDLC_ORG_ID: req.orgId ?? "",
+    ASDLC_PROJECT_ID: req.projectId ?? "",
+    ASDLC_COMPONENT_NAME: req.componentName ?? "",
+    ASDLC_DATABASE_SERVICE_URL: databaseServiceUrl,
   };
+
+  // Database-service MCP tools are added whenever ASDLC_DATABASE_SERVICE_URL
+  // is set — for both database provisioning tasks and coding tasks that depend
+  // on a database (lookup_database retrieves credentials at implementation time).
+  const mcpServers: Record<string, { type: "http"; url: string; headers?: Record<string, string> }> | undefined = databaseServiceUrl
+    ? { "database-service": { type: "http", url: `${databaseServiceUrl}/mcp`, headers: { Authorization: `Bearer ${req.bearer}` } } }
+    : undefined;
+  const allowedTools = databaseServiceUrl
+    ? [...BASE_TOOLS, ...DB_MCP_TOOLS]
+    : BASE_TOOLS;
 
   // SDK v0.2.126 auto-discovers the bundled native binary — no
   // pathToClaudeCodeExecutable needed. settingSources: [] ensures no
@@ -57,7 +83,8 @@ export function runClaudeQuery(
     options: {
       cwd: layout.workspace,
       plugins: [{ type: "local", path: PLUGIN_PATH }],
-      allowedTools: ALLOWED_TOOLS,
+      allowedTools,
+      mcpServers,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,
       persistSession: false,

@@ -111,6 +111,13 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Phase 6 DB tasks — adds `component_type` column to component_tasks so
+	// database-type tasks can be distinguished from service/web-app tasks.
+	if err := migrations.RunPhase6DbTasks(db); err != nil {
+		slog.Error("phase6_db_tasks migration failed", "error", err)
+		os.Exit(1)
+	}
+
 	// Repositories — only task and config remain
 	taskRepo := repositories.NewTaskRepository(db)
 	configRepo := repositories.NewConfigRepository(db)
@@ -194,11 +201,12 @@ func main() {
 		slog.Info("Git service", "baseURL", cfg.GitService.BaseURL)
 	}
 
-	// Database service client (optional — disabled when DATABASE_SERVICE_BASE_URL not set)
+	// Database service client — instantiated after taskTokens so we can attach
+	// a service-level bearer. See below, after the task token manager block.
 	var dbClient dbclient.Client
-	if cfg.DatabaseService.BaseURL != "" {
-		dbClient = dbclient.NewClient(cfg.DatabaseService.BaseURL)
-		slog.Info("Database service", "baseURL", cfg.DatabaseService.BaseURL)
+	dbServiceURL := cfg.DatabaseService.BaseURL
+	if dbServiceURL == "" {
+		dbServiceURL = cfg.AgentDatabaseServiceURL
 	}
 
 	// Artifact store — PR 2 of repo-storage-ownership: HTTP-backed via
@@ -318,6 +326,21 @@ func main() {
 		slog.Warn("BFF_TASK_SIGNING_KEY not set — task dispatch will fail")
 	}
 
+	// Finish database-service client construction now that taskTokens is available.
+	if dbServiceURL != "" {
+		var svcBearer string
+		if taskTokens != nil {
+			var err error
+			svcBearer, err = taskTokens.IssueServiceToken()
+			if err != nil {
+				slog.Error("failed to issue database-service bearer", "error", err)
+				os.Exit(1)
+			}
+		}
+		dbClient = dbclient.NewClient(dbServiceURL, svcBearer)
+		slog.Info("Database service", "baseURL", dbServiceURL)
+	}
+
 	// Token injector for OC API calls from inside dispatch, webhook handlers,
 	// and the build watcher. Uses the same service auth as the rest of the BFF.
 	tokenInject := func(ctx context.Context) context.Context {
@@ -370,7 +393,7 @@ func main() {
 	if agentGitServiceURL == "" {
 		agentGitServiceURL = cfg.GitService.BaseURL
 	}
-	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, agentGitServiceURL, cfg.AgentPlatformURL)
+	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, agentGitServiceURL, cfg.AgentPlatformURL, cfg.AgentDatabaseServiceURL, dbClient)
 	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
 		hook.SetTraitSync(traitSyncService)
 	}
@@ -406,7 +429,7 @@ func main() {
 			slog.Info("Thunder admin client wired into dispatch (auto-register webapp redirect URIs on deploy)")
 		}
 	}
-	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
+	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL, "agentDatabaseServiceURL", cfg.AgentDatabaseServiceURL)
 
 	// F1 — wire the post-deploy dispatch cascade. The projector fires
 	// OnTaskDeployed whenever ApplyBuildResult lands a task in `deployed`;

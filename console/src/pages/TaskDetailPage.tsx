@@ -26,6 +26,7 @@ const STATUS_TONE: Record<TaskStatus, 'default' | 'primary' | 'success' | 'error
   pending: 'default',
   on_hold: 'default',
   in_progress: 'primary',
+  testing: 'primary',
   verification_failed: 'warning',
   ready_for_review: 'primary',
   merged: 'success',
@@ -60,6 +61,7 @@ function emptyMessageFor(status: TaskStatus | undefined, dispatchedAt: string | 
     }
     return 'Agent has started. Streaming activity will appear here as the agent works…';
   }
+  if (status === 'testing') return 'Database provisioned. Running connection tests…';
   if (status === 'building') return 'Build dispatched. Waiting for build steps…';
   return 'No activity recorded for this task.';
 }
@@ -144,7 +146,7 @@ export default function TaskDetailPage() {
 
         <Card variant="outlined">
           <CardContent>
-            <TaskPipelineStrip status={taskStatus} />
+            <TaskPipelineStrip status={taskStatus} componentType={task.componentType} />
           </CardContent>
         </Card>
 
@@ -152,7 +154,7 @@ export default function TaskDetailPage() {
           <CardContent>
             <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 0.5 }}>
               <Typography variant="overline" sx={{ color: 'text.disabled' }}>Activity</Typography>
-              {taskStatus === 'in_progress' && agent.lines.length > 0 && !agent.final && (
+              {(taskStatus === 'in_progress' || taskStatus === 'testing') && agent.lines.length > 0 && !agent.final && (
                 <Box sx={{
                   width: 6, height: 6, borderRadius: '50%',
                   bgcolor: 'success.main',
@@ -163,7 +165,7 @@ export default function TaskDetailPage() {
                   },
                 }} />
               )}
-              {taskStatus === 'in_progress' && agent.lines.length > 0 && (
+              {(taskStatus === 'in_progress' || taskStatus === 'testing') && agent.lines.length > 0 && (
                 <Typography variant="caption" color="text.disabled">
                   · live
                 </Typography>

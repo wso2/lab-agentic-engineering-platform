@@ -104,6 +104,10 @@ function validatePerComponent(doc: DesignDoc, issues: ValidationIssue[]): void {
   for (const [name, entry] of doc.components) {
     const slim = entry.slim;
 
+    // Database components have no entrypoint, buildpack, or appPath — skip
+    // all checks that don't apply to them.
+    if (slim.componentType === "database") continue;
+
     const expected = ENTRYPOINT_BY_TYPE[slim.componentType];
     if (expected && expected !== slim.entrypoint) {
       issues.push({
@@ -155,6 +159,9 @@ function validatePerComponent(doc: DesignDoc, issues: ValidationIssue[]): void {
 
 function validatePerOpenApi(doc: DesignDoc, issues: ValidationIssue[]): void {
   for (const [name, entry] of doc.components) {
+    // Database components have no OpenAPI spec — skip entirely.
+    if (entry.slim.componentType === "database") continue;
+
     if (entry.openapi === null) continue; // already flagged as missing-spec
 
     let parsed: unknown;

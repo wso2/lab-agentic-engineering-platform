@@ -112,6 +112,7 @@ type TechLeadSlimComponent struct {
 	ComponentType string   `json:"componentType"`
 	Language      string   `json:"language"`
 	DependsOn     []string `json:"dependsOn"`
+	DbEngine      string   `json:"dbEngine,omitempty"`
 }
 
 type TechLeadExistingTaskSummary struct {

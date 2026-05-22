@@ -27,6 +27,7 @@ import type {
   ProjectBoard,
   TaskStatusResponse,
   TaskProgressResponse,
+  DatabaseArtifact,
 } from './types';
 
 import { env } from '../../config/env';
@@ -1283,6 +1284,15 @@ export const restApi = {
     return fetchJSON<TaskProgressResponse>(
       `${projectPrefix(orgHandle, projectId)}/tasks/${taskId}/progress/build?${q.toString()}`,
     );
+  },
+
+  // -- Database Artifacts -------------------------------------------------------
+
+  async listDatabaseArtifacts(orgHandle: string, projectId: string): Promise<DatabaseArtifact[]> {
+    const data = await fetchJSON<{ databases: DatabaseArtifact[] }>(
+      `${projectPrefix(orgHandle, projectId)}/databases`,
+    );
+    return data.databases ?? [];
   },
 
   // -- Component Configs (Environment Variables) --------------------------------

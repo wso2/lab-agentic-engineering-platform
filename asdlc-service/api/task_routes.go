@@ -31,4 +31,5 @@ func registerTaskRoutes(mux *http.ServeMux, c controllers.TaskController) {
 		progressLimiter(http.HandlerFunc(c.GetTaskAgentProgress)))
 	mux.Handle("GET /api/v1/organizations/{orgHandle}/projects/{projectName}/tasks/{taskId}/progress/build",
 		progressLimiter(http.HandlerFunc(c.GetTaskBuildProgress)))
+	mux.HandleFunc("GET /api/v1/organizations/{orgHandle}/projects/{projectName}/databases", c.ListDatabaseArtifacts)
 }

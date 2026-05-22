@@ -213,6 +213,7 @@ type IssueInfo struct {
 	URL    string
 	State  string
 	Labels []string
+	NodeID string
 }
 
 // CreateOrgRepoRequest maps to the fields we send to POST /orgs/{org}/repos.
@@ -426,7 +427,7 @@ func (c *githubClient) CreateIssue(ctx context.Context, owner, repo string, cred
 		return &IssueResult{Number: created.Number, URL: created.HTMLURL, NodeID: created.NodeID}, nil
 	}
 
-	return nil, fmt.Errorf("github issue create failed (status %d): %s", resp.StatusCode, string(respBody))
+	return nil, &HTTPStatusError{StatusCode: resp.StatusCode, Body: string(respBody), URL: url}
 }
 
 func (c *githubClient) EnsureLabel(ctx context.Context, owner, repo string, cred credentials.Credential, name, color string) error {
@@ -583,6 +584,7 @@ func (c *githubClient) ListIssues(ctx context.Context, owner, repo string, cred 
 		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
 		State   string `json:"state"`
+		NodeID  string `json:"node_id"`
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
@@ -604,6 +606,7 @@ func (c *githubClient) ListIssues(ctx context.Context, owner, repo string, cred 
 			URL:    r.HTMLURL,
 			State:  r.State,
 			Labels: labelNames,
+			NodeID: r.NodeID,
 		})
 	}
 	return issues, nil

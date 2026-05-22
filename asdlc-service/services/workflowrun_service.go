@@ -65,6 +65,9 @@ type CodingAgentTrigger struct {
 	// verification-failed callback. Empty disables that callback (the
 	// runner posts the diagnostic on the GitHub issue regardless).
 	PlatformURL string
+	// DatabaseServiceURL is the base URL the runner pod uses to reach the
+	// database-service MCP endpoint.
+	DatabaseServiceURL string
 	// AnthropicSecretRef is the name of the K8s Secret in workflows-<orgID>
 	// carrying the per-org Anthropic API key. Materialised by git-service
 	// in the dispatch pre-flight (see ApplyAnthropicWPSecret). The
@@ -259,6 +262,7 @@ func (s *workflowRunService) TriggerCodingAgent(ctx context.Context, p CodingAge
 		Bearer:             p.Bearer,
 		GitServiceURL:      p.GitServiceURL,
 		PlatformURL:        p.PlatformURL,
+		DatabaseServiceURL: p.DatabaseServiceURL,
 		AnthropicSecretRef: p.AnthropicSecretRef,
 	})
 	if err != nil {

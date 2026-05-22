@@ -39,9 +39,9 @@ export const SlimComponent = z.object({
     .string()
     .describe("Lowercase kebab-case component name, e.g. 'user-api'"),
   componentType: z
-    .enum(["service", "web-app"])
+    .enum(["service", "web-app", "database"])
     .describe(
-      "Component type: 'web-app' for frontends, 'service' for backend APIs.",
+      "Component type: 'web-app' for frontends, 'service' for backend APIs, 'database' for managed database instances.",
     ),
   language: z
     .string()
@@ -55,20 +55,27 @@ export const SlimComponent = z.object({
     ),
   entrypoint: z
     .enum(["deployment/service", "deployment/web-application"])
+    .optional()
     .describe(
-      "OpenChoreo component type: 'deployment/service' for backend APIs, 'deployment/web-application' for frontends/SPAs",
+      "OpenChoreo component type: 'deployment/service' for backend APIs, 'deployment/web-application' for frontends/SPAs. Omit for 'database' components.",
     ),
-  buildpack: z.literal("docker").describe("Build strategy"),
+  buildpack: z.literal("docker").optional().describe("Build strategy. Omit for 'database' components."),
   appPath: z
     .string()
+    .optional()
     .describe(
-      "Folder (directory) within the monorepo where this component's source code lives, relative to the repo root. This is NOT an HTTP route or API path — it is a filesystem path. Must NOT start with a leading slash. Examples: 'user-api', 'services/auth'. The coding agent will create files like '<appPath>/main.go', '<appPath>/Dockerfile', '<appPath>/workload.yaml'.",
+      "Folder (directory) within the monorepo where this component's source code lives, relative to the repo root. This is NOT an HTTP route or API path — it is a filesystem path. Must NOT start with a leading slash. Examples: 'user-api', 'services/auth'. The coding agent will create files like '<appPath>/main.go', '<appPath>/Dockerfile', '<appPath>/workload.yaml'. Omit for 'database' components.",
     ),
   componentAgentInstructions: z
     .string()
+    .optional()
     .describe(
-      "Detailed implementation instructions for the Generator agent",
+      "Detailed implementation instructions for the Generator agent. Omit for 'database' components.",
     ),
+  dbEngine: z
+    .enum(["mysql", "mongodb"])
+    .optional()
+    .describe("Database engine — required for componentType 'database'. Use 'mysql' for relational/transactional workloads, 'mongodb' for document/flexible-schema workloads."),
   api: z
     .object({
       security: z
@@ -113,7 +120,8 @@ export type SlimComponent = z.infer<typeof SlimComponent>;
 export const DesignComponent = SlimComponent.extend({
   openAPISpec: z
     .string()
-    .describe("Complete OpenAPI 3.0 YAML spec for this component"),
+    .optional()
+    .describe("Complete OpenAPI 3.0 YAML spec for this component. Empty string or omitted for 'database' components."),
 });
 
 export type DesignComponent = z.infer<typeof DesignComponent>;

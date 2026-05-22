@@ -58,7 +58,7 @@ func Load() (Config, error) {
 		},
 		TaskTokenSigningKey:    r.taskSigningKey(),
 		TaskTokenIssuer:        r.readOptionalString("BFF_TASK_TOKEN_ISSUER", "asdlc-bff"),
-		TaskTokenAudience:      r.readOptionalString("BFF_TASK_TOKEN_AUDIENCE", "git-service"),
+		TaskTokenAudience:      r.readOptionalString("BFF_TASK_TOKEN_AUDIENCE", "asdlc-platform-services"),
 		JWKSURL:                r.readOptionalString("JWKS_URL", ""),
 		JWTAllowedIssuer:       r.readOptionalString("JWT_ISSUER", ""),
 		JWTAllowedAudience:     r.readOptionalString("JWT_AUDIENCE", "asdlc-bff"),
@@ -73,8 +73,9 @@ func Load() (Config, error) {
 		AgentsService: AgentsServiceConfig{
 			BaseURL: r.readOptionalString("AGENTS_SERVICE_BASE_URL", ""),
 		},
-		AgentGitServiceURL: r.readOptionalString("AGENT_GIT_SERVICE_URL", ""),
-		AgentPlatformURL:   r.readOptionalString("AGENT_PLATFORM_URL", ""),
+		AgentGitServiceURL:      r.readOptionalString("AGENT_GIT_SERVICE_URL", ""),
+		AgentPlatformURL:        r.readOptionalString("AGENT_PLATFORM_URL", ""),
+		AgentDatabaseServiceURL: r.readOptionalString("AGENT_DATABASE_SERVICE_URL", ""),
 		ServiceAuth: ServiceAuthConfig{
 			TokenURL:     r.readOptionalString("SERVICE_AUTH_TOKEN_URL", ""),
 			ClientID:     r.readOptionalString("SERVICE_AUTH_CLIENT_ID", ""),

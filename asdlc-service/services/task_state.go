@@ -48,6 +48,10 @@ const (
 	// and the BFF re-dispatches with a fresh prompt + freshly minted
 	// per-task bearer (DispatchedAt + LastCodingAgentRunName cleared).
 	TaskEventRetry TaskEvent = "operator.retry"
+	// Database provisioning events.
+	TaskEventDbTesting  TaskEvent = "db.testing"
+	TaskEventDbDeployed TaskEvent = "db.deployed"
+	TaskEventDbFailed   TaskEvent = "db.failed"
 )
 
 // EventCause maps a TaskEvent to the value written into ComponentTask.Cause
@@ -80,6 +84,10 @@ func EventCause(event TaskEvent) string {
 		// in_progress) so this cause is recorded for audit but cleared
 		// when the next dispatch lands.
 		return "agent.verification_failed"
+	case TaskEventDbDeployed:
+		return "db.deployed"
+	case TaskEventDbFailed:
+		return "db.failed"
 	default:
 		return ""
 	}
@@ -146,6 +154,12 @@ var allowedTransitions = []stateTransition{
 	// created. The PR (if any) remains a draft — the agent will push
 	// new commits to the same branch.
 	{models.TaskStatusVerificationFailed, models.TaskStatusInProgress, TaskEventRetry},
+	// Database provisioning lifecycle transitions.
+	{models.TaskStatusInProgress, models.TaskStatusTesting, TaskEventDbTesting},
+	{models.TaskStatusTesting, models.TaskStatusDeployed, TaskEventDbDeployed},
+	{models.TaskStatusInProgress, models.TaskStatusFailed, TaskEventDbFailed},
+	{models.TaskStatusTesting, models.TaskStatusFailed, TaskEventDbFailed},
+	{models.TaskStatusTesting, models.TaskStatusFailed, TaskEventCodingAgentFailed},
 }
 
 // ErrInvalidTransition is returned by Apply when the current status doesn't

@@ -182,6 +182,7 @@ export type TaskStatus =
   | 'pending'
   | 'on_hold'
   | 'in_progress'
+  | 'testing'
   | 'verification_failed'
   | 'ready_for_review'
   | 'merged'
@@ -234,6 +235,10 @@ export interface ComponentTask {
 
   // Error tracking
   errorMessage?: string;
+
+  // Component type this task targets (e.g. 'service', 'web-app', 'database').
+  // Used by TaskPipelineStrip to render the correct pipeline variant.
+  componentType?: string;
 
   dispatchedAt?: string;
   createdAt: string;
@@ -344,6 +349,9 @@ export interface Task {
   // Component name this task targets — used by the Pending Deps column to
   // map this task back to the dep graph.
   componentName?: string;
+  // Component type this task targets (e.g. 'service', 'web-app', 'database').
+  // Used by TaskPipelineStrip to render the correct pipeline variant.
+  componentType?: string;
   // F4 — list of component names this task is waiting to be deployed.
   // The Pending Deps column renders "Waiting for: …" from this. Empty
   // for unblocked tasks.
@@ -403,4 +411,22 @@ export interface Deployment {
   endpointUrl: string;
   createdAt: string;
   status: string;
+}
+
+// -- Database Artifacts (provisioned databases for a project) ----------------
+
+export type DatabaseArtifactStatus = 'pending' | 'provisioning' | 'healthy' | 'faulty';
+
+export interface DatabaseArtifact {
+  id: string;
+  referenceId: string;
+  components: string[];
+  dbType?: string;
+  requestedName?: string;
+  dbName?: string;
+  host?: string;
+  port?: number;
+  username?: string;
+  password?: string;
+  status: DatabaseArtifactStatus;
 }
