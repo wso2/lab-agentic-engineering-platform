@@ -37,15 +37,23 @@ type Client interface {
 
 type client struct {
 	baseURL    string
+	bearer     string
 	httpClient *http.Client
 }
 
-func NewClient(baseURL string) Client {
+func NewClient(baseURL, bearer string) Client {
 	return &client{
 		baseURL: baseURL,
+		bearer:  bearer,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+	}
+}
+
+func (c *client) authorize(req *http.Request) {
+	if c.bearer != "" {
+		req.Header.Set("Authorization", "Bearer "+c.bearer)
 	}
 }
 
@@ -76,6 +84,7 @@ func (c *client) RegisterDatabase(ctx context.Context, orgID, projectID, referen
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -102,6 +111,7 @@ func (c *client) UpdateDatabaseStatus(ctx context.Context, referenceID, status s
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	c.authorize(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -129,6 +139,7 @@ func (c *client) ListByProject(ctx context.Context, orgID, projectID string) ([]
 	if err != nil {
 		return nil, fmt.Errorf("create request: %w", err)
 	}
+	c.authorize(req)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

@@ -124,6 +124,7 @@ function CredentialRow({ label, value, secret }: { label: string; value: string;
       setCopyError(false);
       setTimeout(() => setCopied(false), 1500);
     } else {
+      setCopied(false);
       setCopyError(true);
       setTimeout(() => setCopyError(false), 2000);
     }

@@ -68,8 +68,8 @@ export function runClaudeQuery(
   // Database-service MCP tools are added whenever ASDLC_DATABASE_SERVICE_URL
   // is set — for both database provisioning tasks and coding tasks that depend
   // on a database (lookup_database retrieves credentials at implementation time).
-  const mcpServers: Record<string, { type: "http"; url: string }> | undefined = databaseServiceUrl
-    ? { "database-service": { type: "http", url: `${databaseServiceUrl}/mcp` } }
+  const mcpServers: Record<string, { type: "http"; url: string; headers?: Record<string, string> }> | undefined = databaseServiceUrl
+    ? { "database-service": { type: "http", url: `${databaseServiceUrl}/mcp`, headers: { Authorization: `Bearer ${req.bearer}` } } }
     : undefined;
   const allowedTools = databaseServiceUrl
     ? [...BASE_TOOLS, ...DB_MCP_TOOLS]

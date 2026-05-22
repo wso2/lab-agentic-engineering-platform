@@ -964,10 +964,10 @@ database-service MCP endpoint. The MCP is available under the `database-service`
 ### Workflow
 
 1. **Call `create_database`** via the `mcp__database-service__create_database` tool:
-   - `db_type`: read from `.asdlc/design.json` at `components[name=<componentName>].dbEngine` (`mysql` or `mongodb`)
-   - `name`: the component name (e.g. `order-service-db`)
    - `reference_id`: the task ID from `ASDLC_TASK_ID`
    - `org_id` and `project_id`: from `ASDLC_ORG_ID` and `ASDLC_PROJECT_ID` env vars
+   - `db_type`: read from `.asdlc/design.json` at `components[name=<componentName>].dbEngine` (`mysql` or `mongodb`)
+   - `component_name`: the component name from `ASDLC_COMPONENT_NAME` (e.g. `expense-db`)
 
 2. **POST db-testing callback** to signal testing has begun:
    ```bash

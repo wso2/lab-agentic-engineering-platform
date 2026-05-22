@@ -115,7 +115,7 @@ func (s *Server) handleToolsList(w http.ResponseWriter, req rpcRequest) {
 		},
 		{
 			"name":        "create_database",
-			"description": "Provision the pre-registered database for this task. Looks up the pending record by reference_id, creates the database on the appropriate engine, stores credentials, and returns them.",
+			"description": "Provision the database for this task. Looks up the pre-registered record by reference_id; if none exists, auto-registers using the supplied db_type and component_name before provisioning.",
 			"inputSchema": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -130,6 +130,14 @@ func (s *Server) handleToolsList(w http.ResponseWriter, req rpcRequest) {
 					"project_id": map[string]any{
 						"type":        "string",
 						"description": "Project identifier (ASDLC_PROJECT_ID).",
+					},
+					"db_type": map[string]any{
+						"type":        "string",
+						"description": "Database engine: 'mysql' or 'mongodb'. Required when no pre-registered record exists.",
+					},
+					"component_name": map[string]any{
+						"type":        "string",
+						"description": "Component name for the database (ASDLC_COMPONENT_NAME). Used as the requested database name when auto-registering.",
 					},
 				},
 				"required": []string{"reference_id", "org_id", "project_id"},
@@ -238,9 +246,11 @@ func (s *Server) toolGetPendingDatabase(w http.ResponseWriter, ctx context.Conte
 
 func (s *Server) toolCreateDatabase(w http.ResponseWriter, ctx context.Context, id json.RawMessage, args json.RawMessage) {
 	var a struct {
-		ReferenceID string `json:"reference_id"`
-		OrgID       string `json:"org_id"`
-		ProjectID   string `json:"project_id"`
+		ReferenceID   string `json:"reference_id"`
+		OrgID         string `json:"org_id"`
+		ProjectID     string `json:"project_id"`
+		DBType        string `json:"db_type"`
+		ComponentName string `json:"component_name"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		writeToolResult(w, id, "invalid arguments", true)
@@ -252,9 +262,11 @@ func (s *Server) toolCreateDatabase(w http.ResponseWriter, ctx context.Context, 
 	}
 
 	record, err := s.svc.CreateDatabase(ctx, services.CreateDatabaseRequest{
-		ReferenceID: a.ReferenceID,
-		OrgID:       a.OrgID,
-		ProjectID:   a.ProjectID,
+		ReferenceID:   a.ReferenceID,
+		OrgID:         a.OrgID,
+		ProjectID:     a.ProjectID,
+		DBType:        a.DBType,
+		ComponentName: a.ComponentName,
 	})
 	if err != nil {
 		writeToolResult(w, id, fmt.Sprintf("failed to create database: %v", err), true)

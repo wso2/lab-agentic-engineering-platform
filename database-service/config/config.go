@@ -9,4 +9,9 @@ type Config struct {
 	MySQLRootURL string
 	MySQLHost    string
 	MySQLPort    int
+
+	// JWT authentication — task JWTs issued by the BFF.
+	BFFJWKSURL     string
+	TaskJWTIssuer  string
+	TaskJWTAudience string
 }

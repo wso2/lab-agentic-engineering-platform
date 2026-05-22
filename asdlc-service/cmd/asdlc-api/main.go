@@ -201,19 +201,12 @@ func main() {
 		slog.Info("Git service", "baseURL", cfg.GitService.BaseURL)
 	}
 
-	// Database service client (optional — disabled when neither DATABASE_SERVICE_BASE_URL
-	// nor AGENT_DATABASE_SERVICE_URL is set). DATABASE_SERVICE_BASE_URL is preferred
-	// (direct in-cluster URL); AGENT_DATABASE_SERVICE_URL is the fallback used by the
-	// coding-agent pod and doubles as the BFF's own database-service address when the
-	// two share the same endpoint.
+	// Database service client — instantiated after taskTokens so we can attach
+	// a service-level bearer. See below, after the task token manager block.
 	var dbClient dbclient.Client
 	dbServiceURL := cfg.DatabaseService.BaseURL
 	if dbServiceURL == "" {
 		dbServiceURL = cfg.AgentDatabaseServiceURL
-	}
-	if dbServiceURL != "" {
-		dbClient = dbclient.NewClient(dbServiceURL)
-		slog.Info("Database service", "baseURL", dbServiceURL)
 	}
 
 	// Artifact store — PR 2 of repo-storage-ownership: HTTP-backed via
@@ -331,6 +324,21 @@ func main() {
 		slog.Info("Task token manager", "kid", mgr.KeyID(), "issuer", cfg.TaskTokenIssuer, "audience", cfg.TaskTokenAudience)
 	} else {
 		slog.Warn("BFF_TASK_SIGNING_KEY not set — task dispatch will fail")
+	}
+
+	// Finish database-service client construction now that taskTokens is available.
+	if dbServiceURL != "" {
+		var svcBearer string
+		if taskTokens != nil {
+			var err error
+			svcBearer, err = taskTokens.IssueServiceToken()
+			if err != nil {
+				slog.Error("failed to issue database-service bearer", "error", err)
+				os.Exit(1)
+			}
+		}
+		dbClient = dbclient.NewClient(dbServiceURL, svcBearer)
+		slog.Info("Database service", "baseURL", dbServiceURL)
 	}
 
 	// Token injector for OC API calls from inside dispatch, webhook handlers,

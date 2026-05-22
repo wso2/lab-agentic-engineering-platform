@@ -20,9 +20,13 @@ type EngineHealth struct {
 
 // CreateDatabaseRequest is the input to CreateDatabase.
 type CreateDatabaseRequest struct {
-	ReferenceID string
-	OrgID       string
-	ProjectID   string
+	ReferenceID   string
+	OrgID         string
+	ProjectID     string
+	// DBType and ComponentName are used to auto-register a pending record when
+	// the BFF's pre-registration step was skipped or failed.
+	DBType        string
+	ComponentName string
 }
 
 // DatabaseService combines the registry and provisioning services into a single
@@ -84,7 +88,22 @@ func (s *databaseService) CreateDatabase(ctx context.Context, req CreateDatabase
 		return nil, fmt.Errorf("get pending database: %w", err)
 	}
 	if record == nil {
-		return nil, fmt.Errorf("no pending database found for reference_id=%s", req.ReferenceID)
+		// No pre-registered record. Auto-register if the caller supplied enough info.
+		if req.DBType == "" {
+			return nil, fmt.Errorf("no pending database found for reference_id=%s; supply db_type to auto-register", req.ReferenceID)
+		}
+		name := req.ComponentName
+		if name == "" {
+			name = req.ReferenceID
+		}
+		slog.InfoContext(ctx, "auto-registering database record", "referenceID", req.ReferenceID, "dbType", req.DBType, "name", name)
+		if err := s.registry.Register(ctx, req.OrgID, req.ProjectID, req.ReferenceID, name, req.DBType, name); err != nil {
+			return nil, fmt.Errorf("auto-register database: %w", err)
+		}
+		record, err = s.registry.GetByReferenceID(ctx, req.ReferenceID)
+		if err != nil || record == nil {
+			return nil, fmt.Errorf("fetch after auto-register: %w", err)
+		}
 	}
 	if record.Status != "pending" && record.Status != "provisioning" {
 		// Already provisioned — return existing record.

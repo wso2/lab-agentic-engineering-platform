@@ -213,6 +213,7 @@ type IssueInfo struct {
 	URL    string
 	State  string
 	Labels []string
+	NodeID string
 }
 
 // CreateOrgRepoRequest maps to the fields we send to POST /orgs/{org}/repos.
@@ -583,6 +584,7 @@ func (c *githubClient) ListIssues(ctx context.Context, owner, repo string, cred 
 		Body    string `json:"body"`
 		HTMLURL string `json:"html_url"`
 		State   string `json:"state"`
+		NodeID  string `json:"node_id"`
 		Labels  []struct {
 			Name string `json:"name"`
 		} `json:"labels"`
@@ -604,6 +606,7 @@ func (c *githubClient) ListIssues(ctx context.Context, owner, repo string, cred 
 			URL:    r.HTMLURL,
 			State:  r.State,
 			Labels: labelNames,
+			NodeID: r.NodeID,
 		})
 	}
 	return issues, nil

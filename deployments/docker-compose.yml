@@ -126,7 +126,7 @@ services:
       # cleanly, so we mount the file rather than env-pass the contents.
       BFF_TASK_SIGNING_KEY_PATH: "/app/keys/task-signing.pem"
       BFF_TASK_TOKEN_ISSUER: "asdlc-bff"
-      BFF_TASK_TOKEN_AUDIENCE: "git-service"
+      BFF_TASK_TOKEN_AUDIENCE: "asdlc-platform-services"
 
       # ── Observer (task-progress) — reads workflow logs via OC Observer.
       # Optional: leave empty to disable; the BFF returns 503 on /progress.
@@ -248,7 +248,7 @@ services:
       # ── Task JWT verification on /api/v1/credentials/refresh (RS256, BFF-signed).
       BFF_JWKS_URL: "http://asdlc-api:9090/auth/external/jwks.json"
       TASK_JWT_ISSUER: "asdlc-bff"
-      TASK_JWT_AUDIENCE: "git-service"
+      TASK_JWT_AUDIENCE: "asdlc-platform-services"
 
       # ── Anthropic platform fallback. agents-service calls
       # /internal/anthropic/effective-key on every dispatch; this is the
@@ -399,7 +399,7 @@ services:
       # ── Inbound bearer verification (task JWTs from asdlc-api)
       BFF_JWKS_URL: "http://asdlc-api:9090/auth/external/jwks.json"
       TASK_JWT_ISSUER: "asdlc-bff"
-      TASK_JWT_AUDIENCE: "database-service"
+      TASK_JWT_AUDIENCE: "asdlc-platform-services"
     networks:
       - asdlc
     extra_hosts:

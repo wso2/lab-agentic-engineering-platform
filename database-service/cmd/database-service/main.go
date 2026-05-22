@@ -13,6 +13,7 @@ import (
 	"github.com/wso2/asdlc/database-service/api"
 	"github.com/wso2/asdlc/database-service/config"
 	"github.com/wso2/asdlc/database-service/controllers"
+	"github.com/wso2/asdlc/database-service/middleware/jwtassertion"
 	"github.com/wso2/asdlc/database-service/services"
 
 	_ "github.com/lib/pq"
@@ -55,11 +56,22 @@ func main() {
 	dbCtrl := controllers.NewDatabaseController(dbProvisioningService)
 	regCtrl := controllers.NewRegistryController(registryService)
 
+	// JWKS cache for task JWT verification.
+	var jwksCache *jwtassertion.JWKSCache
+	if cfg.BFFJWKSURL != "" {
+		jwksCache = jwtassertion.NewJWKSCache(cfg.BFFJWKSURL)
+	} else {
+		slog.Warn("BFF_JWKS_URL not set — all protected routes will reject requests with 401")
+	}
+
 	// Handler
 	handler := api.NewHandler(api.AppParams{
-		DatabaseCtrl: dbCtrl,
-		RegistryCtrl: regCtrl,
-		DatabaseSvc:  dbService,
+		DatabaseCtrl:    dbCtrl,
+		RegistryCtrl:    regCtrl,
+		DatabaseSvc:     dbService,
+		JWKS:            jwksCache,
+		TaskJWTIssuer:   cfg.TaskJWTIssuer,
+		TaskJWTAudience: cfg.TaskJWTAudience,
 	})
 
 	server := &http.Server{

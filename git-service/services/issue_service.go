@@ -256,7 +256,7 @@ func (s *issueService) findExistingIssue(ctx context.Context, owner, repo string
 	}
 	for _, iss := range issues {
 		if iss.Title == title && iss.State == "open" {
-			return &IssueResult{Number: iss.Number, URL: iss.URL}, nil
+			return &IssueResult{Number: iss.Number, URL: iss.URL, NodeID: iss.NodeID}, nil
 		}
 	}
 	return nil, nil

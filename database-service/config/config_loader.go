@@ -33,9 +33,12 @@ func Load() (*Config, error) {
 		ServerPort:   serverPort,
 		LogLevel:     getEnv("LOG_LEVEL", "info"),
 		DatabaseURL:  getEnv("DATABASE_URL", ""),
-		MySQLRootURL: getEnv("MYSQL_ROOT_URL", defaultRootURL),
-		MySQLHost:    mysqlHost,
-		MySQLPort:    mysqlPort,
+		MySQLRootURL:    getEnv("MYSQL_ROOT_URL", defaultRootURL),
+		MySQLHost:       mysqlHost,
+		MySQLPort:       mysqlPort,
+		BFFJWKSURL:      getEnv("BFF_JWKS_URL", ""),
+		TaskJWTIssuer:   getEnv("TASK_JWT_ISSUER", "asdlc-bff"),
+		TaskJWTAudience: getEnv("TASK_JWT_AUDIENCE", "database-service"),
 	}, nil
 }
 

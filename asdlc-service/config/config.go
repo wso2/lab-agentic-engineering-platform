@@ -40,8 +40,8 @@ type Config struct {
 	TaskTokenSigningKey string
 	// TaskTokenIssuer is the iss claim on issued Task JWTs (e.g. "asdlc-bff").
 	TaskTokenIssuer string
-	// TaskTokenAudience is the aud claim — fixed to "git-service" today, the
-	// only verifier of Task JWTs.
+	// TaskTokenAudience is the aud claim on issued Task JWTs. Verified by
+	// git-service (/credentials/refresh) and database-service (/mcp, /api).
 	TaskTokenAudience string
 
 	// Phase 2 PR D §9.3 — build watcher git_clone_failed_auth retry budget.
