@@ -102,10 +102,15 @@ up the local stack — watch this section for the URL once it lands.
 
 ### Prerequisites
 
-- Docker + `docker compose`
+- Docker + `docker compose`. Colima works too — give it enough resources. On Apple
+  Silicon, enable Rosetta (the coding-agent runner image is `linux/amd64`):
+  ```bash
+  colima start -f --vm-type=vz --vz-rosetta --cpu 4 --memory 8
+  ```
 - [`k3d`](https://k3d.io/), `kubectl`, `helm`
-- An Anthropic API key (for the AI agents)
-- Optional: a GitHub App (for end-to-end repo provisioning + webhooks)
+- **Anthropic API key** — set as `ANTHROPIC_API_KEY` in `deployments/.env`.
+- **GitHub Personal Access Token** — connected post-bring-up in the console at
+  **Settings → GitHub Integration**. See [Connecting GitHub](#connecting-github).
 
 ### Three commands
 
@@ -123,26 +128,31 @@ bash deployments/scripts/start.sh
 Then open **http://localhost:8090** and sign in with `admin` / `admin`
 (the default Thunder admin in the `Administrators` group).
 
-### Useful scripts (all under `deployments/scripts/`)
+### Connecting GitHub
+
+After login, open **Settings → GitHub Integration** and connect a Personal Access
+Token. Fine-grained PATs need **Read & Write** on the following:
+
+- **Repository** — Administration, Contents, Issues, Pull requests, Webhooks
+- **Organization** — Projects
+
+Scope the PAT to the org with access to **All repositories** (the platform creates
+new repos as part of project provisioning).
+
+### Main scripts (under `deployments/scripts/`)
 
 | Script | What it does |
 |---|---|
-| `setup.sh` | One-shot bring-up. Chains the steps below. |
-| `setup-k3d.sh` | Creates the k3d cluster and patches CoreDNS. |
-| `setup-prerequisites.sh` | cert-manager, ESO, kgateway, OpenBao, API Platform gateway. |
-| `setup-openchoreo.sh` | Installs OpenChoreo (Control / Data / Workflow planes) + Thunder. |
-| `setup-asdlc.sh` | ClusterWorkflows, ClusterComponentTypes, AuthzRoleBindings, generates `.env` (platform services). |
-| `setup-observability.sh` | Observability stack. |
-| `setup-thunder-client.sh` | Bootstraps Thunder OAuth clients (idempotent). |
-| `start.sh` | Refreshes DNS, seeds the host kubeconfig, runs `docker compose up`. |
+| `setup.sh` | One-shot bring-up — k3d cluster + OpenChoreo + Thunder + platform infra. |
+| `start.sh` | Starts the Docker Compose stack (BFF, agents, git-service, console, db, smee). |
 | `stop.sh` | `docker compose down`. **Cluster stays up.** |
 | `teardown.sh` | Destroys the cluster (loses all OpenChoreo state). |
-| `seed-dev.sh` | Seeds dev data into the BFF. |
-| `seed-test-users.sh` | Idempotently seeds Thunder test users. |
-| `verify-api-platform.sh` | Runs the API Platform + Thunder-JWT PoC truth table. |
 
-For deeper details on the architecture, wiring, env vars, and the API Platform PoC,
-see [`deployments/README.md`](./deployments/README.md).
+`setup.sh` chains several `setup-*.sh` step scripts (k3d, prerequisites, OpenChoreo,
+ASDLC infra, observability, Thunder clients) — you normally don't run these directly.
+
+For architecture wiring, env vars, and the API Platform PoC details, see
+[`deployments/README.md`](./deployments/README.md).
 
 ### Service ports (when the stack is up)
 
