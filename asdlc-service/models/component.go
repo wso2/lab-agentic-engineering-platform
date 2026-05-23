@@ -58,6 +58,19 @@ type WorkflowSecretKeyRef struct {
 	Key  string `json:"key"`
 }
 
+// WorkflowFileVar is the BFF-internal shape for a literal file injected
+// onto a ReleaseBinding's `spec.workloadOverrides.container.files`. OC's
+// controller materialises it as a ConfigMap mounted at the declared
+// mountPath, so the pod sees the file without any rebuild. Used by the
+// runtime-config pipeline to write `env-config.js` into the SPA pod's
+// `/usr/share/nginx/html/` directory (stock nginx serves it as plain
+// static).
+type WorkflowFileVar struct {
+	Key       string `json:"key"`
+	MountPath string `json:"mountPath"`
+	Value     string `json:"value"`
+}
+
 type ComponentWorkflowParameters struct {
 	Repository *WorkflowRepository `json:"repository,omitempty"`
 	Docker     *DockerParameters   `json:"docker,omitempty"`

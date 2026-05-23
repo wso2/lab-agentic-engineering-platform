@@ -74,29 +74,66 @@ export const SlimComponent = z.object({
       security: z
         .enum(["required", "none"])
         .describe(
-          "'required' enables JWT validation at the WSO2 API Platform gateway against the org's IDP (Thunder v1; Asgardeo / custom OIDC v2). 'none' (or omitted entirely) means the API is public and traffic skips the AP hop.",
+          "Legacy alias for exposesAPI.auth. 'required' enables JWT validation at the gateway; 'none' (or omitted) is a public API. Prefer 'exposesAPI' on new designs.",
         ),
     })
     .optional()
     .describe(
-      "Optional API security policy (services only). Omit (or set security='none') for public APIs. Set security='required' for protected APIs that must validate caller JWTs at the gateway. Default for ambiguous cases: omit. Set 'required' when the description mentions login, OAuth, JWT, protected, private, customer, billing, or any per-user data.",
+      "Deprecated. Use 'exposesAPI' on new designs — emitted only for backwards compatibility with old design.md files.",
+    ),
+  exposesAPI: z
+    .object({
+      managed: z
+        .boolean()
+        .optional()
+        .describe(
+          "True when the service should be routed through the WSO2 API Platform gateway (CORS + JWT validation + rate limiting). Default true when 'auth' is set.",
+        ),
+      auth: z
+        .enum(["end-user-required", "service-required", "none"])
+        .describe(
+          "Caller authentication policy. 'end-user-required' = the gateway validates an end-user JWT and injects X-User-Id. 'service-required' = the gateway validates a service-to-service JWT (no end-user). 'none' = public.",
+        ),
+      userContext: z
+        .string()
+        .optional()
+        .describe(
+          "Header name the gateway injects upstream when 'auth' is end-user-required. Default 'X-User-Id'.",
+        ),
+    })
+    .optional()
+    .describe(
+      "API exposure policy (services only). Omit for public APIs. Set 'auth: end-user-required' when callers are end users; the gateway validates the JWT and injects X-User-Id. Replaces the legacy 'api.security' field.",
+    ),
+  callerIdentity: z
+    .object({
+      mode: z
+        .enum(["end-user", "service-account", "none"])
+        .describe(
+          "How the component identifies its caller. 'end-user' = SPA signs in users via the platform IDP (OIDC + PKCE). 'service-account' = workload-to-workload auth. 'none' = no auth.",
+        ),
+    })
+    .optional()
+    .describe(
+      "Caller-identity intent. Replaces the legacy 'auth.kind: oidc-spa' for web-app components — set 'mode: end-user' instead, and the platform handles OIDC provisioning + runtime config injection.",
     ),
   auth: z
     .object({
       kind: z
         .literal("oidc-spa")
         .describe(
-          "OIDC Single-Page-App relying party. The platform provisions a per-project OAuth client in Thunder, injects OIDC_ISSUER/OIDC_CLIENT_ID/OIDC_REDIRECT_URI/OIDC_SCOPES into the pod, and the SPA performs Authorization Code + PKCE against it.",
+          "Legacy alias for callerIdentity.mode='end-user'. Kept for backwards compatibility with old design.md files.",
         ),
       upstream: z
         .string()
+        .optional()
         .describe(
-          "Name of the protected service this SPA signs in to call. Must reference a sibling component with api.security='required'.",
+          "Name of the protected service this SPA signs in to call. Now optional — the platform derives upstream URLs from the dependsOn graph.",
         ),
     })
     .optional()
     .describe(
-      "OIDC relying-party config. ONLY valid on web-app components. Emit this together with api.security='required' on the upstream service when the spec implies users sign in. When set, the API service must NOT implement /auth/* endpoints (Thunder owns token issuance) and must read the authenticated user from the gateway-injected X-User-Id header.",
+      "Deprecated. Use 'callerIdentity' on new designs. Emitted only for backwards compatibility with old design.md files.",
     ),
   dependentApis: z
     .array(DependentApi)

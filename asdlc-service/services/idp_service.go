@@ -102,8 +102,8 @@ func NewIDPService(db *gorm.DB, thunder thundersvc.Client, platform PlatformIDPC
 }
 
 // ErrIDPThunderUnavailable means the Thunder admin client isn't wired
-// (FEATURE_EMIT_API_TRAIT off, missing system credentials, etc).
-// Callers in the dispatch / design-edit path treat this as
+// (missing system credentials, etc). Callers in the dispatch / design-
+// edit path treat this as
 // non-fatal — protected components still deploy; per-org publisher
 // provisioning is best-effort and the next dispatch tries again.
 var ErrIDPThunderUnavailable = errors.New("idp_service: thunder admin client not configured")

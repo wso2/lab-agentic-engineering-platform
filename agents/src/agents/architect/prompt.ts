@@ -37,14 +37,16 @@ Call finalize() to end the session. If finalize returns validation issues, addre
   - Backend services prefer Go + net/http on port 9090.
   - Every service exposes GET /health.
   - All deployable components declare \`visibility: external\` on their workload.yaml endpoints. The platform's gateway attaches an Envoy CORS filter automatically to every external HTTPRoute via the ClusterComponentType, so **backend service code must NOT include CORS middleware** (no \`corsMiddleware\` function, no \`cors.New(...)\`, no manual \`Access-Control-Allow-*\` headers). Doubled CORS headers break browsers. Call this out in service-component \`componentAgentInstructions\`.
-  - For every backend in a web-app's \`dependsOn\`, the web-app's \`componentAgentInstructions\` must contain a line of the form: \`Upstream <name>: env var VITE_<NAME_UPPER_SNAKE>_URL — fill in .env at build time from the issue's \\\`## Dependency endpoint resolved\\\` comment for <name>.\` The web-app's \`src/api.ts\` must \`throw\` (not \`?? ""\`) if the env var is missing — the silent same-origin fallback shipped a production 405 bug.
+  - For every backend in a web-app's \`dependsOn\`, the web-app's \`componentAgentInstructions\` must contain EXACTLY this line (substitute the literal upstream name + UPPER_SNAKE form):
+    \`Upstream <name>: read the URL from \\\`window._env_.<NAME_UPPER_SNAKE>_URL\\\` via \\\`src/env.ts\\\`. Throw (no \\\`?? ""\\\` fallback) on missing.\`
+    Do NOT write anything about \`VITE_*\`, \`REACT_APP_*\`, \`NEXT_PUBLIC_*\`, \`.env\` files, build-time substitution, or "Dependency endpoint resolved" comments. Those mechanisms are deprecated — runtime config is the ONLY supported path.
   - dependsOn names must reference other components verbatim.
   - Prefer fewer components over many.
   - **Authentication is delegated to the platform IDP — DO NOT introduce a separate auth / identity / login / session component, and DO NOT implement \`/auth/login\` or \`/auth/register\` in any service.** When the spec implies users sign in:
       * Set \`api.security: "required"\` on the API service that owns user-scoped data (see "API security classification" below).
-      * Set \`auth: { kind: "oidc-spa", upstream: <api-name> }\` on the web-app that signs the user in. The platform posts a \`## OIDC client provisioned\` comment on the SPA's task issue with FIVE values (\`issuer\`, \`clientId\`, \`scopes\`, \`host\`, \`internalProxyPass\`). The agent bakes the first four + \`API_BASE_URL\` (from the upstream's \`## Dependency endpoint resolved\` comment) into \`<app-path>/.env\` BEFORE \`npm run build\` (Vite \`VITE_*\`, CRA \`REACT_APP_*\`, Next \`NEXT_PUBLIC_*\`). The \`internalProxyPass\` value goes into \`nginx/default.conf\` as the literal \`proxy_pass\` target for the same-origin \`/oidc/\` block (it must be an in-cluster Service FQDN — the public \`issuer\` hostname does NOT resolve from pod DNS and would make nginx fail to start). DO NOT use \`workload.yaml\` \`configurations.env\`, nginx envsubst, \`/env-config.js\`, or \`window.__ENV__\` — those are deprecated. The image carries final values; no runtime substitution.
+      * Set \`auth: { kind: "oidc-spa", upstream: <api-name> }\` on the web-app that signs the user in. The platform's BFF supplies OIDC config + sibling API URLs to the SPA at runtime via \`window._env_\` (BFF writes \`env-config.js\` into the web-app's ReleaseBinding at \`/usr/share/nginx/html/\`; the agent's \`index.html\` loads it synchronously before the bundle). The agent never sees client IDs, redirect URIs, or upstream URLs.
       * The protected service's \`componentAgentInstructions\` MUST say: "No \`/auth/*\` endpoints. The API Platform gateway validates the JWT and the \`api-configuration\` trait's \`jwt-auth\` policy injects \`X-User-Id\` (from JWT \`sub\` claim) on every request. Read \`X-User-Id\` to identify the caller; reject (401) when missing. Per-user records (e.g. todos) MUST be keyed on \`X-User-Id\`. Do NOT validate JWTs yourself; do NOT add CORS middleware (the gateway handles CORS)."
-      * The web-app's \`componentAgentInstructions\` MUST say: "OIDC Authorization Code + PKCE against the platform IDP. Bake the FOUR \`VITE_OIDC_*\` values from \`## OIDC client provisioned\` + \`VITE_API_BASE_URL\` from \`## Dependency endpoint resolved\` into \`<app-path>/.env\` BEFORE \`npm run build\` (or the framework's equivalent prefix). Read them via \`import.meta.env.VITE_*\` and throw at module top-level on missing — no silent \`?? ''\` fallback. Token exchange MUST go through the same-origin proxy at relative path \`/oidc/token\` (the SPA's own nginx proxies it to Thunder's \`/oauth2/token\`). Use the \`internalProxyPass\` value from \`## OIDC client provisioned\` as the literal \`proxy_pass\` target in \`nginx/default.conf\` — it MUST be an in-cluster Service FQDN, NOT \`\${VITE_OIDC_ISSUER}/oauth2/\` (the public hostname doesn't resolve from pod DNS; nginx fails with 'host not found in upstream'). The authorize redirect uses absolute \`VITE_OIDC_ISSUER\` (top-level navigation — no CORS). Attach \`Authorization: Bearer <access_token>\` to every \`VITE_API_BASE_URL\` call. Redirect URI is \`window.location.origin + '/callback'\`. DO NOT use envsubst, \`/etc/nginx/templates/\`, \`/env-config.js\`, \`window.__ENV__\`, or \`workload.yaml\` \`configurations.env\` — the OIDC pattern is build-time bake only, identical to the dependency-URL pattern. See the \`asdlc\` SKILL's OIDC-SPA section for the reference \`.env\`, \`nginx/default.conf\`, and \`src/auth.ts\`." NEVER write a \`/login\` form that POSTs credentials to the API.
+      * The web-app's \`componentAgentInstructions\` MUST say: "OIDC Authorization Code + PKCE against the platform IDP using \`oidc-client-ts\`. Read OIDC + upstream URLs from \`window._env_.THUNDER_*\` / \`window._env_.<UPSTREAM>_URL\` — typed via \`src/env.ts\`. Attach \`Authorization: Bearer <access_token>\` to every API call. DO NOT write a \`.env\` file. DO NOT read environment variables at build time (no \`import.meta.env\`). DO NOT use envsubst, \`/etc/nginx/templates/\`, or any custom nginx entrypoint — stock \`nginx:alpine\` serves the static bundle + \`env-config.js\`. See the \`asdlc\` SKILL's 'Runtime config via window._env_' section for the reference \`index.html\`, \`src/env.ts\`, \`src/auth.ts\`, and \`src/api.ts\`." NEVER write a \`/login\` form that POSTs credentials to the API.
   - For username/password specs that explicitly forbid an external IDP (rare — only when the spec literally says "self-contained, no platform IDP, embedded credentials"), fall back to folding \`/auth/login\` into the API service. This is the legacy path; default to OIDC.
   - **Do NOT introduce a separate storage / database / persistence component.** Persistence belongs inside the component that owns the data, using an embedded SQLite database stored on the component's local filesystem. Call this out in that component's componentAgentInstructions (which file/table, what it stores). Do not add a "db" or "storage-service" component.
   - **No scheduled-task / cronjob components.** If the spec calls for periodic / cron / batch work, fold it into the owning service (e.g. a background goroutine kicked off at startup, or an HTTP endpoint that a future scheduler can poke). Call this out in that service's componentAgentInstructions.
@@ -61,23 +63,29 @@ Each dependent API has:
 
 When you declare a dependent API on a component:
   - Add a line to that component's \`componentAgentInstructions\` of the form:
-    \`Upstream external API \`<name>\`: env var \`<NAME_UPPER_SNAKE>_URL\` = \`<url>\` (auth: <authentication>). <description>. Read via os.Getenv / process.env, call with standard HTTP client.\`
-  - This URL is fixed at design time (it's an external endpoint, not a per-deployment sibling), so the coding agent bakes / reads it directly — no platform \`## Dependency endpoint resolved\` handshake is involved.
+    \`Upstream external API \`<name>\`: env var \`<NAME_UPPER_SNAKE>_URL\` (auth: <authentication>). <description>. Read via os.Getenv / process.env, call with standard HTTP client.\`
+  - The platform supplies the URL via the component's ReleaseBinding env block — the coding agent never sees the URL literal, just the variable name.
 
-## Secret Santa rule (HARDCODED)
+## Cross-project external APIs (declare by name only)
 
-If the spec describes a **Secret Santa**, gift-exchange, employee-pairing, or any flow that needs to look up employees / staff / coworkers, you MUST attach the following dependent API to the component that orchestrates the matching (typically the backend API service):
+When the spec calls for an external system the platform already
+publishes — e.g. an **employee directory** for a Secret Santa /
+gift-exchange / employee-pairing flow — declare it as a \`dependentApi\`
+on the component that calls it, **by name only**:
 
 \`\`\`json
 {
   "name": "employee-api",
-  "url": "http://development-default.openchoreoapis.localhost:19080/employee-app-employee-api-http/employees",
-  "description": "Returns employee details — name, email, department — for the organisation. Used to fetch the participant pool and to look up email addresses for assignment notifications.",
-  "authentication": "none"
+  "description": "Returns employee details — name, email, department — for the organisation."
 }
 \`\`\`
 
-Do NOT create a sibling \`employee-api\` component of your own. The directory already exists outside the project.
+Do **not** include a \`url\` field — the platform resolves the URL from
+its in-cluster catalog at design-load time. Do **not** create a sibling
+component of your own for these — they're external to your project.
+
+Known catalog entries (use the exact \`name\`):
+  - \`employee-api\` — organisation-wide employee directory.
 
 # API security classification (api.security)
 
@@ -104,27 +112,28 @@ When the rubric flips a service to \`api.security: "required"\` AND a sibling we
 
 **Shape:**
 \`\`\`yaml
-api:
-  security: required
+exposesAPI:
+  auth: end-user-required
+  userContext: X-User-Id
 \`\`\`
-Omit entirely for public. Do NOT emit \`security: none\` — absence is the canonical representation of public (matches the BFF's ResolveAPISecurityEnabled).
+Omit \`exposesAPI\` entirely for public services. Set \`auth: end-user-required\` when the spec implies callers are signed-in users; the platform's gateway validates the JWT and injects \`X-User-Id\` before forwarding upstream.
 
-# OIDC-SPA enforcement (HARD REQUIREMENT)
+# Caller identity (HARD REQUIREMENT)
 
-**For every \`web-app\` component whose \`dependsOn\` includes a \`service\` you set to \`api.security: "required"\` AND whose spec implies users sign in, you MUST emit the structured \`auth\` block in your tool call:**
+**For every \`web-app\` component whose \`dependsOn\` includes a \`service\` you set to \`exposesAPI.auth: end-user-required\` AND whose spec implies users sign in, you MUST emit the structured \`callerIdentity\` block:**
 
 \`\`\`json
 {
-  "auth": { "kind": "oidc-spa", "upstream": "<service-name>" }
+  "callerIdentity": { "mode": "end-user" }
 }
 \`\`\`
 
-This is NOT optional and not satisfied by mentioning OIDC in \`componentAgentInstructions\`. The platform reads the structured \`auth\` field from the slim component — without it, the BFF will NOT post the \`## OIDC client provisioned\` comment, the coding agent will have no issuer/clientId values, and the SPA will deploy unconfigured. The instructions text is for the coding agent; the \`auth\` field is for the platform.
+This is NOT optional and not satisfied by mentioning OIDC in \`componentAgentInstructions\`. The platform reads the structured \`callerIdentity\` field — without it, no per-project OAuth client is provisioned, no THUNDER_* keys land in \`window._env_\`, and the SPA deploys unable to sign in. The \`componentAgentInstructions\` field is for the coding agent; \`callerIdentity\` is for the platform.
 
 Checklist before emitting \`add_component\` for a web-app:
-  1. Does it depend on a service with \`api.security: required\`? → must have \`auth\`.
-  2. Does the spec contain "sign in", "login", "user account", or similar? → must have \`auth\`.
-  3. If either is yes and you didn't include the \`auth\` block, your output is incomplete.
+  1. Does it depend on a service with \`exposesAPI.auth: end-user-required\`? → must have \`callerIdentity.mode: end-user\`.
+  2. Does the spec contain "sign in", "login", "user account", or similar? → must have \`callerIdentity.mode: end-user\`.
+  3. If either is yes and you didn't include the \`callerIdentity\` block, your output is incomplete.
 
 Failing this check produces a broken deployment, not a "minor omission". Treat it like missing a required schema field.
 

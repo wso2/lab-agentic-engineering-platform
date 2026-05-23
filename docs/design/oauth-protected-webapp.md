@@ -1,5 +1,28 @@
 # OAuth-Protected Webapp Scenario
 
+> **Superseded by [`auth-and-runtime-config-refactor.md`](auth-and-runtime-config-refactor.md).**
+> That doc is the canonical specification for the OIDC-SPA flow. Highlights of
+> what changed:
+>
+> - **Runtime config**: per-env values reach the SPA via `window._env_`
+>   (BFF writes `env-config.js` into the SPA's ReleaseBinding at
+>   `/usr/share/nginx/html/`). No nginx envsubst, no `/etc/nginx/templates/`,
+>   no `window.__ENV__`, no `.env` file at build time.
+> - **Per-project OAuth client**: `EnsureProjectOAuthClient` declares one
+>   public PKCE-required client in Thunder per project (id = project name).
+>   The legacy single shared `USER_APPS_OIDC_*` client is gone, along with
+>   the `## OIDC client provisioned` issue-comment channel.
+> - **Cross-origin token exchange**: Thunder's gateway returns proper CORS
+>   headers, so the SPA POSTs `/oauth2/token` cross-origin directly — no
+>   same-origin `/oidc/` nginx proxy, no `internalProxyPass`.
+> - **Schema**: `auth.kind: oidc-spa` → `callerIdentity.mode: end-user`;
+>   `api.security: required` → `exposesAPI.auth: end-user-required`. The
+>   legacy fields remain as backwards-compat aliases.
+>
+> The historical narrative below is preserved for context. Anything it says
+> about envsubst, `.env`, `## OIDC client provisioned`, or `window.__ENV__`
+> is no longer the platform behaviour.
+
 How App Factory generates a webapp + API where authentication is handled
 end-to-end by the API Platform (gateway) and the IDP (Thunder), with **zero
 manual configuration** from the user.

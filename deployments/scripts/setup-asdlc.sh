@@ -57,8 +57,33 @@ apply_with_retry() {
 apply_with_retry "${SCRIPT_DIR}/../manifests/docker-build-workflow.yaml" "docker-build-workflow"
 echo "✅ ClusterWorkflow 'dockerfile-builder' installed"
 
-apply_with_retry "${SCRIPT_DIR}/../manifests/app-factory-coding-agent.yaml" "app-factory-coding-agent"
-echo "✅ ClusterWorkflow 'app-factory-coding-agent' installed (one-shot coding-agent pod)"
+# Dev mode splices a hostPath overlay onto /app/plugin in the runner pod so
+# the host's remote-worker/plugin is read live. The prod manifest stays the
+# single source of truth; yq layers the dev-patch fragment over it at apply
+# time so other fields can't drift. Requires setup-k3d.sh to have been run
+# with ASDLC_DEV_RUNNER=1 (bind-mount baked into the node).
+CODING_AGENT_MANIFEST="${SCRIPT_DIR}/../manifests/app-factory-coding-agent.yaml"
+CODING_AGENT_PATCH="${SCRIPT_DIR}/../manifests/app-factory-coding-agent.dev-patch.yaml"
+
+if [ "${ASDLC_DEV_RUNNER:-0}" = "1" ]; then
+    if ! command -v yq &>/dev/null; then
+        echo "❌ ASDLC_DEV_RUNNER=1 needs yq for the dev-patch merge — 'brew install yq'"
+        exit 1
+    fi
+    DEV_MANIFEST="$(mktemp -t app-factory-coding-agent.dev.XXXXXX.yaml)"
+    trap 'rm -f "$DEV_MANIFEST"' EXIT
+    yq eval "
+        .spec.runTemplate.spec.templates[0].container.volumeMounts +=
+          load(\"${CODING_AGENT_PATCH}\").volumeMounts |
+        .spec.runTemplate.spec.volumes +=
+          load(\"${CODING_AGENT_PATCH}\").volumes
+    " "$CODING_AGENT_MANIFEST" > "$DEV_MANIFEST"
+    apply_with_retry "$DEV_MANIFEST" "app-factory-coding-agent (dev — hostPath overlay)"
+    echo "✅ ClusterWorkflow 'app-factory-coding-agent' installed (DEV — /app/plugin overlay live from host)"
+else
+    apply_with_retry "$CODING_AGENT_MANIFEST" "app-factory-coding-agent"
+    echo "✅ ClusterWorkflow 'app-factory-coding-agent' installed (one-shot coding-agent pod)"
+fi
 
 # ============================================================================
 # OpenChoreo infrastructure resources
@@ -128,6 +153,21 @@ spec:
                 memory:
                   type: string
                   default: "256Mi"
+  # The Pod template + the four `forEach` ConfigMap/ExternalSecret resources
+  # below opt this CCT into OpenChoreo's `configurations.*` contract:
+  #   - container.env / container.files declared in the Workload, AND
+  #   - workloadOverrides.container.{env,files} declared in the ReleaseBinding
+  # both land in the pod via OC-computed envFrom + volumeMounts + volumes
+  # plus matching ConfigMap / ExternalSecret resources.
+  #
+  # Prior art: agent-manager's `agent-api` ComponentType
+  # (agent-manager/deployments/helm-charts/.../component-types/agent-api.yaml)
+  # uses the same pattern. OC docs:
+  # https://openchoreo.dev/docs/tutorials/deploy-with-configurations
+  #
+  # Skipping any of these helpers will silently drop the corresponding
+  # Workload / ReleaseBinding input — that is the failure mode Phase 1
+  # caught.
   resources:
     - id: deployment
       template:
@@ -148,6 +188,9 @@ spec:
               containers:
                 - name: main
                   image: "${workload.container.image}"
+                  env: ${dependencies.toContainerEnvs()}
+                  envFrom: ${configurations.toContainerEnvFrom()}
+                  volumeMounts: ${configurations.toContainerVolumeMounts()}
                   resources:
                     requests:
                       cpu: "${environmentConfigs.resources.requests.cpu}"
@@ -155,6 +198,83 @@ spec:
                     limits:
                       cpu: "${environmentConfigs.resources.limits.cpu}"
                       memory: "${environmentConfigs.resources.limits.memory}"
+              volumes: ${configurations.toVolumes()}
+
+    - id: env-config
+      forEach: ${configurations.toConfigEnvsByContainer()}
+      var: envConfig
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${envConfig.resourceName}
+          namespace: ${metadata.namespace}
+        data: |
+          ${envConfig.envs.transformMapEntry(index, env, {env.name: env.value})}
+
+    - id: file-config
+      forEach: ${configurations.toConfigFileList()}
+      var: config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${config.resourceName}
+          namespace: ${metadata.namespace}
+        data:
+          ${config.name}: |
+            ${config.value}
+
+    - id: secret-env-external
+      forEach: ${configurations.toSecretEnvsByContainer()}
+      var: secretEnv
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${secretEnv.resourceName}
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: ${dataplane.secretStore}
+            kind: ClusterSecretStore
+          target:
+            name: ${secretEnv.resourceName}
+            creationPolicy: Owner
+          data: |
+            ${secretEnv.envs.map(secret, {
+              "secretKey": secret.name,
+              "remoteRef": {
+                "key": secret.remoteRef.key,
+                "property": has(secret.remoteRef.property) ? secret.remoteRef.property : oc_omit()
+              }
+            })}
+
+    - id: secret-file-external
+      forEach: ${configurations.toSecretFileList()}
+      var: file
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${file.resourceName}
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: ${dataplane.secretStore}
+            kind: ClusterSecretStore
+          target:
+            name: ${file.resourceName}
+            creationPolicy: Owner
+          data:
+            - secretKey: ${file.name}
+              remoteRef:
+                key: ${file.remoteRef.key}
+                property: |
+                  ${has(file.remoteRef.property) ? file.remoteRef.property : oc_omit()}
+
     - id: service
       template:
         apiVersion: v1
@@ -255,6 +375,9 @@ spec:
                 memory:
                   type: string
                   default: "256Mi"
+  # See the `service` CCT above for why these `configurations.*` helpers
+  # and forEach resources are mandatory. Same contract, same prior art
+  # (agent-manager's agent-api ComponentType).
   resources:
     - id: deployment
       template:
@@ -275,6 +398,9 @@ spec:
               containers:
                 - name: main
                   image: "${workload.container.image}"
+                  env: ${dependencies.toContainerEnvs()}
+                  envFrom: ${configurations.toContainerEnvFrom()}
+                  volumeMounts: ${configurations.toContainerVolumeMounts()}
                   resources:
                     requests:
                       cpu: "${environmentConfigs.resources.requests.cpu}"
@@ -282,6 +408,83 @@ spec:
                     limits:
                       cpu: "${environmentConfigs.resources.limits.cpu}"
                       memory: "${environmentConfigs.resources.limits.memory}"
+              volumes: ${configurations.toVolumes()}
+
+    - id: env-config
+      forEach: ${configurations.toConfigEnvsByContainer()}
+      var: envConfig
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${envConfig.resourceName}
+          namespace: ${metadata.namespace}
+        data: |
+          ${envConfig.envs.transformMapEntry(index, env, {env.name: env.value})}
+
+    - id: file-config
+      forEach: ${configurations.toConfigFileList()}
+      var: config
+      template:
+        apiVersion: v1
+        kind: ConfigMap
+        metadata:
+          name: ${config.resourceName}
+          namespace: ${metadata.namespace}
+        data:
+          ${config.name}: |
+            ${config.value}
+
+    - id: secret-env-external
+      forEach: ${configurations.toSecretEnvsByContainer()}
+      var: secretEnv
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${secretEnv.resourceName}
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: ${dataplane.secretStore}
+            kind: ClusterSecretStore
+          target:
+            name: ${secretEnv.resourceName}
+            creationPolicy: Owner
+          data: |
+            ${secretEnv.envs.map(secret, {
+              "secretKey": secret.name,
+              "remoteRef": {
+                "key": secret.remoteRef.key,
+                "property": has(secret.remoteRef.property) ? secret.remoteRef.property : oc_omit()
+              }
+            })}
+
+    - id: secret-file-external
+      forEach: ${configurations.toSecretFileList()}
+      var: file
+      template:
+        apiVersion: external-secrets.io/v1
+        kind: ExternalSecret
+        metadata:
+          name: ${file.resourceName}
+          namespace: ${metadata.namespace}
+        spec:
+          refreshInterval: 15s
+          secretStoreRef:
+            name: ${dataplane.secretStore}
+            kind: ClusterSecretStore
+          target:
+            name: ${file.resourceName}
+            creationPolicy: Owner
+          data:
+            - secretKey: ${file.name}
+              remoteRef:
+                key: ${file.remoteRef.key}
+                property: |
+                  ${has(file.remoteRef.property) ? file.remoteRef.property : oc_omit()}
+
     - id: service
       template:
         apiVersion: v1

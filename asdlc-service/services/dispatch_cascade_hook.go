@@ -16,12 +16,34 @@ import (
 // itself (gating logic + URL resolution) lives in DispatchService —
 // this type only takes the lock and invokes it.
 type DispatchCascadeHook struct {
-	db       *gorm.DB
-	dispatch DispatchService
+	db            *gorm.DB
+	dispatch      DispatchService
+	traitSync     *TraitSyncService
+	runtimeConfig *RuntimeConfigService
 }
 
 func NewDispatchCascadeHook(db *gorm.DB, dispatch DispatchService) *DispatchCascadeHook {
 	return &DispatchCascadeHook{db: db, dispatch: dispatch}
+}
+
+// SetTraitSync wires the trait sync service so the cascade can re-emit
+// sibling-CORS origins on every protected API in the project when a SPA
+// lands deployed. Optional — when nil the cascade skips the re-emit step.
+func (h *DispatchCascadeHook) SetTraitSync(t *TraitSyncService) {
+	if h == nil {
+		return
+	}
+	h.traitSync = t
+}
+
+// SetRuntimeConfig wires the env-config.js emitter so the cascade can
+// re-emit window._env_ values on every SPA in the project when any
+// component lands deployed (sibling API URLs become available). Optional.
+func (h *DispatchCascadeHook) SetRuntimeConfig(r *RuntimeConfigService) {
+	if h == nil {
+		return
+	}
+	h.runtimeConfig = r
 }
 
 // OnTaskDeployed is the post-commit hook. Acquires a per-project advisory
@@ -56,22 +78,40 @@ func (h *DispatchCascadeHook) OnTaskDeployed(ctx context.Context, orgID, project
 			"project", projectID, "error", err)
 		return
 	}
-	// Announce the newly-deployed dep's URL on every dependent task's
-	// issue BEFORE dispatching. Tasks waiting in `on_hold` may flip
-	// to `pending` and dispatch within the same lock; their agent reads
-	// the issue + its comment trail as its first move, so the comment
-	// must already be there. Best-effort: never errors. If commenting
-	// fails offline, dispatch's own resolveDependencyEndpoints still
-	// enforces the §1.3 URL invariant.
-	h.dispatch.AnnounceDependencyDeployed(ctx, orgID, projectID, componentName)
+	// Dependency URL handoff to consumer SPAs now flows through the
+	// ReleaseBinding `env-config.js` (BFF emits per-env values into
+	// workloadOverrides.container.files), so no GitHub issue comment is
+	// posted here. dispatch's resolveDependencyEndpoints continues to
+	// enforce the §1.3 URL invariant at dispatch time.
 
-	// For OIDC-SPA web-apps: register the deployed origin (+ /callback)
-	// on the platform IDP's redirect_uris set so browser sign-in
-	// actually works. No-op on non-web-app or non-oidc-spa components.
-	// Order doesn't matter relative to DispatchTasks below; the user
-	// only hits the OIDC redirect at browser sign-in time, by which
-	// point the pod is already up.
-	h.dispatch.RegisterUserAppRedirectURI(ctx, orgID, projectID, componentName)
+	// For OIDC-SPA web-apps the platform IDP redirect_uris are
+	// registered by RuntimeConfigService.layerThunderKeys when the SPA
+	// gets its env-config.js emitted below — no separate dispatch-side
+	// Thunder call is needed.
+
+	// Sibling-CORS re-emit: any dispatch in a project re-emits the
+	// `cors.allowedOrigins` block on every protected API's ReleaseBinding
+	// so freshly added SPAs are echoed back on preflight. Without this,
+	// the first deploy of a new SPA cannot call the API cross-origin
+	// until something else triggers a sync. Idempotent + best-effort.
+	if h.traitSync != nil {
+		if err := h.traitSync.SyncProjectAPITraits(ctx, orgID, projectID); err != nil {
+			slog.WarnContext(ctx, "dispatch cascade: SyncProjectAPITraits failed",
+				"project", projectID, "deployedComponent", componentName, "error", err)
+		}
+	}
+
+	// Env-config.js re-emit: when a sibling service's external URL just
+	// resolved, the depending SPAs need their `window._env_.API_BASE_URL`
+	// refreshed. Re-emit env-config.js on every SPA in the project so
+	// the next pod restart picks up the latest values. Idempotent +
+	// best-effort.
+	if h.runtimeConfig != nil {
+		if err := h.runtimeConfig.EmitForProjectSPAs(ctx, orgID, projectID); err != nil {
+			slog.WarnContext(ctx, "dispatch cascade: EmitForProjectSPAs failed",
+				"project", projectID, "deployedComponent", componentName, "error", err)
+		}
+	}
 
 	results, err := h.dispatch.DispatchTasks(ctx, orgID, projectID)
 	if err != nil {

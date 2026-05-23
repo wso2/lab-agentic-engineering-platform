@@ -11,8 +11,7 @@ import (
 // frontmatter produces zero traits + no env config entries. That keeps
 // the on-cluster Component CR + ReleaseBindings bit-identical to the
 // pre-Phase-2 baseline for the corpus of existing unprotected
-// components — so flipping FEATURE_EMIT_API_TRAIT on is a no-op for
-// every component the user hasn't explicitly marked protected.
+// components.
 func TestBaseline_NoAPIBlock_ProducesNoTrait(t *testing.T) {
 	cases := []struct {
 		name string

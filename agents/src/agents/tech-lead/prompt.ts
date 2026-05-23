@@ -314,37 +314,25 @@ own auth endpoints. The issue body must:
 
   - For the \`web-app\` component with \`auth.kind: oidc-spa\`:
       * Add a **Scope** bullet: "Implement OIDC Authorization Code +
-        PKCE against the platform IDP. Bake all FIVE values from this
-        issue's \`## OIDC client provisioned\` and \`## Dependency
-        endpoint resolved\` comments into \`<appPath>/.env\` BEFORE
-        \`npm run build\` (Vite: \`VITE_*\`; CRA: \`REACT_APP_*\`; Next:
-        \`NEXT_PUBLIC_*\`). Read them via \`import.meta.env.VITE_*\` and
-        throw at module top-level on missing — no \`?? ''\` fallback.
-        DO NOT use \`window.__ENV__\`, nginx envsubst, \`/env-config.js\`,
-        \`/etc/nginx/templates/\`, or \`workload.yaml\` \`configurations.env\`
-        — those runtime mechanisms are deprecated. See the \`asdlc\`
-        SKILL's OIDC-SPA section for the reference \`.env\`,
-        \`nginx/default.conf\`, and \`src/auth.ts\`."
-      * Add a **Scope** bullet: "Token exchange MUST go through the
-        same-origin proxy at relative path \`/oidc/token\`. DO NOT \`POST\`
-        directly to \`\${VITE_OIDC_ISSUER}/oauth2/token\` — kgateway's CORS
-        filter drops the response body on cross-origin POSTs. Use the
-        \`internalProxyPass\` value from \`## OIDC client provisioned\`
-        as the literal \`proxy_pass\` target in \`nginx/default.conf\`
-        (no envsubst, no template) — it MUST be an in-cluster Service
-        FQDN, NOT \`\${VITE_OIDC_ISSUER}/oauth2/\`, because the public
-        hostname doesn't resolve from pod DNS. The authorize REDIRECT
-        uses absolute \`VITE_OIDC_ISSUER\` (top-level navigation — no
-        CORS)."
+        PKCE using \`oidc-client-ts\`, configured from
+        \`window._env_.THUNDER_*\`. The platform writes OIDC + upstream
+        URLs into \`env-config.js\` via the SPA's ReleaseBinding; the
+        agent's \`index.html\` loads it synchronously before the
+        bundle. Read values via the typed \`src/env.ts\` shim and throw
+        at module top-level on missing keys — no \`?? ''\` fallback. Do
+        NOT write a \`.env\` file. Do NOT use \`import.meta.env.VITE_*\`.
+        See the \`asdlc\` SKILL's 'Runtime config via window._env_'
+        section for the reference \`index.html\`, \`src/env.ts\`,
+        \`src/auth.ts\`, and \`src/api.ts\`."
       * Add a **Scope** bullet: "Attach \`Authorization: Bearer
-        <access_token>\` to every \`VITE_API_BASE_URL\` fetch. On 401,
-        restart the login flow. Do NOT write a \`/login\` form that
-        POSTs credentials anywhere."
-      * Add a **Scope** bullet: "DO NOT declare \`configurations.env\`
-        in \`workload.yaml\` for OIDC values. All five values are baked
-        into the bundle + nginx config at \`npm run build\` time; the
-        running pod needs no env vars and no runtime substitution.
-        \`workload.yaml\` only declares \`endpoints\` for the web-app."
+        <access_token>\` to every \`window._env_.API_BASE_URL\` fetch.
+        On 401, restart the login flow via \`signIn()\`. Do NOT write
+        a \`/login\` form that POSTs credentials anywhere."
+      * Add a **Scope** bullet: "\`nginx/default.conf\` is a stock
+        static-file config — no proxy block, no envsubst, no custom
+        entrypoint scripts. The image is identical across every
+        environment; per-env values arrive at request time via the
+        mounted \`/env-config.js\`."
       * Add an **Acceptance criteria** bullet: "Loading the webapp
         unauthenticated redirects to the OIDC authorize endpoint;
         after sign-in, the user lands back on the app with a token
@@ -365,21 +353,21 @@ If the target component's design has \`type: web-app\` AND \`dependsOn\` is
 non-empty, the issue body's **Scope** section MUST contain a bullet for
 each upstream of the form:
 
-  - **Wire upstream \`<name>\`**: Set \`VITE_<NAME_UPPER_SNAKE>_URL=<URL>\` in
-    \`<appPath>/.env\` BEFORE \`npm run build\`. The URL comes from the
-    \`## Dependency endpoint resolved\` comment for \`<name>\` posted on
-    this issue.
+  - **Wire upstream \`<name>\`**: Read the URL from
+    \`window._env_.<NAME_UPPER_SNAKE>_URL\` via \`src/env.ts\`. The
+    platform writes per-env values into \`/env-config.js\` on the
+    SPA's ReleaseBinding — no build-time configuration is required.
 
 \`<NAME_UPPER_SNAKE>\` is the upstream component name converted to
-upper-snake-case (e.g. \`todo-api\` → \`TODO_API\`). The .env key MUST
-match the SKILL's required \`VITE_<UPSTREAM>_URL\` pattern verbatim —
-this is the contract the SPA's \`src/api.ts\` reads with \`import.meta.env\`.
+upper-snake-case (e.g. \`todo-api\` → \`TODO_API\`). Use that exact key
+on \`window._env_\` — it matches what the BFF emits.
 
 ALSO add an **Acceptance criteria** bullet for web-app tasks: "The SPA's
-API client (\`src/api.ts\` or equivalent) reads each upstream URL via
-\`import.meta.env.VITE_<UPSTREAM>_URL\` and throws on missing value — no
-silent \`?? ""\` fallback. (The silent fallback shipped a production
-\`405\` bug; see SKILL.)"
+API client (\`src/api.ts\` or equivalent) reads each upstream URL from
+\`window._env_.<UPSTREAM>_URL\` via the typed \`src/env.ts\` shim and
+throws on missing value — no silent \`?? ""\` fallback. The platform's
+\`env-config.js\` is loaded synchronously before the bundle so the value
+is always populated when modules evaluate."
 
 For service components (NOT web-apps), add a **Scope** bullet: "Do NOT
 add CORS middleware. The platform's gateway attaches an Envoy CORS
@@ -421,9 +409,9 @@ Also add an **Acceptance criteria** bullet: "Calls to external upstream
 expectation: \`none\` → no Authorization header; \`bearer\` → caller's
 \`Authorization\` header forwarded; \`api-key\` → static key from env.>"
 
-These are external endpoints fixed at design time — there is NO
-\`## Dependency endpoint resolved\` comment for them (that mechanism is
-only for sibling components built by this project). The URL is canonical.
+These are external endpoints fixed at design time — the URL is
+canonical and the platform supplies it via the ReleaseBinding env
+block on dispatch.
 
 Hard rules:
   - Stay at the WHAT/boundary altitude. Do NOT write step-by-step instructions,

@@ -3,18 +3,20 @@ package models
 // DesignComponent describes a single component within a design.
 // This matches the structured output schema from the AI Agent SDK.
 type DesignComponent struct {
-	Name                       string         `json:"name"`
-	ComponentType              string         `json:"componentType"`
-	Language                   string         `json:"language"`
-	DependsOn                  []string       `json:"dependsOn"`
-	Entrypoint                 string         `json:"entrypoint"`
-	Buildpack                  string         `json:"buildpack"`
-	AppPath                    string         `json:"appPath"`
-	OpenAPISpec                string         `json:"openAPISpec"`
-	ComponentAgentInstructions string         `json:"componentAgentInstructions"`
-	Api                        *APISecurity   `json:"api,omitempty"`
-	Auth                       *ComponentAuth `json:"auth,omitempty"`
-	DependentApis              []DependentAPI `json:"dependentApis,omitempty"`
+	Name                       string           `json:"name"`
+	ComponentType              string           `json:"componentType"`
+	Language                   string           `json:"language"`
+	DependsOn                  []string         `json:"dependsOn"`
+	Entrypoint                 string           `json:"entrypoint"`
+	Buildpack                  string           `json:"buildpack"`
+	AppPath                    string           `json:"appPath"`
+	OpenAPISpec                string           `json:"openAPISpec"`
+	ComponentAgentInstructions string           `json:"componentAgentInstructions"`
+	Api                        *APISecurity     `json:"api,omitempty"`
+	Auth                       *ComponentAuth   `json:"auth,omitempty"`
+	CallerIdentity             *CallerIdentity  `json:"callerIdentity,omitempty"`
+	ExposesAPI                 *ExposesAPI      `json:"exposesAPI,omitempty"`
+	DependentApis              []DependentAPI   `json:"dependentApis,omitempty"`
 }
 
 // DependentAPI is an HTTP endpoint outside this project that a component
@@ -32,9 +34,29 @@ type DependentAPI struct {
 
 // APISecurity carries the component's HTTP API security policy. Absent / nil
 // ⇒ public (no AP hop). `Security: "required"` ⇒ AP enforces JWT validation.
-// See docs/design/api-platform-integration.md section 5.1.
+//
+// Deprecated: prefer ExposesAPI. Kept as a backwards-compat alias for
+// older designs.
 type APISecurity struct {
 	Security string `json:"security,omitempty"`
+}
+
+// ExposesAPI is the Phase-2 replacement for APISecurity. Carried on
+// service components only. `Auth: "end-user-required"` ⇒ gateway
+// validates an end-user JWT and injects UserContext (default
+// X-User-Id) before forwarding upstream.
+type ExposesAPI struct {
+	Managed     bool   `json:"managed,omitempty"`
+	Auth        string `json:"auth,omitempty"`        // "end-user-required" | "service-required" | "none"
+	UserContext string `json:"userContext,omitempty"` // injected header name
+}
+
+// CallerIdentity is the Phase-2 replacement for ComponentAuth on
+// web-app components. `Mode: "end-user"` ⇒ the SPA performs OIDC
+// Authorization Code + PKCE against the platform IDP and the BFF
+// declares the per-project OAuth client lazily.
+type CallerIdentity struct {
+	Mode string `json:"mode,omitempty"` // "end-user" | "service-account" | "none"
 }
 
 // ComponentAuth carries the OIDC relying-party configuration for a web-app

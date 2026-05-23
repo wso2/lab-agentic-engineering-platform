@@ -1,5 +1,13 @@
 # Web → API URL wiring — V1 hardening plan
 
+> **Superseded by [`auth-and-runtime-config-refactor.md`](auth-and-runtime-config-refactor.md).**
+> URL wiring no longer happens via the `## Dependency endpoint resolved`
+> comment channel or `.env`-baked-at-build. The BFF's `RuntimeConfigService`
+> writes per-env `env-config.js` into each SPA's ReleaseBinding; the SPA
+> reads `window._env_.<UPSTREAM>_URL` at runtime. The four hardening layers
+> below are obsolete — the contract is now structural (BFF emits the URL,
+> agent reads `window._env_`) instead of comment-trail-driven.
+
 **Status**: proposal, awaiting platform-design-expert review of diffs
 **Date**: 2026-05-16
 **Replaces**: an earlier same-origin-proxy proposal (rejected — OC `dependencies.endpoints` cannot inject the externally-reachable URL, only the in-cluster `*.svc.cluster.local` URL; a static `dist/config.json` injected at Docker build is equivalent to today's `.env` bake, not strictly simpler)

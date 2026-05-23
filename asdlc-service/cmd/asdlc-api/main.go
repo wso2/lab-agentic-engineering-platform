@@ -244,8 +244,7 @@ func main() {
 	// dispatch path (after CreateComponent) and the design-edit path
 	// (after `components/<name>/design.md` PUT). See
 	// docs/design/api-platform-integration.md §6 Phase 2.
-	traitSyncService := services.NewTraitSyncService(componentClient, artifactStore, cfg.FeatureEmitAPITrait)
-	slog.Info("Trait sync service", "enabled", cfg.FeatureEmitAPITrait)
+	traitSyncService := services.NewTraitSyncService(componentClient, artifactStore)
 	if hook, ok := designService.(services.DesignServiceWithTraitSync); ok {
 		hook.SetTraitSync(traitSyncService)
 	}
@@ -374,37 +373,15 @@ func main() {
 	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
 		hook.SetTraitSync(traitSyncService)
 	}
-	// Wire the user-apps OIDC config so dispatch posts the
-	// `## OIDC client provisioned` comment on web-app issues with
-	// design.auth.kind=oidc-spa. See docs/design/oauth-protected-webapp.md.
-	if oidcSetter, ok := dispatchSvc.(interface {
-		SetUserAppsOIDC(services.UserAppsOIDC)
-	}); ok {
-		oidcSetter.SetUserAppsOIDC(services.UserAppsOIDC{
-			Issuer:            cfg.UserAppsOIDC.Issuer,
-			ClientID:          cfg.UserAppsOIDC.ClientID,
-			Scopes:            cfg.UserAppsOIDC.Scopes,
-			InternalProxyPass: cfg.UserAppsOIDC.InternalProxyPass,
-		})
-		if cfg.UserAppsOIDC.ClientID == "" {
-			slog.Warn("USER_APPS_OIDC_CLIENT_ID empty — user web-apps with auth.kind=oidc-spa will deploy without an OIDC client comment posted")
-		} else {
-			slog.Info("UserApps OIDC wired", "issuer", cfg.UserAppsOIDC.Issuer, "clientID", cfg.UserAppsOIDC.ClientID, "scopes", cfg.UserAppsOIDC.Scopes, "internalProxyPass", cfg.UserAppsOIDC.InternalProxyPass)
-		}
-	}
-	// Plumb the Thunder admin client into dispatch so the cascade hook can
-	// register a deployed user-webapp's external URL on the user-apps
-	// OAuth client's redirect_uris set. Without this, browser sign-in
-	// fails on the first load with "Invalid redirect URI" until an
-	// operator appends the URL by hand. See dispatch_service.go's
-	// RegisterUserAppRedirectURI.
+	runtimeConfigSvc := services.NewRuntimeConfigService(componentClient, artifactStore)
+	runtimeConfigSvc.SetPlatformIDP(cfg.PlatformIDP.Issuer, "openid profile email")
 	if thunderAdminClient != nil {
-		if setter, ok := dispatchSvc.(interface {
-			SetThunderAdminClient(thundersvc.Client)
-		}); ok {
-			setter.SetThunderAdminClient(thunderAdminClient)
-			slog.Info("Thunder admin client wired into dispatch (auto-register webapp redirect URIs on deploy)")
-		}
+		runtimeConfigSvc.SetThunderAdmin(thunderAdminClient)
+	}
+	if rcSetter, ok := dispatchSvc.(interface {
+		SetRuntimeConfig(*services.RuntimeConfigService)
+	}); ok {
+		rcSetter.SetRuntimeConfig(runtimeConfigSvc)
 	}
 	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
 
@@ -414,7 +391,10 @@ func main() {
 	// re-evaluate `on_hold` siblings and auto-dispatch the ones
 	// whose deps are now satisfied. See docs/design/cross-component-
 	// wiring-gaps.md §3 F1.
-	projector.SetDispatchHook(services.NewDispatchCascadeHook(db, dispatchSvc))
+	cascadeHook := services.NewDispatchCascadeHook(db, dispatchSvc)
+	cascadeHook.SetTraitSync(traitSyncService)
+	cascadeHook.SetRuntimeConfig(runtimeConfigSvc)
+	projector.SetDispatchHook(cascadeHook)
 
 	webhook.Register(webhookRouter, db, projector, wfRunService)
 	if gitClient != nil {

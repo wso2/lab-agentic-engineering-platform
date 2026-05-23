@@ -31,6 +31,28 @@ else
         exit 1
     fi
 
+    # Dev mode — bind-mount remote-worker/plugin into the k3d server node so
+    # the dev variant of app-factory-coding-agent can hostPath-mount it into
+    # the runner pod (live skill edits, no image rebuild). The mount must be
+    # baked into the cluster at create-time; k3d has no in-place equivalent.
+    if [ "${ASDLC_DEV_RUNNER:-0}" = "1" ]; then
+        PLUGIN_HOST_PATH="$(cd "${SCRIPT_DIR}/../../remote-worker/plugin" && pwd)"
+        if [ ! -d "$PLUGIN_HOST_PATH" ]; then
+            echo "❌ ASDLC_DEV_RUNNER=1 but plugin dir not found at $PLUGIN_HOST_PATH"
+            exit 1
+        fi
+        K3D_CONFIG_DEV="/tmp/k3d-local-config.dev.yaml"
+        cp "$K3D_CONFIG" "$K3D_CONFIG_DEV"
+        cat >> "$K3D_CONFIG_DEV" <<EOF
+volumes:
+  - volume: ${PLUGIN_HOST_PATH}:/asdlc-dev/plugin
+    nodeFilters:
+      - server:*
+EOF
+        K3D_CONFIG="$K3D_CONFIG_DEV"
+        echo "🧪 ASDLC_DEV_RUNNER=1 — k3d node will bind-mount ${PLUGIN_HOST_PATH} → /asdlc-dev/plugin"
+    fi
+
     if [ "$is_colima" = true ]; then
         echo "🚀 Creating k3d cluster (Colima detected — K3D_FIX_DNS=0)..."
         K3D_FIX_DNS=0 k3d cluster create --config "$K3D_CONFIG"
