@@ -69,18 +69,6 @@ export const SlimComponent = z.object({
     .describe(
       "Detailed implementation instructions for the Generator agent",
     ),
-  api: z
-    .object({
-      security: z
-        .enum(["required", "none"])
-        .describe(
-          "Legacy alias for exposesAPI.auth. 'required' enables JWT validation at the gateway; 'none' (or omitted) is a public API. Prefer 'exposesAPI' on new designs.",
-        ),
-    })
-    .optional()
-    .describe(
-      "Deprecated. Use 'exposesAPI' on new designs — emitted only for backwards compatibility with old design.md files.",
-    ),
   exposesAPI: z
     .object({
       managed: z
@@ -103,7 +91,7 @@ export const SlimComponent = z.object({
     })
     .optional()
     .describe(
-      "API exposure policy (services only). Omit for public APIs. Set 'auth: end-user-required' when callers are end users; the gateway validates the JWT and injects X-User-Id. Replaces the legacy 'api.security' field.",
+      "API exposure policy (services only). Omit for public APIs. Set 'auth: end-user-required' when callers are end users; the gateway validates the JWT and injects X-User-Id.",
     ),
   callerIdentity: z
     .object({
@@ -115,25 +103,7 @@ export const SlimComponent = z.object({
     })
     .optional()
     .describe(
-      "Caller-identity intent. Replaces the legacy 'auth.kind: oidc-spa' for web-app components — set 'mode: end-user' instead, and the platform handles OIDC provisioning + runtime config injection.",
-    ),
-  auth: z
-    .object({
-      kind: z
-        .literal("oidc-spa")
-        .describe(
-          "Legacy alias for callerIdentity.mode='end-user'. Kept for backwards compatibility with old design.md files.",
-        ),
-      upstream: z
-        .string()
-        .optional()
-        .describe(
-          "Name of the protected service this SPA signs in to call. Now optional — the platform derives upstream URLs from the dependsOn graph.",
-        ),
-    })
-    .optional()
-    .describe(
-      "Deprecated. Use 'callerIdentity' on new designs. Emitted only for backwards compatibility with old design.md files.",
+      "Caller-identity intent. Set 'mode: end-user' on web-app components that sign users in via the platform IDP; the platform handles OIDC provisioning + runtime config injection.",
     ),
   dependentApis: z
     .array(DependentApi)

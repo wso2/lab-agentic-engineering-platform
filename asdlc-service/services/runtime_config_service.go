@@ -193,9 +193,9 @@ func (s *RuntimeConfigService) EmitForProjectSPAs(ctx context.Context, orgID, pr
 //   - `<UPPER_SNAKE_NAME>_URL` — every dep, keyed by component name. Lets
 //     a SPA with multiple backends address each one explicitly.
 //   - `THUNDER_*` — OIDC config. Emitted when the webapp's design
-//     declares `auth.kind: oidc-spa` (or Phase 2's `callerIdentity.mode:
-//     end-user`). The BFF declares the per-project OAuth client in
-//     Thunder lazily here; the agent never sees a client_id.
+//     declares `callerIdentity.mode: end-user`. The BFF declares the
+//     per-project OAuth client in Thunder lazily here; the agent never
+//     sees a client_id.
 // buildEnvValues returns the map + a `ready` flag. The flag is false
 // when a required key couldn't be populated yet (transient OC error,
 // SPA URL not yet resolved, etc.). The caller must NOT write a
@@ -269,22 +269,16 @@ func (s *RuntimeConfigService) buildEnvValues(ctx context.Context, orgID, projec
 }
 
 // oidcSPAEnabled returns true when the component should receive
-// THUNDER_* keys in its env-config.js. The new `callerIdentity.mode`
-// field is authoritative when present — if a migration set it to
-// `service-account`, that's binding even if a stale legacy `auth.kind:
-// oidc-spa` is still on disk. Only when CallerIdentity is absent
-// entirely does the legacy `auth.kind` apply.
+// THUNDER_* keys in its env-config.js — `callerIdentity.mode: end-user`
+// on a web-app component.
 func oidcSPAEnabled(c *models.DesignComponent) bool {
 	if c == nil || c.ComponentType != "web-app" {
 		return false
 	}
-	if c.CallerIdentity != nil && c.CallerIdentity.Mode != "" {
-		return c.CallerIdentity.Mode == "end-user"
+	if c.CallerIdentity == nil {
+		return false
 	}
-	if c.Auth != nil && c.Auth.Kind == "oidc-spa" {
-		return true
-	}
-	return false
+	return c.CallerIdentity.Mode == "end-user"
 }
 
 // layerThunderKeys writes the OIDC client config into the env-config.js

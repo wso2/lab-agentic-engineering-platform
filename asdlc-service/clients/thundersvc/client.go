@@ -68,7 +68,7 @@ type Client interface {
 	// EnsureRedirectURIs appends the given URIs to the named OAuth2
 	// app's `inboundAuthConfig[0].config.redirectUris` set, idempotent
 	// on each URI (already-present entries are skipped). Used by the
-	// BFF when a web-app component with `auth.kind: oidc-spa` lands
+	// BFF when a web-app component with `callerIdentity.mode: end-user` lands
 	// `deployed` — its public URL is unknown until then, but Thunder
 	// rejects /oauth2/authorize requests whose redirect_uri isn't on
 	// the registered list. `clientID` is the OAuth client_id string

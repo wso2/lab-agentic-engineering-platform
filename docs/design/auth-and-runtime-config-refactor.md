@@ -1025,10 +1025,13 @@ SPAs continue working until cut over.
 **Code changes:**
 
 23. **`CLAUDE.md`** — reflect the new generated app shape.
-24. **`docs/design/architecture.md`, `oauth-protected-webapp.md`,
-    `agent-orchestrator.md`** — update to describe the
-    runtime-config flow.
-25. **`requirements/`** — update any scenarios that reference the
+24. **`docs/design/architecture.md`, `agent-orchestrator.md`** —
+    update to describe the runtime-config flow.
+25. **Delete `docs/design/oauth-protected-webapp.md` and
+    `cross-component-url-hardening.md`** — both describe the
+    superseded build-time-bake + issue-comment channel; the present
+    document is the single source of truth.
+26. **`requirements/`** — update any scenarios that reference the
     old `.env` / `## OIDC client provisioned` flow.
 
 **Test gate:** none — no behaviour change. CI link-check + spell-check.

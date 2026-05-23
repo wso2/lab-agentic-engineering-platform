@@ -19,7 +19,7 @@ import (
 //  1. Dispatch path (`dispatch_service.go`): after CreateComponent so a
 //     newly-protected component lands with traits set immediately.
 //  2. Design edit path (`design_service.UpdateDesignFile`): after the
-//     user toggles `api.security` on `design.md` so the trait shape
+//     user toggles `exposesAPI.auth` on `design.md` so the trait shape
 //     propagates without waiting for the next dispatch.
 //
 // Concurrency: every call acquires a per-component mutex keyed by
@@ -251,7 +251,7 @@ func (s *TraitSyncService) DeleteComponentCascade(ctx context.Context, orgID, pr
 }
 
 // SyncProjectAPITraits re-emits `api-configuration` trait state on every
-// service component in the project whose design has `api.security: required`.
+// service component in the project whose design has `exposesAPI.auth: end-user-required`.
 // Called from the dispatch path so that when ANY component lands `deployed`
 // (and especially a freshly-added SPA), every protected API in the project
 // picks up the new sibling origin in its `cors.allowedOrigins`. Without

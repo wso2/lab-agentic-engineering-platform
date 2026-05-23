@@ -76,7 +76,7 @@ type designService struct {
 	gitClient    gitservice.Client
 	taskSvc      TaskService // for SaveAndProceed reconciliation; may be nil in tests
 	// traitSync, when non-nil, is invoked after a per-component design
-	// edit so an `api.security` toggle propagates to the OC Component +
+	// edit so an `exposesAPI.auth` toggle propagates to the OC Component +
 	// ReleaseBindings without waiting for the next dispatch. Set via
 	// SetTraitSync. Optional in tests.
 	traitSync *TraitSyncService
@@ -91,7 +91,7 @@ type DesignServiceWithTaskHook interface {
 }
 
 // DesignServiceWithTraitSync surfaces the trait_sync setter so an
-// `api.security` toggle on design.md propagates to OC after the file is
+// `exposesAPI.auth` toggle on design.md propagates to OC after the file is
 // written. Mirrors the DesignServiceWithTaskHook pattern.
 type DesignServiceWithTraitSync interface {
 	DesignService
@@ -425,7 +425,7 @@ func (s *designService) GetDesignBundleAtTag(ctx context.Context, orgID, project
 // the refreshed bundle.
 //
 // Side effect: when the written file is a per-component `design.md`,
-// fire `SyncComponentTraits` so an `api.security` toggle propagates to
+// fire `SyncComponentTraits` so an `exposesAPI.auth` toggle propagates to
 // the OC Component + ReleaseBindings before the next dispatch. Best-
 // effort — failures are logged but never bubble (design tree is the
 // canonical source; the trait_sync watcher reconciles on the next
@@ -451,7 +451,7 @@ func (s *designService) UpdateDesignFile(ctx context.Context, orgID, projectID, 
 // componentNameFromDesignPath returns the component name encoded in a
 // `components/<name>/design.md` sub-path, or false for any other path
 // (root design.md, openapi.yaml, etc.). Used by UpdateDesignFile to gate
-// the trait_sync hook to the one path where `api.security` lives.
+// the trait_sync hook to the one path where `exposesAPI.auth` lives.
 func componentNameFromDesignPath(subPath string) (string, bool) {
 	const prefix = "components/"
 	const suffix = "/design.md"

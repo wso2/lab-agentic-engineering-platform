@@ -294,9 +294,9 @@ Section rules:
 Auth endpoints — IDP-delegated OIDC (default):
 
 If the target component's design indicates IDP-delegated auth — i.e. a
-\`service\` with \`api.security: required\` AND a sibling \`web-app\` with
-\`auth.kind: oidc-spa\` that names it as the upstream — the API does NOT
-own auth endpoints. The issue body must:
+\`service\` with \`exposesAPI.auth: end-user-required\` AND a sibling
+\`web-app\` with \`callerIdentity.mode: end-user\` in its \`dependsOn\` —
+the API does NOT own auth endpoints. The issue body must:
 
   - For the \`service\` component:
       * Add a **Scope** bullet: "Do NOT implement \`/auth/login\`,
@@ -312,7 +312,7 @@ own auth endpoints. The issue body must:
         \`X-User-Id\`, returns only data owned by that subject. \`/health\`
         is exempt and returns 200 without auth."
 
-  - For the \`web-app\` component with \`auth.kind: oidc-spa\`:
+  - For the \`web-app\` component with \`callerIdentity.mode: end-user\`:
       * Add a **Scope** bullet: "Implement OIDC Authorization Code +
         PKCE using \`oidc-client-ts\`, configured from
         \`window._env_.THUNDER_*\`. The platform writes OIDC + upstream
@@ -340,12 +340,7 @@ own auth endpoints. The issue body must:
         \`Authorization: Bearer <token>\` and return per-user data;
         reloading the page keeps the user signed in."
 
-Skip the OIDC treatment when neither sibling is configured for it. The
-legacy username/password-in-API path remains supported for specs that
-explicitly opt out of the platform IDP — in that rare case only, fall
-back to the original sample-test-user pattern (seed \`admin\` /
-\`admin123\` on first start, post the credentials as an issue
-comment).
+Skip the OIDC treatment when neither sibling is configured for it.
 
 Web-app upstream URL wiring — Setup subsection:
 

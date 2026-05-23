@@ -286,22 +286,23 @@ type componentFrontmatter struct {
 	Buildpack      string                `yaml:"buildpack,omitempty"`
 	AppPath        string                `yaml:"appPath,omitempty"`
 	Entrypoint     string                `yaml:"entrypoint,omitempty"`
-	Api            *apiConfig            `yaml:"api,omitempty"`
-	Auth           *authConfig           `yaml:"auth,omitempty"`
 	ExposesAPI     *exposesAPIConfig     `yaml:"exposesAPI,omitempty"`
 	CallerIdentity *callerIdentityConfig `yaml:"callerIdentity,omitempty"`
 	DependentApis  []dependentApiConfig  `yaml:"dependentApis,omitempty"`
 }
 
-// exposesAPIConfig is the Phase-2 replacement for apiConfig.
+// exposesAPIConfig is the on-disk shape for a service component's API
+// exposure policy. `Auth: "end-user-required"` ⇒ gateway validates a
+// user JWT and injects UserContext upstream.
 type exposesAPIConfig struct {
 	Managed     bool   `yaml:"managed,omitempty"`
 	Auth        string `yaml:"auth,omitempty"`
 	UserContext string `yaml:"userContext,omitempty"`
 }
 
-// callerIdentityConfig is the Phase-2 replacement for authConfig on
-// web-app components.
+// callerIdentityConfig is the on-disk shape for a web-app's caller-
+// identity intent. `Mode: "end-user"` ⇒ the SPA performs OIDC + PKCE
+// against the platform IDP.
 type callerIdentityConfig struct {
 	Mode string `yaml:"mode,omitempty"`
 }
@@ -313,24 +314,6 @@ type dependentApiConfig struct {
 	URL            string `yaml:"url"`
 	Description    string `yaml:"description,omitempty"`
 	Authentication string `yaml:"authentication,omitempty"`
-}
-
-// apiConfig is the optional `api:` block in component frontmatter.
-// Absent / nil ⇒ public (no AP hop). `security: required` ⇒ AP enforces JWT
-// validation against the org's IDP. See docs/design/api-platform-integration.md
-// section 5.1.
-type apiConfig struct {
-	Security string `yaml:"security,omitempty"`
-}
-
-// authConfig is the optional `auth:` block in component frontmatter. Only
-// valid on web-app components. When `kind: oidc-spa`, the BFF dispatches the
-// SPA with a `## OIDC client provisioned` comment so the coding-agent bakes
-// the platform IDP's issuer / clientId / scopes / host into the SPA's
-// workload.yaml. See docs/design/oauth-protected-webapp.md.
-type authConfig struct {
-	Kind     string `yaml:"kind"`
-	Upstream string `yaml:"upstream,omitempty"`
 }
 
 // splitFrontmatter separates the leading YAML frontmatter block (delimited
@@ -437,14 +420,6 @@ func assembleComponent(name, designMd string, files map[string]string) (models.D
 	if dependsOn == nil {
 		dependsOn = []string{}
 	}
-	var api *models.APISecurity
-	if cfm.Api != nil && cfm.Api.Security != "" {
-		api = &models.APISecurity{Security: cfm.Api.Security}
-	}
-	var auth *models.ComponentAuth
-	if cfm.Auth != nil && cfm.Auth.Kind != "" {
-		auth = &models.ComponentAuth{Kind: cfm.Auth.Kind, Upstream: cfm.Auth.Upstream}
-	}
 	var exposes *models.ExposesAPI
 	if cfm.ExposesAPI != nil && (cfm.ExposesAPI.Auth != "" || cfm.ExposesAPI.Managed || cfm.ExposesAPI.UserContext != "") {
 		exposes = &models.ExposesAPI{
@@ -485,8 +460,6 @@ func assembleComponent(name, designMd string, files map[string]string) (models.D
 		AppPath:                    cfm.AppPath,
 		OpenAPISpec:                openapi,
 		ComponentAgentInstructions: strings.TrimSpace(body),
-		Api:                        api,
-		Auth:                       auth,
 		ExposesAPI:                 exposes,
 		CallerIdentity:             caller,
 		DependentApis:              depApis,
@@ -545,15 +518,8 @@ func SplitDesign(d *DesignFile) (map[string]string, error) {
 			AppPath:    comp.AppPath,
 			Entrypoint: comp.Entrypoint,
 		}
-		if comp.Api != nil && comp.Api.Security != "" {
-			cfm.Api = &apiConfig{Security: comp.Api.Security}
-		}
-		if comp.Auth != nil && comp.Auth.Kind != "" {
-			cfm.Auth = &authConfig{Kind: comp.Auth.Kind, Upstream: comp.Auth.Upstream}
-		}
 		// Preserve any non-empty field — gating on `Auth != ""` would drop
-		// designs that set only `managed` or `userContext` and force them
-		// through the legacy `api.security` fallback on the next round-trip.
+		// designs that set only `managed` or `userContext`.
 		if comp.ExposesAPI != nil && (comp.ExposesAPI.Auth != "" || comp.ExposesAPI.Managed || comp.ExposesAPI.UserContext != "") {
 			cfm.ExposesAPI = &exposesAPIConfig{
 				Managed:     comp.ExposesAPI.Managed,

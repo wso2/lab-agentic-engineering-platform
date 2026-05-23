@@ -43,11 +43,10 @@ Call finalize() to end the session. If finalize returns validation issues, addre
   - dependsOn names must reference other components verbatim.
   - Prefer fewer components over many.
   - **Authentication is delegated to the platform IDP — DO NOT introduce a separate auth / identity / login / session component, and DO NOT implement \`/auth/login\` or \`/auth/register\` in any service.** When the spec implies users sign in:
-      * Set \`api.security: "required"\` on the API service that owns user-scoped data (see "API security classification" below).
-      * Set \`auth: { kind: "oidc-spa", upstream: <api-name> }\` on the web-app that signs the user in. The platform's BFF supplies OIDC config + sibling API URLs to the SPA at runtime via \`window._env_\` (BFF writes \`env-config.js\` into the web-app's ReleaseBinding at \`/usr/share/nginx/html/\`; the agent's \`index.html\` loads it synchronously before the bundle). The agent never sees client IDs, redirect URIs, or upstream URLs.
+      * Set \`exposesAPI: { auth: end-user-required, userContext: X-User-Id }\` on the API service that owns user-scoped data (see "API security classification" below).
+      * Set \`callerIdentity: { mode: end-user }\` on the web-app that signs the user in. The platform's BFF supplies OIDC config + sibling API URLs to the SPA at runtime via \`window._env_\` (BFF writes \`env-config.js\` into the web-app's ReleaseBinding at \`/usr/share/nginx/html/\`; the agent's \`index.html\` loads it synchronously before the bundle). The agent never sees client IDs, redirect URIs, or upstream URLs.
       * The protected service's \`componentAgentInstructions\` MUST say: "No \`/auth/*\` endpoints. The API Platform gateway validates the JWT and the \`api-configuration\` trait's \`jwt-auth\` policy injects \`X-User-Id\` (from JWT \`sub\` claim) on every request. Read \`X-User-Id\` to identify the caller; reject (401) when missing. Per-user records (e.g. todos) MUST be keyed on \`X-User-Id\`. Do NOT validate JWTs yourself; do NOT add CORS middleware (the gateway handles CORS)."
       * The web-app's \`componentAgentInstructions\` MUST say: "OIDC Authorization Code + PKCE against the platform IDP using \`oidc-client-ts\`. Read OIDC + upstream URLs from \`window._env_.THUNDER_*\` / \`window._env_.<UPSTREAM>_URL\` — typed via \`src/env.ts\`. Attach \`Authorization: Bearer <access_token>\` to every API call. DO NOT write a \`.env\` file. DO NOT read environment variables at build time (no \`import.meta.env\`). DO NOT use envsubst, \`/etc/nginx/templates/\`, or any custom nginx entrypoint — stock \`nginx:alpine\` serves the static bundle + \`env-config.js\`. See the \`asdlc\` SKILL's 'Runtime config via window._env_' section for the reference \`index.html\`, \`src/env.ts\`, \`src/auth.ts\`, and \`src/api.ts\`." NEVER write a \`/login\` form that POSTs credentials to the API.
-  - For username/password specs that explicitly forbid an external IDP (rare — only when the spec literally says "self-contained, no platform IDP, embedded credentials"), fall back to folding \`/auth/login\` into the API service. This is the legacy path; default to OIDC.
   - **Do NOT introduce a separate storage / database / persistence component.** Persistence belongs inside the component that owns the data, using an embedded SQLite database stored on the component's local filesystem. Call this out in that component's componentAgentInstructions (which file/table, what it stores). Do not add a "db" or "storage-service" component.
   - **No scheduled-task / cronjob components.** If the spec calls for periodic / cron / batch work, fold it into the owning service (e.g. a background goroutine kicked off at startup, or an HTTP endpoint that a future scheduler can poke). Call this out in that service's componentAgentInstructions.
 
@@ -87,28 +86,28 @@ component of your own for these — they're external to your project.
 Known catalog entries (use the exact \`name\`):
   - \`employee-api\` — organisation-wide employee directory.
 
-# API security classification (api.security)
+# API security classification (\`exposesAPI\`)
 
-Set \`api.security: "required"\` on a "service" component when the spec **or** the embedded auth surface implies caller authentication is needed. Otherwise omit the \`api\` block entirely (which the platform reads as public).
+Set \`exposesAPI: { auth: end-user-required, userContext: X-User-Id }\` on a "service" component when the spec **or** the embedded auth surface implies caller authentication is needed. Otherwise omit the \`exposesAPI\` block entirely (which the platform reads as public).
 
-**Default \`required\` when the description contains any of:**
+**Default \`end-user-required\` when the description contains any of:**
   - explicit auth verbs: "login", "sign in", "sign-in", "authenticate", "authentication", "session"
   - identity tokens: "OAuth", "OIDC", "JWT", "bearer token", "API key"
   - access intent: "protected", "private", "internal-only", "authorised", "authorized", "permission", "role", "scope"
   - user-scoped data: "customer", "tenant", "user account", "user data", "user profile", "personal", "PII"
   - payment / regulated data: "billing", "payment", "subscription", "invoice", "credit card", "PCI", "HIPAA", "GDPR-restricted"
-  - the component is targeted by a sibling web-app whose \`auth.kind = "oidc-spa"\` references it (the gateway enforces JWT validation for that service)
+  - the component is targeted by a sibling web-app whose \`callerIdentity.mode = end-user\` references it (the gateway enforces JWT validation for that service)
 
-When the rubric flips a service to \`api.security: "required"\` AND a sibling web-app uses it as its sign-in upstream, ALSO emit \`auth: { kind: "oidc-spa", upstream: <service-name> }\` on that web-app. The two go together — the SPA logs in to call the protected API.
+When the rubric flips a service to \`exposesAPI.auth: end-user-required\` AND a sibling web-app uses it as its sign-in upstream, ALSO emit \`callerIdentity: { mode: end-user }\` on that web-app. The two go together — the SPA logs in to call the protected API.
 
-**Default \`none\` (omit the \`api\` block) when:**
+**Default \`none\` (omit the \`exposesAPI\` block) when:**
   - the spec describes a public landing page, marketing page, public hello-world / status / health endpoint
   - no user identity or per-user data is mentioned anywhere in the spec or the component's instructions
-  - the component is a "web-app" — frontends never carry \`api.security\` (the toggle is for backend API enforcement only; web-apps express auth via the \`auth\` block instead)
+  - the component is a "web-app" — frontends never carry \`exposesAPI\` (the toggle is for backend API enforcement only; web-apps express auth via the \`callerIdentity\` block instead)
 
 **Edge cases:**
   - When uncertain, default to **omit** (public). The user can flip it from the console; failing closed (making everything protected) breaks the dev-loop for hello-worlds.
-  - A backend that exposes BOTH public health/status AND protected user endpoints is still \`api.security: "required"\` — the toggle is per-component, not per-route. The "no per-endpoint granularity" rule is enforced by the platform's v1 trait. Document this in componentAgentInstructions so the coding agent knows which endpoints are exposed-but-authn-checked.
+  - A backend that exposes BOTH public health/status AND protected user endpoints is still \`exposesAPI.auth: end-user-required\` — the toggle is per-component, not per-route. The "no per-endpoint granularity" rule is enforced by the platform's v1 trait. Document this in componentAgentInstructions so the coding agent knows which endpoints are exposed-but-authn-checked.
 
 **Shape:**
 \`\`\`yaml

@@ -27,7 +27,7 @@ asdlc/
 - `agent-orchestrator.md` — agents-service (Vercel AI SDK)
 - `git-integration.md` — Git provider integration
 - `openchoreo-client.md` — OpenChoreo client layer
-- `oauth-protected-webapp.md` — OIDC-SPA webapp pattern (Thunder + API Platform gateway)
+- `auth-and-runtime-config-refactor.md` — auth + runtime-config canonical spec (window._env_ flow, BFF-owned ReleaseBinding env-config.js, per-project Thunder OAuth client)
 - `testing.md` — Testing strategy
 
 Keep design docs current. They reflect the high-level architecture, not specific tasks.
@@ -88,7 +88,7 @@ The BFF's `/webhooks/github` is reached via a smee.io channel (`GITHUB_WEBHOOK_P
 Specs and designs are stored as files under `specs/` inside each project's cloned git repo (not PostgreSQL):
 
 - `specs/requirements/` — `requirements.md` (required) + optional `functional-requirements.md`, `non-functional-requirements.md`, `user-stories.md`, `wireframes.{dsl,excalidraw}`, `domain-model.{dsl,excalidraw}`.
-- `specs/design/` — `design.md` (root) + `components/<name>/design.md` (YAML frontmatter: `type`, `language`, `dependsOn`, `buildpack`, `appPath`, `entrypoint`, optional `exposesAPI` (services), optional `callerIdentity` (webapps)) + `components/<name>/openapi.yaml` (services only). `api.security` + `auth.kind` are accepted as legacy aliases for backwards compatibility.
+- `specs/design/` — `design.md` (root) + `components/<name>/design.md` (YAML frontmatter: `type`, `language`, `dependsOn`, `buildpack`, `appPath`, `entrypoint`, optional `exposesAPI` (services), optional `callerIdentity` (webapps)) + `components/<name>/openapi.yaml` (services only).
 
 The BFF reads/writes via `ArtifactStore`; commits go through `git-service`. `ComponentTask` + `ComponentConfig` live in PostgreSQL.
 

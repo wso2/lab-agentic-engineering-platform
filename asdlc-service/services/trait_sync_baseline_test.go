@@ -6,32 +6,31 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
-// TestBaseline_NoAPIBlock_ProducesNoTrait is the §13 baseline-diff
-// guarantee: a component whose design.md has no `api` block in
+// TestBaseline_NoExposesAPI_ProducesNoTrait is the baseline-diff
+// guarantee: a component whose design.md has no `exposesAPI` block in
 // frontmatter produces zero traits + no env config entries. That keeps
 // the on-cluster Component CR + ReleaseBindings bit-identical to the
-// pre-Phase-2 baseline for the corpus of existing unprotected
-// components.
-func TestBaseline_NoAPIBlock_ProducesNoTrait(t *testing.T) {
+// baseline for the corpus of existing unprotected components.
+func TestBaseline_NoExposesAPI_ProducesNoTrait(t *testing.T) {
 	cases := []struct {
-		name string
-		api  *models.APISecurity
+		name    string
+		exposes *models.ExposesAPI
 	}{
-		{"nil api block", nil},
-		{"empty security string", &models.APISecurity{Security: ""}},
-		{"explicit none", &models.APISecurity{Security: "none"}},
-		{"unrecognised value defensive none", &models.APISecurity{Security: "yes"}},
+		{"nil exposesAPI block", nil},
+		{"empty auth string", &models.ExposesAPI{Auth: ""}},
+		{"explicit none", &models.ExposesAPI{Auth: "none"}},
+		{"unrecognised value defensive none", &models.ExposesAPI{Auth: "yes"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			comp := models.DesignComponent{
 				Name:          "svc",
 				ComponentType: "service",
-				Api:           c.api,
+				ExposesAPI:    c.exposes,
 			}
 			enabled := ResolveAPISecurityEnabled(comp)
 			if enabled {
-				t.Fatalf("ResolveAPISecurityEnabled = true for %s (api=%+v); want false", c.name, c.api)
+				t.Fatalf("ResolveAPISecurityEnabled = true for %s (exposesAPI=%+v); want false", c.name, c.exposes)
 			}
 			traits, configs := DesiredAPIConfigurationTrait("svc", enabled)
 			if len(traits) != 0 {
@@ -55,18 +54,18 @@ func TestBaseline_NoAPIBlock_ProducesNoTrait(t *testing.T) {
 }
 
 // TestProtected_ProducesCanonicalTrait — paired contract: a component
-// marked `api.security: required` produces exactly the trait shape the
-// canonical wso2cloud `api-configuration` ClusterTrait expects. Pins
-// the on-cluster CR contents so a future refactor of the helper can't
-// silently change the wire shape.
+// marked `exposesAPI.auth: end-user-required` produces exactly the
+// trait shape the canonical wso2cloud `api-configuration` ClusterTrait
+// expects. Pins the on-cluster CR contents so a future refactor of the
+// helper can't silently change the wire shape.
 func TestProtected_ProducesCanonicalTrait(t *testing.T) {
 	comp := models.DesignComponent{
 		Name:          "todo-api",
 		ComponentType: "service",
-		Api:           &models.APISecurity{Security: "required"},
+		ExposesAPI:    &models.ExposesAPI{Auth: "end-user-required", UserContext: "X-User-Id"},
 	}
 	if !ResolveAPISecurityEnabled(comp) {
-		t.Fatal("ResolveAPISecurityEnabled should be true for security=required")
+		t.Fatal("ResolveAPISecurityEnabled should be true for auth=end-user-required")
 	}
 	traits, configs := DesiredAPIConfigurationTrait("todo-api", true)
 	if len(traits) != 1 {

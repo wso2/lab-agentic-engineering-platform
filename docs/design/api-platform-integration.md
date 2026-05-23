@@ -1,5 +1,15 @@
 # API Platform integration — production implementation plan (v6)
 
+> **Schema note (post auth-and-runtime-config-refactor):** This doc was
+> written under the original `api.security: required` schema. The
+> active schema is `exposesAPI: { auth: end-user-required, userContext:
+> X-User-Id }` — see `docs/design/auth-and-runtime-config-refactor.md`
+> for the canonical spec. Read references to `api.security: required`
+> below as `exposesAPI.auth: end-user-required` (semantically
+> equivalent — the trait emitter, gateway behaviour, and JWT
+> validation are unchanged). The Go BFF accepts only the new schema;
+> the legacy field has been deleted from `models.DesignComponent`.
+
 **Status:** Phases 1, 2, 3, 4, 5, 6, 7 ✅ implemented. Substrate verified (`deployments/POC-API-PLATFORM.md`).
 
 **Branch:** `poc-api-platform` (tracking `upstream/design-revamp`).

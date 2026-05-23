@@ -92,7 +92,7 @@ type CreateComponentRequest struct {
 	Workflow    *ComponentWorkflowSpec `json:"workflow,omitempty"`
 	// Traits are ClusterTrait attachments emitted by the BFF based on
 	// design.md frontmatter (e.g. `api-configuration` when
-	// `api.security: required`). See services/trait_sync.go for the
+	// `exposesAPI.auth: end-user-required`). See services/trait_sync.go for the
 	// canonical emitter.
 	Traits []ComponentTrait `json:"traits,omitempty"`
 }
