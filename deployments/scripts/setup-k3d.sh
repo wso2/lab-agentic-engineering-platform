@@ -31,14 +31,19 @@ else
         exit 1
     fi
 
-    # Dev mode — bind-mount remote-worker/plugin into the k3d server node so
-    # the dev variant of app-factory-coding-agent can hostPath-mount it into
-    # the runner pod (live skill edits, no image rebuild). The mount must be
-    # baked into the cluster at create-time; k3d has no in-place equivalent.
-    if [ "${ASDLC_DEV_RUNNER:-0}" = "1" ]; then
+    # Dev plugin overlay (default ON) — bind-mount remote-worker/plugin into
+    # the k3d server node so the dev variant of app-factory-coding-agent can
+    # hostPath-mount it into the runner pod (live skill edits, no image
+    # rebuild). The mount must be baked into the cluster at create-time;
+    # k3d has no in-place equivalent. Opt out with ASDLC_PROD_RUNNER=1 to
+    # mirror the published-image flow (no host overlay).
+    if [ "${ASDLC_PROD_RUNNER:-0}" = "1" ]; then
+        echo "🏷  ASDLC_PROD_RUNNER=1 — skipping host plugin bind-mount (using baked-in image plugin)"
+    else
         PLUGIN_HOST_PATH="$(cd "${SCRIPT_DIR}/../../remote-worker/plugin" && pwd)"
         if [ ! -d "$PLUGIN_HOST_PATH" ]; then
-            echo "❌ ASDLC_DEV_RUNNER=1 but plugin dir not found at $PLUGIN_HOST_PATH"
+            echo "❌ Dev plugin overlay enabled but plugin dir not found at $PLUGIN_HOST_PATH"
+            echo "   Set ASDLC_PROD_RUNNER=1 to skip the overlay, or restore the plugin dir."
             exit 1
         fi
         K3D_CONFIG_DEV="/tmp/k3d-local-config.dev.yaml"
@@ -50,7 +55,7 @@ volumes:
       - server:*
 EOF
         K3D_CONFIG="$K3D_CONFIG_DEV"
-        echo "🧪 ASDLC_DEV_RUNNER=1 — k3d node will bind-mount ${PLUGIN_HOST_PATH} → /asdlc-dev/plugin"
+        echo "🧪 dev plugin overlay — k3d node will bind-mount ${PLUGIN_HOST_PATH} → /asdlc-dev/plugin"
     fi
 
     if [ "$is_colima" = true ]; then

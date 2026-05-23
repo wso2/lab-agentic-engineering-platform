@@ -57,17 +57,22 @@ apply_with_retry() {
 apply_with_retry "${SCRIPT_DIR}/../manifests/docker-build-workflow.yaml" "docker-build-workflow"
 echo "✅ ClusterWorkflow 'dockerfile-builder' installed"
 
-# Dev mode splices a hostPath overlay onto /app/plugin in the runner pod so
-# the host's remote-worker/plugin is read live. The prod manifest stays the
-# single source of truth; yq layers the dev-patch fragment over it at apply
-# time so other fields can't drift. Requires setup-k3d.sh to have been run
-# with ASDLC_DEV_RUNNER=1 (bind-mount baked into the node).
+# Default: splice a hostPath overlay onto /app/plugin in the runner pod so
+# the host's remote-worker/plugin is read live (skill edits without an image
+# rebuild). The prod manifest stays the single source of truth; yq layers
+# the dev-patch fragment over it at apply time so other fields can't drift.
+# Requires setup-k3d.sh to have baked the bind-mount onto the node.
+# Opt out with ASDLC_PROD_RUNNER=1 to mirror the published-image flow.
 CODING_AGENT_MANIFEST="${SCRIPT_DIR}/../manifests/app-factory-coding-agent.yaml"
 CODING_AGENT_PATCH="${SCRIPT_DIR}/../manifests/app-factory-coding-agent.dev-patch.yaml"
 
-if [ "${ASDLC_DEV_RUNNER:-0}" = "1" ]; then
+if [ "${ASDLC_PROD_RUNNER:-0}" = "1" ]; then
+    apply_with_retry "$CODING_AGENT_MANIFEST" "app-factory-coding-agent"
+    echo "✅ ClusterWorkflow 'app-factory-coding-agent' installed (PROD — baked-in image plugin)"
+else
     if ! command -v yq &>/dev/null; then
-        echo "❌ ASDLC_DEV_RUNNER=1 needs yq for the dev-patch merge — 'brew install yq'"
+        echo "❌ Dev plugin overlay needs yq for the patch merge — 'brew install yq'"
+        echo "   Or set ASDLC_PROD_RUNNER=1 to skip the overlay."
         exit 1
     fi
     DEV_MANIFEST="$(mktemp -t app-factory-coding-agent.dev.XXXXXX.yaml)"
@@ -80,9 +85,6 @@ if [ "${ASDLC_DEV_RUNNER:-0}" = "1" ]; then
     " "$CODING_AGENT_MANIFEST" > "$DEV_MANIFEST"
     apply_with_retry "$DEV_MANIFEST" "app-factory-coding-agent (dev — hostPath overlay)"
     echo "✅ ClusterWorkflow 'app-factory-coding-agent' installed (DEV — /app/plugin overlay live from host)"
-else
-    apply_with_retry "$CODING_AGENT_MANIFEST" "app-factory-coding-agent"
-    echo "✅ ClusterWorkflow 'app-factory-coding-agent' installed (one-shot coding-agent pod)"
 fi
 
 # ============================================================================
