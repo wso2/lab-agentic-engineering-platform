@@ -43,11 +43,7 @@ Use these EXACT spellings — do not invent new keys:
 | `API_BASE_URL` | this web-app `dependsOn` a service sibling | external gateway URL of the primary upstream service in this project |
 | `<UPSTREAM>_URL` | this web-app `dependsOn` `<upstream>` | external gateway URL of that sibling (`<UPSTREAM>` = upstream component name in `UPPER_SNAKE_CASE`, e.g. `todo-api` → `TODO_API_URL`) |
 | `<NAME>_URL` | this web-app `dependentApis` includes `<name>` | external gateway URL of that external dependent API (same UPPER_SNAKE convention, e.g. `employee-api` → `EMPLOYEE_API_URL`) |
-| `THUNDER_URL` | this web-app has `callerIdentity.mode: end-user` | OIDC issuer / authority (see `thunder-authentication` skill) |
-| `THUNDER_CLIENT_ID` | same | per-project Thunder OAuth client id |
-| `THUNDER_REDIRECT_URI` | same | absolute URL of this SPA's `/callback` route |
-| `THUNDER_SCOPES` | same | space-separated OIDC scopes |
-| `THUNDER_AFTER_SIGN_IN_URL` | same | absolute URL to land on after sign-in (usually the SPA root) |
+| `THUNDER_*` | this web-app has `callerIdentity.mode: end-user` | OIDC config keys (`THUNDER_URL`, `THUNDER_CLIENT_ID`, `THUNDER_REDIRECT_URI`, `THUNDER_SCOPES`, `THUNDER_AFTER_SIGN_IN_URL`) — owned by the `thunder-authentication` skill; see it for the per-key meanings and wiring |
 | `<NAME>` (any) | the agent declared it in `workload.yaml` `configurations.env` | app-config default (per-env override possible) |
 
 ## Recommended practice
@@ -140,12 +136,9 @@ missing (which means a config bug, not a missing key default):
 type Env = {
   API_BASE_URL: string;
   // Plus one <UPSTREAM>_URL per dependsOn entry, if any.
-  // OIDC keys — present iff this SPA has callerIdentity.mode: end-user.
-  THUNDER_URL: string;
-  THUNDER_CLIENT_ID: string;
-  THUNDER_REDIRECT_URI: string;
-  THUNDER_SCOPES: string;
-  THUNDER_AFTER_SIGN_IN_URL: string;
+  // If this SPA has callerIdentity.mode: end-user, the THUNDER_* OIDC
+  // keys are also present — extend this type with them per the
+  // thunder-authentication skill, which owns the auth wiring.
 };
 
 declare global {
@@ -166,7 +159,11 @@ export const env: Env = window._env_;
 `src/api.ts` — read the upstream URL at module top-level; throw on
 missing. Do NOT write `?? ""` or any other silent default — that
 fallback produces the v0 `405 Method Not Allowed` bug where every
-fetch becomes a relative URL hitting the SPA's own nginx.
+fetch becomes a relative URL hitting the SPA's own nginx. The example
+below is the unauthenticated client; if this SPA has
+`callerIdentity.mode: end-user`, attach `Authorization: Bearer <token>`
+to each fetch instead — see the `thunder-authentication` skill for the
+auth'd client.
 
 ```ts
 import { env } from "./env";

@@ -115,29 +115,22 @@ For every web-app task whose component has `callerIdentity.mode: end-user`:
 
 ### Coding agent — implementation
 
-`src/env.ts` — typed read of `window._env_`. The `THUNDER_*` keys are
-populated by the platform when the component's design has
-`callerIdentity.mode: end-user`:
+`src/env.ts` — the base shim (the `window._env_` presence guard,
+`API_BASE_URL`, any `<UPSTREAM>_URL` keys, and the `export const env`)
+is owned by the `react-webapp` skill — don't duplicate it. When the
+component's design has `callerIdentity.mode: end-user`, the platform
+also populates the `THUNDER_*` keys; extend the `Env` type with them:
 
 ```ts
 type Env = {
   API_BASE_URL: string;
+  // ...plus any <UPSTREAM>_URL keys (see react-webapp).
   THUNDER_URL: string;
   THUNDER_CLIENT_ID: string;
   THUNDER_REDIRECT_URI: string;
   THUNDER_SCOPES: string;
   THUNDER_AFTER_SIGN_IN_URL: string;
 };
-
-declare global {
-  interface Window { _env_: Env }
-}
-
-if (!window._env_) {
-  throw new Error("window._env_ not set — /env-config.js failed to load.");
-}
-
-export const env: Env = window._env_;
 ```
 
 `src/auth.ts` — `oidc-client-ts` wired to `env.THUNDER_*`:

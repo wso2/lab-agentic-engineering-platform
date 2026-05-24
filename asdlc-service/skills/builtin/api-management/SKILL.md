@@ -61,10 +61,10 @@ output from reality.
 - Set `exposesAPI.auth: service-required` for machine-to-machine APIs.
 - Omit `exposesAPI` entirely for public APIs (landing pages, health,
   status hello-worlds).
-- When a `service` is `end-user-required` AND a sibling `web-app` uses
-  it as its sign-in upstream, ALSO emit
-  `callerIdentity: { mode: end-user }` on that web-app — the two are
-  paired. (The `thunder-authentication` skill covers the SPA side.)
+- When a `service` is `end-user-required` AND a sibling `web-app` signs
+  in to it, that web-app MUST also carry `callerIdentity: { mode: end-user }`.
+  The `thunder-authentication` skill owns this pairing rule (and its
+  rationale) — apply it.
 - For external upstreams that already exist outside the project, declare
   them as `dependentApis` on the consuming component. Use **name-only**
   declarations (`{ "name": "employee-api", "description": "..." }`) for
@@ -79,6 +79,10 @@ output from reality.
   `Upstream <name>: read the URL from <NAME_UPPER_SNAKE>_URL via the runtime-config shim.`
 - Protected `service` `componentAgentInstructions` MUST say (verbatim or close):
   `No /auth/* endpoints. The API Platform gateway validates the JWT and the api-configuration trait's jwt-auth policy injects X-User-Id (from JWT sub claim) on every request. Read X-User-Id to identify the caller; reject (401) when missing. Per-user records MUST be keyed on X-User-Id. Do NOT validate JWTs yourself; do NOT add CORS middleware (the gateway handles CORS).`
+- In the OpenAPI you author for a protected `service`, document the
+  injected `X-User-Id` header under `parameters` so consumers know it's
+  required-but-injected (the gateway adds it; clients don't set it). The
+  generic OpenAPI conventions are in your base design instructions.
 
 ### Tech-lead — issue body bullets
 
@@ -181,17 +185,11 @@ is set on the workload's ReleaseBinding at dispatch time; there is no
 build-time URL injection. The agent's Dockerfile must not bake in any
 URL.
 
-OpenAPI conventions:
-
-- OpenAPI 3.0.3.
-- Include `/health` on every service.
-- Cross-component contracts agree (caller's request shape matches
-  callee's defined request schema).
-- For protected endpoints, document the implicit `X-User-Id` header in
-  the spec under `parameters` so consumers know it's required-but-
-  injected (the gateway adds it; clients don't need to set it).
-- Errors as `application/problem+json` with `type`, `title`, `status`,
-  optional `detail` + `instance`.
+The generic OpenAPI authoring conventions (3.0.3, `/health` on every
+service, cross-component contract agreement) live in the architect's
+design instructions — they are not restated here. The auth-specific
+addition is in the Architect sub-section above (document the injected
+`X-User-Id` header in the spec).
 
 ### Common pitfalls
 

@@ -83,7 +83,7 @@ Set \`exposesAPI: { auth: end-user-required }\` on a "service" component when th
   - payment / regulated data: "billing", "payment", "subscription", "invoice", "credit card", "PCI", "HIPAA", "GDPR-restricted"
   - the component is targeted by a sibling web-app whose \`callerIdentity.mode = end-user\` references it (the gateway enforces JWT validation for that service)
 
-When the rubric flips a service to \`exposesAPI.auth: end-user-required\` AND a sibling web-app uses it as its sign-in upstream, ALSO emit \`callerIdentity: { mode: end-user }\` on that web-app. The two go together — the SPA logs in to call the protected API.
+When the rubric flips a service to \`exposesAPI.auth: end-user-required\` AND a sibling web-app signs in to it, that web-app must also carry \`callerIdentity: { mode: end-user }\`. The \`thunder-authentication\` Platform skill below owns this pairing rule and its rationale — apply it.
 
 **Default \`none\` (omit the \`exposesAPI\` block) when:**
   - the spec describes a public landing page, marketing page, public hello-world / status / health endpoint

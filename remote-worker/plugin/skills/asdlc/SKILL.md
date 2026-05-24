@@ -182,11 +182,12 @@ for you.
   execution causes port conflicts. Quick compile checks (`go build`,
   `tsc --noEmit`) are fine; never use `go run`, `npm start`,
   `node server.js`, or any command that starts a long-running process.
-- **Never hand-write or guess dependency lockfile checksums.** The
-  runner sandbox ships `go` and `npm` — always generate `go.sum` /
-  `package-lock.json` via `go mod tidy` / `npm install` and commit
-  the result. Hand-writing checksums causes the build pipeline to
-  fail with `checksum mismatch ... SECURITY ERROR`.
+- **Never hand-write or guess dependency lockfile checksums.** Always
+  regenerate the lockfile with your stack's dependency tool and commit
+  the result — the exact command is in the relevant project skill's
+  "Build verification" section (e.g. `go`, `react-webapp`). Hand-writing
+  checksums causes the build pipeline to fail with
+  `checksum mismatch ... SECURITY ERROR`.
 - **Every service component with dependents MUST declare at least one
   HTTP endpoint with `visibility: external` in its `workload.yaml`** —
   this is what makes the deployed URL reachable for the dependent SPA's
