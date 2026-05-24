@@ -45,6 +45,7 @@ export default function SkillEditor({ orgHandle, editName, open, onClose, onSave
 
   useEffect(() => {
     if (!open) return;
+    let cancelled = false;
     setError(null);
     setIssues([]);
     if (isEdit && editName) {
@@ -52,13 +53,22 @@ export default function SkillEditor({ orgHandle, editName, open, onClose, onSave
       setName(editName);
       orgSkillsApi
         .get(orgHandle, editName)
-        .then((d) => setSkillMd(d.skillMd))
-        .catch((e) => setError(e instanceof Error ? e.message : String(e)))
-        .finally(() => setLoading(false));
+        .then((d) => {
+          if (!cancelled) setSkillMd(d.skillMd);
+        })
+        .catch((e) => {
+          if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
     } else {
       setName('');
       setSkillMd(newSkillTemplate(''));
     }
+    return () => {
+      cancelled = true;
+    };
   }, [open, isEdit, editName, orgHandle]);
 
   const handleSave = async () => {

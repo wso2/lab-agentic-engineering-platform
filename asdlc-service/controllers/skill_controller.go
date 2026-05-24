@@ -185,7 +185,16 @@ func (c *skillController) Import(w http.ResponseWriter, r *http.Request) {
 		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "skill import not configured")
 		return
 	}
+	// ParseMultipartForm's argument only bounds in-memory file bytes, not
+	// the total request size — wrap the body in a hard cap and map the
+	// overflow to 413.
+	r.Body = http.MaxBytesReader(w, r.Body, importMaxUploadBytes)
 	if err := r.ParseMultipartForm(importMaxUploadBytes); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			utils.WriteErrorResponse(w, http.StatusRequestEntityTooLarge, "upload too large")
+			return
+		}
 		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid multipart upload")
 		return
 	}

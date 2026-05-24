@@ -68,8 +68,8 @@ gh issue list --label asdlc --label implementation --state open \
 
 ## Workflow
 
-1. **Read the issue** (`gh issue view <url>`). The body is the spec.
-   Capture the issue number — you'll need it in your PR body.
+1. **Read the issue** (`gh issue view <url> --comments`). The body is the
+   spec. Capture the issue number — you'll need it in your PR body.
 2. **Post a brief opening comment** so the platform shows your task is
    in flight:
    ```bash

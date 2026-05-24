@@ -122,7 +122,7 @@ Use the literal URL, description, and authentication string from the
 For service components (NOT web-apps), always add a Scope bullet: "Do
 NOT add CORS middleware. The platform's gateway attaches an Envoy CORS
 filter to every `visibility: external` HTTPRoute via the
-ClusterComponentType; doubled CORS headers break browsers."
+`api-configuration` ClusterTrait; doubled CORS headers break browsers."
 
 ### Coding agent — implementation
 

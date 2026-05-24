@@ -113,8 +113,15 @@ export function rewriteSkillFrontmatter(skillMD: string, materializedName: strin
   // we don't claim YAML correctness for every edge case, just the
   // common shape our bootstrap writes.
   if (/^metadata:\s*$/m.test(newFm)) {
-    if (/^\s+asdlc:\s*$/m.test(newFm)) {
-      // Already an asdlc block — leave alone (best-effort).
+    const asdlcBlock = newFm.match(/^(\s+)asdlc:\s*$/m);
+    if (asdlcBlock) {
+      // Nested asdlc block already present — insert canonical-name as a
+      // child so it isn't dropped.
+      const childIndent = asdlcBlock[1] + "  ";
+      newFm = newFm.replace(
+        /^(\s+asdlc:\s*)$/m,
+        `$1\n${childIndent}canonical-name: "${canonicalName}"`,
+      );
     } else {
       newFm = newFm.replace(/^metadata:\s*$/m, `metadata:\n  asdlc:\n    canonical-name: "${canonicalName}"`);
     }

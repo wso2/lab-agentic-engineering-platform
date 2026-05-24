@@ -196,6 +196,7 @@ func (s *RuntimeConfigService) EmitForProjectSPAs(ctx context.Context, orgID, pr
 //     declares `callerIdentity.mode: end-user`. The BFF declares the
 //     per-project OAuth client in Thunder lazily here; the agent never
 //     sees a client_id.
+//
 // buildEnvValues returns the map + a `ready` flag. The flag is false
 // when a required key couldn't be populated yet (transient OC error,
 // SPA URL not yet resolved, etc.). The caller must NOT write a
@@ -232,6 +233,9 @@ func (s *RuntimeConfigService) buildEnvValues(ctx context.Context, orgID, projec
 			continue
 		}
 		if list == nil {
+			// A required dep with no deployment list is not resolvable
+			// yet — defer rather than ship an incomplete env-config.js.
+			ready = false
 			continue
 		}
 		url := ""

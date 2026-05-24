@@ -40,12 +40,15 @@ else
     if [ "${ASDLC_PROD_RUNNER:-0}" = "1" ]; then
         echo "🏷  ASDLC_PROD_RUNNER=1 — skipping host plugin bind-mount (using baked-in image plugin)"
     else
-        PLUGIN_HOST_PATH="$(cd "${SCRIPT_DIR}/../../remote-worker/plugin" && pwd)"
-        if [ ! -d "$PLUGIN_HOST_PATH" ]; then
-            echo "❌ Dev plugin overlay enabled but plugin dir not found at $PLUGIN_HOST_PATH"
+        # Check existence BEFORE cd — under `set -e` a failed cd inside the
+        # command substitution would abort the script with a cryptic error
+        # before the friendly check below could run.
+        if [ ! -d "${SCRIPT_DIR}/../../remote-worker/plugin" ]; then
+            echo "❌ Dev plugin overlay enabled but plugin dir not found at ${SCRIPT_DIR}/../../remote-worker/plugin"
             echo "   Set ASDLC_PROD_RUNNER=1 to skip the overlay, or restore the plugin dir."
             exit 1
         fi
+        PLUGIN_HOST_PATH="$(cd "${SCRIPT_DIR}/../../remote-worker/plugin" && pwd)"
         K3D_CONFIG_DEV="/tmp/k3d-local-config.dev.yaml"
         cp "$K3D_CONFIG" "$K3D_CONFIG_DEV"
         cat >> "$K3D_CONFIG_DEV" <<EOF

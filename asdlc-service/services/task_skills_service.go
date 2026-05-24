@@ -136,8 +136,11 @@ func snapshotProjectSkills(
 	// matches what the tech-lead just used) or the tagged version. The
 	// snapshot is conceptually frozen at issue-creation moment.
 	design, err := store.ReadDesign(ctx, orgID, projectID)
-	if err != nil || design == nil {
+	if err != nil {
 		return fmt.Errorf("read design: %w", err)
+	}
+	if design == nil {
+		return nil // no design at this version yet — nothing to snapshot
 	}
 	if len(design.SkillsApplied) == 0 {
 		return nil // nothing to snapshot

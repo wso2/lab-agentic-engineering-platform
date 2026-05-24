@@ -46,6 +46,9 @@ export default function SkillImportDialog({ orgHandle, open, onClose, onImported
       setError(null);
       setIssues([]);
       setResult(null);
+      // Reset the hidden input so re-selecting the same filename after a
+      // reopen still fires onChange.
+      if (inputRef.current) inputRef.current.value = '';
     }
   }, [open]);
 

@@ -13,8 +13,9 @@ export const DependentApi = z.object({
     ),
   url: z
     .string()
+    .optional()
     .describe(
-      "Base URL the consuming component must call, e.g. 'http://development-default.openchoreoapis.localhost:19080/employee-app-employee-api-http/employees'.",
+      "Base URL the consuming component must call, e.g. 'http://development-default.openchoreoapis.localhost:19080/employee-app-employee-api-http/employees'. OMIT for catalog-backed APIs (name-only) — the platform resolves the URL from its in-cluster catalog at design-load time.",
     ),
   description: z
     .string()

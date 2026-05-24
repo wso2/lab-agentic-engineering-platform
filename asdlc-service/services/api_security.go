@@ -16,7 +16,7 @@ func ResolveAPISecurityEnabled(comp models.DesignComponent) bool {
 	if comp.ExposesAPI == nil {
 		return false
 	}
-	switch strings.TrimSpace(comp.ExposesAPI.Auth) {
+	switch strings.ToLower(strings.TrimSpace(comp.ExposesAPI.Auth)) {
 	case "end-user-required", "service-required":
 		return true
 	}
@@ -31,7 +31,7 @@ func ResolveAPISecurityCallerKind(comp models.DesignComponent) string {
 	if comp.ExposesAPI == nil {
 		return ""
 	}
-	switch strings.TrimSpace(comp.ExposesAPI.Auth) {
+	switch strings.ToLower(strings.TrimSpace(comp.ExposesAPI.Auth)) {
 	case "end-user-required":
 		return "end-user"
 	case "service-required":
