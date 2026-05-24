@@ -55,6 +55,16 @@ sign users in via Authorization Code + PKCE.
 
 ### Architect
 
+**Emitting `callerIdentity` is a HARD REQUIREMENT, not a minor omission.**
+`callerIdentity` is a STRUCTURED design field the platform reads directly
+— it is NOT satisfied by mentioning OIDC, sign-in, or Thunder in
+`componentAgentInstructions`. `componentAgentInstructions` is for the
+coding agent; `callerIdentity` is for the platform. Without the
+structured field, NO per-project OAuth client is provisioned, NO
+`THUNDER_*` keys land in `window._env_`, and the SPA deploys unable to
+sign in. Treat a missing `callerIdentity` like a missing required schema
+field — it produces a broken deployment.
+
 - Whenever the spec implies users sign in (keywords: `login`, `sign in`,
   `user account`, `personal`, ...), mark the SPA component with:
   ```yaml
@@ -65,6 +75,14 @@ sign users in via Authorization Code + PKCE.
   `exposesAPI.auth: end-user-required` (see the `api-management` skill).
   The two are paired — without it the SPA logs in but its API calls all
   401.
+
+Checklist before emitting `add_component` for a web-app:
+  1. Does it depend on a service with `exposesAPI.auth: end-user-required`?
+     → must have `callerIdentity.mode: end-user`.
+  2. Does the spec contain "sign in", "login", "user account", or similar?
+     → must have `callerIdentity.mode: end-user`.
+  3. If either is yes and you didn't include the structured `callerIdentity`
+     block, your output is incomplete.
 - The web-app's `componentAgentInstructions` MUST say (verbatim or close):
   `OIDC Authorization Code + PKCE against the platform IDP using oidc-client-ts. Read OIDC + upstream URLs from window._env_.THUNDER_* / window._env_.<UPSTREAM>_URL — typed via src/env.ts. Attach Authorization: Bearer <access_token> to every API call. DO NOT write a .env file. DO NOT read environment variables at build time (no import.meta.env). DO NOT use envsubst, /etc/nginx/templates/, or any custom nginx entrypoint — stock nginx:alpine serves the static bundle + env-config.js.`
 - Do NOT create a separate `auth` / `identity` / `login` /

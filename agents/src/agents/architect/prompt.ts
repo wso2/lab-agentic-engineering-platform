@@ -36,10 +36,7 @@ Call finalize() to end the session. If finalize returns validation issues, addre
   - buildpack is always "docker".
   - Stack-specific code, port, layout, Dockerfile, runtime-config, CORS, auth, persistence patterns live in the Platform skills below — apply them.
   - dependsOn names must reference other components verbatim.
-  - Prefer fewer components over many.
-  - **Authentication is delegated to the platform IDP — DO NOT introduce a separate auth / identity / login / session component, and DO NOT implement \`/auth/login\` or \`/auth/register\` in any service.** See the \`thunder-authentication\` and \`api-management\` skills below for how sign-in and protected-API design plays out.
-  - **Do NOT introduce a separate storage / database / persistence component.** Persistence belongs inside the component that owns the data. Stack-specific guidance lives in the relevant Platform skill (e.g. the \`go\` skill says use embedded SQLite for per-user data).
-  - **No scheduled-task / cronjob components.** If the spec calls for periodic / cron / batch work, fold it into the owning service (e.g. a background goroutine kicked off at startup, or an HTTP endpoint that a future scheduler can poke). Call this out in that service's componentAgentInstructions.
+  - Prefer fewer components over many — fold related concerns into the component that owns them rather than spinning off helpers. The Platform skills below carry the specific decomposition anti-patterns and their rationale; apply them (e.g. no separate auth/identity/login/session component and no \`/auth/*\` endpoints per \`thunder-authentication\`; no separate storage/database/persistence component and no scheduled-task/cronjob component per \`go\`).
 
 # Dependent APIs (external upstreams — NOT siblings)
 
@@ -102,11 +99,11 @@ When the rubric flips a service to \`exposesAPI.auth: end-user-required\` AND a 
 exposesAPI:
   auth: end-user-required
 \`\`\`
-Omit \`exposesAPI\` entirely for public services. Set \`auth: end-user-required\` when the spec implies callers are signed-in users; the platform's gateway validates the JWT and injects \`X-User-Id\` before forwarding upstream.
+Omit \`exposesAPI\` entirely for public services. Set \`auth: end-user-required\` when the spec implies callers are signed-in users. What the gateway does with that toggle (JWT validation, \`X-User-Id\` injection, CORS) is described in the \`api-management\` skill below.
 
-# Caller identity (HARD REQUIREMENT)
+# Caller identity
 
-**For every \`web-app\` component whose \`dependsOn\` includes a \`service\` you set to \`exposesAPI.auth: end-user-required\` AND whose spec implies users sign in, you MUST emit the structured \`callerIdentity\` block:**
+\`callerIdentity\` is a structured design field — distinct from \`componentAgentInstructions\` — that a \`web-app\` component carries when its users sign in:
 
 \`\`\`json
 {
@@ -114,14 +111,7 @@ Omit \`exposesAPI\` entirely for public services. Set \`auth: end-user-required\
 }
 \`\`\`
 
-This is NOT optional and not satisfied by mentioning OIDC in \`componentAgentInstructions\`. The platform reads the structured \`callerIdentity\` field — without it, no per-project OAuth client is provisioned, no THUNDER_* keys land in \`window._env_\`, and the SPA deploys unable to sign in. The \`componentAgentInstructions\` field is for the coding agent; \`callerIdentity\` is for the platform.
-
-Checklist before emitting \`add_component\` for a web-app:
-  1. Does it depend on a service with \`exposesAPI.auth: end-user-required\`? → must have \`callerIdentity.mode: end-user\`.
-  2. Does the spec contain "sign in", "login", "user account", or similar? → must have \`callerIdentity.mode: end-user\`.
-  3. If either is yes and you didn't include the \`callerIdentity\` block, your output is incomplete.
-
-Failing this check produces a broken deployment, not a "minor omission". Treat it like missing a required schema field.
+WHEN to emit it, its pairing with \`exposesAPI.auth: end-user-required\`, the pre-\`add_component\` checklist, and the consequences of omitting it are all spelled out in the \`thunder-authentication\` Platform skill below — follow them. This is a HARD REQUIREMENT: a missing \`callerIdentity\` is a broken deployment, not a minor omission.
 
 # Rules for OpenAPI
   - OpenAPI is required for "service" components only. "web-app" components do **not** get an OpenAPI spec — their componentAgentInstructions describe screens / flows / which services they call, not a wire contract.
