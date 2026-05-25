@@ -1,0 +1,31 @@
+# Dev-mode patch for app-factory-coding-agent — adds a hostPath overlay of
+# the host's remote-worker/plugin onto /app/plugin inside the runner pod so
+# edits to SKILL.md (and other plugin/skills files) are picked up on the
+# next dispatch with no image rebuild and no Docker Hub push.
+#
+# Applied by setup-asdlc.sh via yq by default (opt out with ASDLC_PROD_RUNNER=1):
+#   yq eval '
+#     .spec.runTemplate.spec.templates[0].container.volumeMounts +=
+#       load("...dev-patch.yaml").volumeMounts |
+#     .spec.runTemplate.spec.volumes +=
+#       load("...dev-patch.yaml").volumes
+#   ' app-factory-coding-agent.yaml | kubectl apply -f -
+#
+# Requires the k3d cluster to have been created with the host plugin bind
+# mount onto the k3d server node at /asdlc-dev/plugin (see setup-k3d.sh —
+# also the default, also opt-out via ASDLC_PROD_RUNNER=1).
+#
+# Not a valid standalone manifest — intentionally fragmentary. The yq
+# expression in setup-asdlc.sh splices these entries into the canonical
+# manifest so we never drift from prod on every other field.
+
+volumeMounts:
+  - name: dev-plugin
+    mountPath: /app/plugin
+    readOnly: true
+
+volumes:
+  - name: dev-plugin
+    hostPath:
+      path: /asdlc-dev/plugin
+      type: Directory

@@ -42,6 +42,16 @@ type ComponentClient interface {
 	// the first build has produced RBs.
 	UpdateComponentWorkflowEnvVars(ctx context.Context, orgName, projectName, componentName string, envVars []models.WorkflowEnvVarRef) error
 
+	// UpdateComponentWorkflowFiles writes per-component literal files onto
+	// each of the component's ReleaseBindings at
+	// `spec.workloadOverrides.container.files`. Used by the runtime-config
+	// pipeline to drop `env-config.js` (and any other literal file) into
+	// the pod via an OC-rendered ConfigMap mounted at the declared
+	// mountPath — no rebuild needed. As with UpdateComponentWorkflowEnvVars,
+	// when no ReleaseBindings exist yet the call is a soft no-op and the
+	// caller is expected to retry after the first build produces RBs.
+	UpdateComponentWorkflowFiles(ctx context.Context, orgName, projectName, componentName string, files []models.WorkflowFileVar) error
+
 	// DeleteComponent removes the Component CR. OC's controller GCs the
 	// chain (Component → ReleaseBinding → RenderedRelease → Deployment /
 	// Service / HTTPRoute) via k8s ownerReferences. NOTE: trait-emitted
@@ -60,7 +70,7 @@ type ComponentClient interface {
 	// with the supplied slice. Passing an empty slice clears traits.
 	// Returns ErrComponentNotFound when the Component does not exist (the
 	// caller decides whether to recreate or no-op). Used by trait_sync.go
-	// when a user toggles `api.security` on `design.md` after first deploy.
+	// when a user toggles `exposesAPI.auth` on `design.md` after first deploy.
 	UpdateComponentTraits(ctx context.Context, orgName, projectName, componentName string, traits []models.ComponentTrait) error
 
 	// UpdateComponentTraitEnvironmentConfigs writes per-environment trait
@@ -450,6 +460,86 @@ func (c *componentClient) UpdateComponentWorkflowEnvVars(ctx context.Context, or
 		}
 	}
 	return nil
+}
+
+// UpdateComponentWorkflowFiles lists the component's ReleaseBindings and
+// writes the literal files onto each one at
+// `spec.workloadOverrides.container.files`. Per-env (one RB per
+// environment) so OC's controller materialises a ConfigMap mounted at
+// the declared mountPath on the next reconcile — no rebuild required.
+//
+// When no ReleaseBindings exist yet (the first build hasn't produced
+// one), the call is a soft no-op: the caller is expected to retry after
+// a successful deploy. An empty `files` slice clears any previously set
+// files block on each binding.
+func (c *componentClient) UpdateComponentWorkflowFiles(ctx context.Context, orgName, projectName, componentName string, files []models.WorkflowFileVar) error {
+	scopedComp := ScopedComponentName(projectName, componentName)
+	componentQ := gen.ComponentQueryParam(scopedComp)
+	listResp, err := c.oc.ListReleaseBindingsWithResponse(ctx, orgName, &gen.ListReleaseBindingsParams{
+		Component: &componentQ,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to list release bindings for file update: %w", err)
+	}
+	if listResp.StatusCode() != http.StatusOK || listResp.JSON200 == nil {
+		return handleErrorResponse(listResp.StatusCode(), ErrorResponses{
+			JSON401: listResp.JSON401,
+			JSON403: listResp.JSON403,
+			JSON500: listResp.JSON500,
+		})
+	}
+
+	rbs := listResp.JSON200.Items
+	if len(rbs) == 0 {
+		// First build hasn't produced a ReleaseBinding yet — soft no-op.
+		return nil
+	}
+
+	fileList := workflowFileVarsToGen(files)
+	for _, rb := range rbs {
+		if rb.Spec == nil {
+			rb.Spec = &gen.ReleaseBindingSpec{}
+		}
+		if rb.Spec.WorkloadOverrides == nil {
+			rb.Spec.WorkloadOverrides = &gen.WorkloadOverrides{}
+		}
+		if rb.Spec.WorkloadOverrides.Container == nil {
+			rb.Spec.WorkloadOverrides.Container = &gen.ContainerOverride{}
+		}
+		rb.Spec.WorkloadOverrides.Container.Files = fileList
+
+		updResp, uerr := c.oc.UpdateReleaseBindingWithResponse(ctx, orgName, gen.ReleaseBindingNameParam(rb.Metadata.Name), gen.UpdateReleaseBindingJSONRequestBody(rb))
+		if uerr != nil {
+			return fmt.Errorf("failed to update release binding %s files: %w", rb.Metadata.Name, uerr)
+		}
+		if updResp.StatusCode() != http.StatusOK && updResp.StatusCode() != http.StatusCreated {
+			return handleErrorResponse(updResp.StatusCode(), ErrorResponses{
+				JSON400: updResp.JSON400,
+				JSON401: updResp.JSON401,
+				JSON403: updResp.JSON403,
+				JSON404: updResp.JSON404,
+				JSON500: updResp.JSON500,
+			})
+		}
+	}
+	return nil
+}
+
+// workflowFileVarsToGen converts the BFF-internal file model into
+// the gen.FileVar slice for ReleaseBinding workloadOverrides. An empty
+// `files` returns a pointer to an empty slice so the server-side patch
+// clears the field rather than leaving stale values in place.
+func workflowFileVarsToGen(files []models.WorkflowFileVar) *[]gen.FileVar {
+	out := make([]gen.FileVar, 0, len(files))
+	for _, f := range files {
+		v := f.Value
+		out = append(out, gen.FileVar{
+			Key:       f.Key,
+			MountPath: f.MountPath,
+			Value:     &v,
+		})
+	}
+	return &out
 }
 
 // DeleteComponent issues DELETE against OC's Component endpoint. Returns

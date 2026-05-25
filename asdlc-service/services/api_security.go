@@ -6,21 +6,36 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
-// APISecurityRequired is the canonical value for `api.security` that flips
-// JWT enforcement on at the AP gateway. See docs/design/api-platform-integration.md
-// section 5.1.
-const APISecurityRequired = "required"
-
 // ResolveAPISecurityEnabled is the single source of truth for "is JWT
 // validation enforced on this component's HTTP endpoint?" — used by the
 // trait emitter, the watcher, and any UI that surfaces the badge.
 //
-// Invariant: nil/empty `Api` block ⇒ false. Any value other than "required"
-// also yields false (defensive — the frontmatter accepts a free string but
-// the platform recognises only the documented value).
+// Invariant: nil/empty `ExposesAPI` ⇒ false. The platform recognises
+// only the documented `Auth` values; anything else also yields false.
 func ResolveAPISecurityEnabled(comp models.DesignComponent) bool {
-	if comp.Api == nil {
+	if comp.ExposesAPI == nil {
 		return false
 	}
-	return strings.EqualFold(strings.TrimSpace(comp.Api.Security), APISecurityRequired)
+	switch strings.ToLower(strings.TrimSpace(comp.ExposesAPI.Auth)) {
+	case "end-user-required", "service-required":
+		return true
+	}
+	return false
+}
+
+// ResolveAPISecurityCallerKind returns the auth flavor for sibling-CORS
+// gating. Only `end-user-required` APIs should advertise SPA origins in
+// their CORS allowlist (service-to-service APIs have no browser caller).
+// Returns "" when API security is not enabled.
+func ResolveAPISecurityCallerKind(comp models.DesignComponent) string {
+	if comp.ExposesAPI == nil {
+		return ""
+	}
+	switch strings.ToLower(strings.TrimSpace(comp.ExposesAPI.Auth)) {
+	case "end-user-required":
+		return "end-user"
+	case "service-required":
+		return "service"
+	}
+	return ""
 }

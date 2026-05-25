@@ -13,8 +13,9 @@ export const DependentApi = z.object({
     ),
   url: z
     .string()
+    .optional()
     .describe(
-      "Base URL the consuming component must call, e.g. 'http://development-default.openchoreoapis.localhost:19080/employee-app-employee-api-http/employees'.",
+      "Base URL the consuming component must call, e.g. 'http://development-default.openchoreoapis.localhost:19080/employee-app-employee-api-http/employees'. OMIT for catalog-backed APIs (name-only) — the platform resolves the URL from its in-cluster catalog at design-load time.",
     ),
   description: z
     .string()
@@ -69,34 +70,35 @@ export const SlimComponent = z.object({
     .describe(
       "Detailed implementation instructions for the Generator agent",
     ),
-  api: z
+  exposesAPI: z
     .object({
-      security: z
-        .enum(["required", "none"])
+      managed: z
+        .boolean()
+        .optional()
         .describe(
-          "'required' enables JWT validation at the WSO2 API Platform gateway against the org's IDP (Thunder v1; Asgardeo / custom OIDC v2). 'none' (or omitted entirely) means the API is public and traffic skips the AP hop.",
+          "True when the service should be routed through the WSO2 API Platform gateway (CORS + JWT validation + rate limiting). Default true when 'auth' is set.",
+        ),
+      auth: z
+        .enum(["end-user-required", "service-required", "none"])
+        .describe(
+          "Caller authentication policy. 'end-user-required' = the gateway validates an end-user JWT and injects X-User-Id. 'service-required' = the gateway validates a service-to-service JWT (no end-user). 'none' = public.",
         ),
     })
     .optional()
     .describe(
-      "Optional API security policy (services only). Omit (or set security='none') for public APIs. Set security='required' for protected APIs that must validate caller JWTs at the gateway. Default for ambiguous cases: omit. Set 'required' when the description mentions login, OAuth, JWT, protected, private, customer, billing, or any per-user data.",
+      "API exposure policy (services only). Omit for public APIs. Set 'auth: end-user-required' when callers are end users; the gateway validates the JWT and injects X-User-Id.",
     ),
-  auth: z
+  callerIdentity: z
     .object({
-      kind: z
-        .literal("oidc-spa")
+      mode: z
+        .enum(["end-user", "service-account", "none"])
         .describe(
-          "OIDC Single-Page-App relying party. The platform provisions a per-project OAuth client in Thunder, injects OIDC_ISSUER/OIDC_CLIENT_ID/OIDC_REDIRECT_URI/OIDC_SCOPES into the pod, and the SPA performs Authorization Code + PKCE against it.",
-        ),
-      upstream: z
-        .string()
-        .describe(
-          "Name of the protected service this SPA signs in to call. Must reference a sibling component with api.security='required'.",
+          "How the component identifies its caller. 'end-user' = SPA signs in users via the platform IDP (OIDC + PKCE). 'service-account' = workload-to-workload auth. 'none' = no auth.",
         ),
     })
     .optional()
     .describe(
-      "OIDC relying-party config. ONLY valid on web-app components. Emit this together with api.security='required' on the upstream service when the spec implies users sign in. When set, the API service must NOT implement /auth/* endpoints (Thunder owns token issuance) and must read the authenticated user from the gateway-injected X-User-Id header.",
+      "Caller-identity intent. Set 'mode: end-user' on web-app components that sign users in via the platform IDP; the platform handles OIDC provisioning + runtime config injection.",
     ),
   dependentApis: z
     .array(DependentApi)
@@ -131,12 +133,57 @@ export const ArchitectOutput = z.object({
 
 export type ArchitectOutput = z.infer<typeof ArchitectOutput>;
 
+// SkillDescription is the lightweight per-skill catalog row shipped on
+// the architect input — name + description only (no body). The architect
+// uses these to decide whether to read the full body (org skills) or
+// already has the body inlined (built-ins, via SkillRecord).
+export const SkillDescription = z.object({
+  name: z.string(),
+  description: z.string(),
+});
+export type SkillDescription = z.infer<typeof SkillDescription>;
+
+// SkillRecord is name + description + full SKILL.md body. Used by the
+// architect input for built-ins (inlined under "Platform skills — MUST
+// consult") and by the tech-lead detail input for every attached skill.
+export const SkillRecord = SkillDescription.extend({
+  body: z.string(),
+});
+export type SkillRecord = z.infer<typeof SkillRecord>;
+
 export const ArchitectInput = z.object({
   projectName: z.string(),
   spec: z.string().describe("Specification document to design against"),
   previousDesign: ArchitectOutput.optional().describe(
     "Existing design to evolve — preserve component names and structure where possible",
   ),
+  // Platform skills — full bodies inlined into the prompt under "MUST
+  // consult" framing. The architect sees these regardless of project
+  // state because they encode best practices the platform requires.
+  builtinSkills: z
+    .array(SkillRecord)
+    .optional()
+    .describe(
+      "Built-in platform skills — bodies are inlined into the prompt under 'Platform skills — MUST consult'.",
+    ),
+  // Org skills — manifest-only (name + description). The architect
+  // loads bodies on demand via read_skill (PR 3) if any apply.
+  orgSkills: z
+    .array(SkillDescription)
+    .optional()
+    .describe(
+      "Org-authored skills (custom + imported) — manifest only; bodies load via read_skill on demand.",
+    ),
+  // Currently-attached skill names on the project's design.md root
+  // frontmatter. Optional; surfaced so the architect can decide to
+  // attach / detach via tools (PR 3). PR 1 sets this from
+  // seedDefaultSkillsApplied on every finalize.
+  skillsApplied: z
+    .array(z.string())
+    .optional()
+    .describe(
+      "Skill names currently attached to the project. The architect may keep or change this set in the design.",
+    ),
   // Wireframes / domain-models live alongside the spec under
   // `specs/requirements/`. The BFF passes the raw DSL keyed by canvas
   // name (without extension); the architect calls `read_wireframe(name)`

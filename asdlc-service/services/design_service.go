@@ -76,10 +76,14 @@ type designService struct {
 	gitClient    gitservice.Client
 	taskSvc      TaskService // for SaveAndProceed reconciliation; may be nil in tests
 	// traitSync, when non-nil, is invoked after a per-component design
-	// edit so an `api.security` toggle propagates to the OC Component +
+	// edit so an `exposesAPI.auth` toggle propagates to the OC Component +
 	// ReleaseBindings without waiting for the next dispatch. Set via
 	// SetTraitSync. Optional in tests.
 	traitSync *TraitSyncService
+	// skillSvc resolves the per-org skill catalogue for the architect input.
+	// Optional in tests; nil → architect runs with no skills attached
+	// (equivalent to pre-skills-system behaviour).
+	skillSvc *SkillService
 }
 
 // DesignServiceWithTaskHook lets the construction wire-up surface the
@@ -91,11 +95,18 @@ type DesignServiceWithTaskHook interface {
 }
 
 // DesignServiceWithTraitSync surfaces the trait_sync setter so an
-// `api.security` toggle on design.md propagates to OC after the file is
+// `exposesAPI.auth` toggle on design.md propagates to OC after the file is
 // written. Mirrors the DesignServiceWithTaskHook pattern.
 type DesignServiceWithTraitSync interface {
 	DesignService
 	SetTraitSync(traitSync *TraitSyncService)
+}
+
+// DesignServiceWithSkills surfaces the skill-catalogue setter so the
+// architect call ships the org's skill set as input.
+type DesignServiceWithSkills interface {
+	DesignService
+	SetSkillService(svc *SkillService)
 }
 
 func NewDesignService(
@@ -116,6 +127,10 @@ func (s *designService) SetTaskService(taskSvc TaskService) {
 
 func (s *designService) SetTraitSync(traitSync *TraitSyncService) {
 	s.traitSync = traitSync
+}
+
+func (s *designService) SetSkillService(svc *SkillService) {
+	s.skillSvc = svc
 }
 
 func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) (*models.Design, error) {
@@ -278,12 +293,34 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 	}
 	sort.Strings(availableWireframes)
 
+	// Resolve the org's skill catalogue + split by kind. Builtins flow
+	// in as full bodies (inlined into the architect prompt); custom +
+	// imported flow in as descriptions (manifest only). See
+	// docs/design/skills-system.md > "Architect".
+	builtinRecords, orgDescriptions := s.resolveArchitectSkills(ctx, orgID)
+
+	// Carry forward currently-attached skill names (or seed the defaults
+	// when starting fresh). Until PR 3 ships the attach_skill tool, the
+	// seed-default helper attaches all four built-ins on every new design
+	// so propagation works end-to-end.
+	currentApplied := []string{}
+	if existingDesign != nil && len(existingDesign.SkillsApplied) > 0 {
+		currentApplied = append(currentApplied, existingDesign.SkillsApplied...)
+	} else {
+		for _, b := range builtinRecords {
+			currentApplied = append(currentApplied, b.Name)
+		}
+	}
+
 	upstream, err := s.agentsClient.StreamArchitect(ctx, orgID, agents.ArchitectRequest{
 		ProjectName:         projectID,
 		Spec:                specContent,
 		PreviousDesign:      previousDesign,
 		Wireframes:          wireframes,
 		AvailableWireframes: availableWireframes,
+		BuiltinSkills:       builtinRecords,
+		OrgSkills:           orgDescriptions,
+		SkillsApplied:       currentApplied,
 	})
 	if err != nil {
 		return fmt.Errorf("agents service request: %w", err)
@@ -346,9 +383,10 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 	}
 
 	designFile := &DesignFile{
-		Overview:   finalDesign.Design.Overview,
-		Components: finalDesign.Design.Components,
-		SourceSpec: sourceTag,
+		Overview:      finalDesign.Design.Overview,
+		Components:    finalDesign.Design.Components,
+		SourceSpec:    sourceTag,
+		SkillsApplied: seedDefaultSkillsApplied(currentApplied, builtinRecords),
 	}
 
 	// Identify components that existed in the working tree before this
@@ -425,7 +463,7 @@ func (s *designService) GetDesignBundleAtTag(ctx context.Context, orgID, project
 // the refreshed bundle.
 //
 // Side effect: when the written file is a per-component `design.md`,
-// fire `SyncComponentTraits` so an `api.security` toggle propagates to
+// fire `SyncComponentTraits` so an `exposesAPI.auth` toggle propagates to
 // the OC Component + ReleaseBindings before the next dispatch. Best-
 // effort — failures are logged but never bubble (design tree is the
 // canonical source; the trait_sync watcher reconciles on the next
@@ -451,7 +489,7 @@ func (s *designService) UpdateDesignFile(ctx context.Context, orgID, projectID, 
 // componentNameFromDesignPath returns the component name encoded in a
 // `components/<name>/design.md` sub-path, or false for any other path
 // (root design.md, openapi.yaml, etc.). Used by UpdateDesignFile to gate
-// the trait_sync hook to the one path where `api.security` lives.
+// the trait_sync hook to the one path where `exposesAPI.auth` lives.
 func componentNameFromDesignPath(subPath string) (string, bool) {
 	const prefix = "components/"
 	const suffix = "/design.md"
@@ -632,6 +670,57 @@ func extractWireframeDsls(files map[string]string) map[string]string {
 		canvas := strings.TrimSuffix(name, ".dsl")
 		out[canvas] = content
 	}
+	return out
+}
+
+// resolveArchitectSkills splits the org's catalogue into (builtins with
+// full bodies, org-skills with descriptions only) for the architect
+// input. Returns empty slices when no SkillService is wired (tests).
+func (s *designService) resolveArchitectSkills(ctx context.Context, orgID string) ([]agents.SkillRecord, []agents.SkillDescription) {
+	if s.skillSvc == nil {
+		return nil, nil
+	}
+	all, err := s.skillSvc.List(ctx, orgID)
+	if err != nil {
+		slog.WarnContext(ctx, "design_service: skill list failed — running without skills", "orgID", orgID, "error", err)
+		return nil, nil
+	}
+	var builtins []agents.SkillRecord
+	var orgSkills []agents.SkillDescription
+	for _, sk := range all {
+		if sk.Kind == "builtin" {
+			builtins = append(builtins, agents.SkillRecord{
+				Name:        sk.Name,
+				Description: sk.Description,
+				Body:        sk.SkillMD,
+			})
+		} else {
+			orgSkills = append(orgSkills, agents.SkillDescription{
+				Name:        sk.Name,
+				Description: sk.Description,
+			})
+		}
+	}
+	return builtins, orgSkills
+}
+
+// seedDefaultSkillsApplied returns the skillsApplied list to persist on
+// the freshly-emitted design. PR 1 behaviour: if the caller passed a
+// non-empty existing set, use it; otherwise stamp every available
+// built-in so propagation works end-to-end without the architect having
+// an attach_skill tool yet (lands in PR 3). The seed runs at every
+// `StreamArchitect` finalize per docs/design/skills-system.md > PR 1.
+func seedDefaultSkillsApplied(current []string, builtins []agents.SkillRecord) []string {
+	if len(current) > 0 {
+		out := append([]string(nil), current...)
+		sort.Strings(out)
+		return out
+	}
+	out := make([]string, 0, len(builtins))
+	for _, b := range builtins {
+		out = append(out, b.Name)
+	}
+	sort.Strings(out)
 	return out
 }
 

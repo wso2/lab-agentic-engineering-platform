@@ -111,6 +111,25 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Phase 7 — Skills system tables (skills, skill_audit_events,
+	// design_version_skill_snapshots). See docs/design/skills-system.md.
+	if err := migrations.RunPhase7Skills(db); err != nil {
+		slog.Error("phase7_skills migration failed", "error", err)
+		os.Exit(1)
+	}
+
+	// Skill bootstrap — UPSERT the four bundled built-in skills into
+	// the `skills` table, prune any built-ins removed between releases.
+	// Best-effort: log + warn on failure rather than refusing to start
+	// (BFF stays functional with an empty skills table).
+	skillBootstrap := services.NewSkillBootstrap(db)
+	if err := skillBootstrap.Run(context.Background()); err != nil {
+		slog.Warn("skill bootstrap failed — continuing", "error", err)
+	}
+	skillSvc := services.NewSkillService(db)
+	skillMutationSvc := services.NewSkillMutationService(db, skillSvc)
+	skillImportSvc := services.NewSkillImportService(db, skillSvc)
+
 	// Repositories — only task and config remain
 	taskRepo := repositories.NewTaskRepository(db)
 	configRepo := repositories.NewConfigRepository(db)
@@ -237,6 +256,20 @@ func main() {
 	if hook, ok := designService.(services.DesignServiceWithTaskHook); ok {
 		hook.SetTaskService(taskService)
 	}
+	// Wire the skills catalogue into design + task services so the
+	// architect input ships builtin/org skills, and the tech-lead detail
+	// phase ships full bodies of every attached skill.
+	if setter, ok := designService.(services.DesignServiceWithSkills); ok {
+		setter.SetSkillService(skillSvc)
+	}
+	if setter, ok := taskService.(interface {
+		SetSkillService(*services.SkillService)
+	}); ok {
+		setter.SetSkillService(skillSvc)
+	}
+	// TaskSkillsService backs GET /api/v1/tasks/:taskId/skills which
+	// the runner pod calls at init to fetch its frozen SKILL.md bodies.
+	taskSkillsSvc := services.NewTaskSkillsService(db, taskRepo)
 
 	// Phase 2 (api-platform-integration) — trait_sync is the single shared
 	// emitter that reconciles the `api-configuration` ClusterTrait on a
@@ -244,8 +277,7 @@ func main() {
 	// dispatch path (after CreateComponent) and the design-edit path
 	// (after `components/<name>/design.md` PUT). See
 	// docs/design/api-platform-integration.md §6 Phase 2.
-	traitSyncService := services.NewTraitSyncService(componentClient, artifactStore, cfg.FeatureEmitAPITrait)
-	slog.Info("Trait sync service", "enabled", cfg.FeatureEmitAPITrait)
+	traitSyncService := services.NewTraitSyncService(componentClient, artifactStore)
 	if hook, ok := designService.(services.DesignServiceWithTraitSync); ok {
 		hook.SetTraitSync(traitSyncService)
 	}
@@ -374,37 +406,15 @@ func main() {
 	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
 		hook.SetTraitSync(traitSyncService)
 	}
-	// Wire the user-apps OIDC config so dispatch posts the
-	// `## OIDC client provisioned` comment on web-app issues with
-	// design.auth.kind=oidc-spa. See docs/design/oauth-protected-webapp.md.
-	if oidcSetter, ok := dispatchSvc.(interface {
-		SetUserAppsOIDC(services.UserAppsOIDC)
-	}); ok {
-		oidcSetter.SetUserAppsOIDC(services.UserAppsOIDC{
-			Issuer:            cfg.UserAppsOIDC.Issuer,
-			ClientID:          cfg.UserAppsOIDC.ClientID,
-			Scopes:            cfg.UserAppsOIDC.Scopes,
-			InternalProxyPass: cfg.UserAppsOIDC.InternalProxyPass,
-		})
-		if cfg.UserAppsOIDC.ClientID == "" {
-			slog.Warn("USER_APPS_OIDC_CLIENT_ID empty — user web-apps with auth.kind=oidc-spa will deploy without an OIDC client comment posted")
-		} else {
-			slog.Info("UserApps OIDC wired", "issuer", cfg.UserAppsOIDC.Issuer, "clientID", cfg.UserAppsOIDC.ClientID, "scopes", cfg.UserAppsOIDC.Scopes, "internalProxyPass", cfg.UserAppsOIDC.InternalProxyPass)
-		}
-	}
-	// Plumb the Thunder admin client into dispatch so the cascade hook can
-	// register a deployed user-webapp's external URL on the user-apps
-	// OAuth client's redirect_uris set. Without this, browser sign-in
-	// fails on the first load with "Invalid redirect URI" until an
-	// operator appends the URL by hand. See dispatch_service.go's
-	// RegisterUserAppRedirectURI.
+	runtimeConfigSvc := services.NewRuntimeConfigService(componentClient, artifactStore)
+	runtimeConfigSvc.SetPlatformIDP(cfg.PlatformIDP.Issuer, "openid profile email")
 	if thunderAdminClient != nil {
-		if setter, ok := dispatchSvc.(interface {
-			SetThunderAdminClient(thundersvc.Client)
-		}); ok {
-			setter.SetThunderAdminClient(thunderAdminClient)
-			slog.Info("Thunder admin client wired into dispatch (auto-register webapp redirect URIs on deploy)")
-		}
+		runtimeConfigSvc.SetThunderAdmin(thunderAdminClient)
+	}
+	if rcSetter, ok := dispatchSvc.(interface {
+		SetRuntimeConfig(*services.RuntimeConfigService)
+	}); ok {
+		rcSetter.SetRuntimeConfig(runtimeConfigSvc)
 	}
 	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
 
@@ -414,7 +424,10 @@ func main() {
 	// re-evaluate `on_hold` siblings and auto-dispatch the ones
 	// whose deps are now satisfied. See docs/design/cross-component-
 	// wiring-gaps.md §3 F1.
-	projector.SetDispatchHook(services.NewDispatchCascadeHook(db, dispatchSvc))
+	cascadeHook := services.NewDispatchCascadeHook(db, dispatchSvc)
+	cascadeHook.SetTraitSync(traitSyncService)
+	cascadeHook.SetRuntimeConfig(runtimeConfigSvc)
+	projector.SetDispatchHook(cascadeHook)
 
 	webhook.Register(webhookRouter, db, projector, wfRunService)
 	if gitClient != nil {
@@ -481,13 +494,21 @@ func main() {
 		RequirementsController:     controllers.NewRequirementsController(requirementsService),
 		RequirementsChatController: controllers.NewRequirementsChatController(requirementsChatService),
 		DesignController:       controllers.NewDesignController(designService),
-		TaskController: controllers.NewTaskController(
-			taskService,
-			dispatchSvc,
-			services.NewProgressService(taskService, componentClient, observerClient),
-			componentClient,
-			taskTokens,
-		),
+		TaskController: func() controllers.TaskController {
+			tc := controllers.NewTaskController(
+				taskService,
+				dispatchSvc,
+				services.NewProgressService(taskService, componentClient, observerClient),
+				componentClient,
+				taskTokens,
+			)
+			if setter, ok := tc.(interface {
+				SetSkillsService(*services.TaskSkillsService)
+			}); ok {
+				setter.SetSkillsService(taskSkillsSvc)
+			}
+			return tc
+		}(),
 		BoardController:        controllers.NewBoardController(boardService),
 		ConfigController:       controllers.NewConfigController(configService),
 		CollabController:       controllers.NewCollabController(projectService),
@@ -496,6 +517,7 @@ func main() {
 		ConfigRepo:             configRepo,
 		OrgGitHubController:    orgGitHubCtrl,
 		OrgAnthropicController: orgAnthropicCtrl,
+		SkillController:        controllers.NewSkillController(skillSvc, skillMutationSvc, skillImportSvc),
 		IDPController:          controllers.NewIDPController(idpService),
 		JWKSController:         controllers.NewJWKSController(taskTokens),
 		ThunderJWKS:            thunderJWKS,

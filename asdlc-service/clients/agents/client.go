@@ -80,11 +80,34 @@ type DocumentGenerationRequest struct {
 
 // ArchitectRequest is the body sent to the architect endpoint.
 type ArchitectRequest struct {
-	ProjectName         string            `json:"projectName"`
-	Spec                string            `json:"spec"`
-	PreviousDesign      *ArchitectDesign  `json:"previousDesign,omitempty"`
-	Wireframes          map[string]string `json:"wireframes,omitempty"`
-	AvailableWireframes []string          `json:"availableWireframes,omitempty"`
+	ProjectName         string             `json:"projectName"`
+	Spec                string             `json:"spec"`
+	PreviousDesign      *ArchitectDesign   `json:"previousDesign,omitempty"`
+	Wireframes          map[string]string  `json:"wireframes,omitempty"`
+	AvailableWireframes []string           `json:"availableWireframes,omitempty"`
+	// Skills propagation — see docs/design/skills-system.md.
+	// BuiltinSkills are inlined as full bodies under "Platform skills —
+	// MUST consult"; OrgSkills appear as a manifest with descriptions.
+	BuiltinSkills []SkillRecord      `json:"builtinSkills,omitempty"`
+	OrgSkills     []SkillDescription `json:"orgSkills,omitempty"`
+	SkillsApplied []string           `json:"skillsApplied,omitempty"`
+}
+
+// SkillDescription mirrors agents/src/agents/architect/schema.ts >
+// SkillDescription (name + description). Used in the architect's org
+// skills manifest and the tech-lead plan's attached-skills context.
+type SkillDescription struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// SkillRecord mirrors agents/src/agents/architect/schema.ts > SkillRecord
+// (name + description + full SKILL.md body). Used in the architect's
+// built-in inlining and the tech-lead detail's skillsResolved field.
+type SkillRecord struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Body        string `json:"body"`
 }
 
 // ArchitectDesign mirrors the architect output shape for incremental regen.
@@ -97,14 +120,18 @@ type ArchitectDesign struct {
 // agents/src/agents/tech-lead/schema.ts → TechLeadPlanInput plus the optional
 // validator diff context.
 type TechLeadPlanRequest struct {
-	ProjectName   string                          `json:"projectName"`
-	Spec          string                          `json:"spec"`
-	SlimDesign    []TechLeadSlimComponent         `json:"slimDesign"`
-	SpecDiff      string                          `json:"specDiff,omitempty"`
-	DesignDiff    string                          `json:"designDiff,omitempty"`
-	ExistingTasks []TechLeadExistingTaskSummary   `json:"existingTasks,omitempty"`
-	Mode          string                          `json:"mode"` // "fresh" | "incremental"
-	Diff          *TechLeadValidatorDiffContext   `json:"diff,omitempty"`
+	ProjectName    string                        `json:"projectName"`
+	Spec           string                        `json:"spec"`
+	SlimDesign     []TechLeadSlimComponent       `json:"slimDesign"`
+	SpecDiff       string                        `json:"specDiff,omitempty"`
+	DesignDiff     string                        `json:"designDiff,omitempty"`
+	ExistingTasks  []TechLeadExistingTaskSummary `json:"existingTasks,omitempty"`
+	Mode           string                        `json:"mode"` // "fresh" | "incremental"
+	Diff           *TechLeadValidatorDiffContext `json:"diff,omitempty"`
+	// AttachedSkills are the skills the architect attached to the
+	// project's design.md. Name + description only; bodies arrive in
+	// each TechLeadDetailItem.SkillsResolved at the detail phase.
+	AttachedSkills []SkillDescription `json:"attachedSkills,omitempty"`
 }
 
 type TechLeadSlimComponent struct {
@@ -142,6 +169,11 @@ type TechLeadDetailItem struct {
 	DesignSlice                string                  `json:"designSlice"`
 	DepSummaries               []TechLeadSlimComponent `json:"depSummaries"`
 	ExistingTitlesForComponent []TechLeadExistingTitle `json:"existingTitlesForComponent"`
+	// SkillsResolved are the full bodies of every skill attached to
+	// the project's design at tech-lead detail time. The tech-lead
+	// inlines them under "Skills active for this project" with "MUST
+	// consult" framing.
+	SkillsResolved []SkillRecord `json:"skillsResolved,omitempty"`
 }
 
 type TechLeadExistingTitle struct {

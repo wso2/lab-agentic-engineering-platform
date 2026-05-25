@@ -51,6 +51,27 @@ export type PlanItem = z.infer<typeof PlanItemSchema>;
 // The full plan is a non-empty (in fresh mode) array of PlanItem.
 export const PlanArraySchema = z.array(PlanItemSchema);
 
+// Lightweight skill projection shipped to the planner — name + description
+// only. The planner uses these as context for splitting tasks but does not
+// load the bodies (those go to the detail phase via TechLeadDetailItem).
+export const AttachedSkillSummary = z.object({
+  name: z.string(),
+  description: z.string(),
+});
+export type AttachedSkillSummary = z.infer<typeof AttachedSkillSummary>;
+
+// Resolved skill body shipped to the tech-lead detail phase. Full SKILL.md
+// content for every skill attached to the project's design. The tech-lead
+// inlines these under "Skills active for this project" with "MUST consult"
+// framing — there is no two-tier split at this point because the architect
+// has already attached only the relevant skills.
+export const ResolvedSkill = z.object({
+  name: z.string(),
+  description: z.string(),
+  body: z.string(),
+});
+export type ResolvedSkill = z.infer<typeof ResolvedSkill>;
+
 // Phase 1 input.
 export const TechLeadPlanInput = z.object({
   projectName: z.string(),
@@ -61,6 +82,10 @@ export const TechLeadPlanInput = z.object({
   designDiff: z.string().optional(),
   existingTasks: z.array(ExistingTaskSummary).optional(),
   mode: z.enum(["fresh", "incremental"]),
+  // Skills attached to this project — name + description only. The
+  // planner uses these as context for splitting; bodies arrive in
+  // TechLeadDetailItem.skillsResolved for the detail phase.
+  attachedSkills: z.array(AttachedSkillSummary).optional(),
 });
 
 export type TechLeadPlanInput = z.infer<typeof TechLeadPlanInput>;
@@ -82,6 +107,10 @@ export const TechLeadDetailItem = z.object({
   existingTitlesForComponent: z.array(
     z.object({ title: z.string(), status: z.string() }),
   ),
+  // Full bodies of every skill attached to the project's design at
+  // tech-lead detail time. The tech-lead inlines them in the user
+  // prompt with "MUST consult" framing.
+  skillsResolved: z.array(ResolvedSkill).optional(),
 });
 
 export type TechLeadDetailItem = z.infer<typeof TechLeadDetailItem>;

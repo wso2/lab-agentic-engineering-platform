@@ -35,6 +35,12 @@ type TaskController interface {
 	VerificationFailed(w http.ResponseWriter, r *http.Request)
 	Retry(w http.ResponseWriter, r *http.Request)
 
+	// Skills (PR 3 of skills-system) is called by the dispatched agent
+	// inside the runner pod at init. Returns the snapshotted skill bodies
+	// for the task's (project_id, design_version). Authenticated via the
+	// per-task JWT.
+	Skills(w http.ResponseWriter, r *http.Request)
+
 	// Progress endpoints — task-execution-progress.md §5.2.
 	GetTaskAgentProgress(w http.ResponseWriter, r *http.Request)
 	GetTaskBuildProgress(w http.ResponseWriter, r *http.Request)
@@ -46,6 +52,7 @@ type taskController struct {
 	progressSvc services.ProgressService
 	ocClient    openchoreo.ComponentClient
 	taskTokens  *services.TaskTokenManager
+	skillsSvc   *services.TaskSkillsService
 }
 
 func NewTaskController(
@@ -62,6 +69,12 @@ func NewTaskController(
 		ocClient:    ocClient,
 		taskTokens:  taskTokens,
 	}
+}
+
+// SetSkillsService wires the per-task skills pull endpoint. Optional —
+// when nil, the handler returns 503.
+func (c *taskController) SetSkillsService(s *services.TaskSkillsService) {
+	c.skillsSvc = s
 }
 
 func (c *taskController) ListTasks(w http.ResponseWriter, r *http.Request) {
@@ -436,4 +449,55 @@ func (c *taskController) ExecTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	utils.WriteSuccessResponse(w, http.StatusOK, map[string]string{"status": "task execution started"})
+}
+
+// Skills (PR 3 of skills-system) is called by the runner pod at init
+// time to fetch the snapshotted SKILL.md bodies for this task's
+// (project_id, design_version). Authenticated via the same per-task
+// bearer used by VerificationFailed.
+//
+// Response shape: {"skills": [{ id, materializedName, kind, skillMd, references }]}
+// Empty list (NOT 404) when the task has no snapshot — pre-PR-1
+// backfilled tasks or designs with no attached skills.
+func (c *taskController) Skills(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.skillsSvc == nil || c.taskTokens == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "skills endpoint not configured")
+		return
+	}
+
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "bearer token required")
+		return
+	}
+	claims, err := c.taskTokens.Verify(authz[len(prefix):])
+	if err != nil {
+		slog.WarnContext(r.Context(), "skills: invalid bearer", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid task bearer")
+		return
+	}
+	if claims.TaskID != taskID {
+		slog.WarnContext(r.Context(), "skills: bearer subject mismatch",
+			"task", taskID, "claimTaskId", claims.TaskID)
+		utils.WriteErrorResponse(w, http.StatusForbidden, "task bearer does not match path")
+		return
+	}
+
+	resp, err := c.skillsSvc.SkillsForTask(r.Context(), taskID)
+	if err != nil {
+		if errors.Is(err, services.ErrTaskNotFound) {
+			utils.WriteErrorResponse(w, http.StatusNotFound, "task not found")
+			return
+		}
+		slog.ErrorContext(r.Context(), "skills: lookup failed", "task", taskID, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to read skills")
+		return
+	}
+
+	utils.WriteSuccessResponse(w, http.StatusOK, resp)
 }

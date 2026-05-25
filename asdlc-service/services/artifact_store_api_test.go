@@ -7,19 +7,19 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
-// Round-trip frontmatter ± api block to prove Phase 1 schema is backward
-// compatible: components without `api` produce identical bytes to the
-// pre-Phase-1 baseline (no `api:` line in the YAML), and components with
-// `api.security: required` survive Split → Assemble cleanly.
+// Round-trip frontmatter ± exposesAPI block: components without
+// `exposesAPI` produce no `exposesAPI:` line in the YAML, and components
+// with `exposesAPI.auth: end-user-required` survive Split → Assemble
+// cleanly with managed/userContext preserved.
 func TestComponentFrontmatterAPIRoundTrip(t *testing.T) {
 	cases := []struct {
-		name              string
-		comp              models.DesignComponent
-		wantContainsAPI   bool
-		wantSecurityAfter string
+		name                string
+		comp                models.DesignComponent
+		wantContainsExposes bool
+		wantAuthAfter       string
 	}{
 		{
-			name: "without api block",
+			name: "without exposesAPI block",
 			comp: models.DesignComponent{
 				Name:                       "svc",
 				ComponentType:              "service",
@@ -30,10 +30,10 @@ func TestComponentFrontmatterAPIRoundTrip(t *testing.T) {
 				AppPath:                    "svc",
 				ComponentAgentInstructions: "build it",
 			},
-			wantContainsAPI: false,
+			wantContainsExposes: false,
 		},
 		{
-			name: "with api.security=required",
+			name: "with exposesAPI.auth=end-user-required",
 			comp: models.DesignComponent{
 				Name:                       "svc",
 				ComponentType:              "service",
@@ -43,10 +43,13 @@ func TestComponentFrontmatterAPIRoundTrip(t *testing.T) {
 				Buildpack:                  "docker",
 				AppPath:                    "svc",
 				ComponentAgentInstructions: "build it",
-				Api:                        &models.APISecurity{Security: "required"},
+				ExposesAPI: &models.ExposesAPI{
+					Auth:        "end-user-required",
+					UserContext: "X-User-Id",
+				},
 			},
-			wantContainsAPI:   true,
-			wantSecurityAfter: "required",
+			wantContainsExposes: true,
+			wantAuthAfter:       "end-user-required",
 		},
 	}
 	for _, c := range cases {
@@ -64,13 +67,13 @@ func TestComponentFrontmatterAPIRoundTrip(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected %s in files; got keys: %v", path, keysOf(files))
 			}
-			if c.wantContainsAPI {
-				if !strings.Contains(content, "api:") || !strings.Contains(content, "security: "+c.wantSecurityAfter) {
-					t.Fatalf("expected api block with security=%q in:\n%s", c.wantSecurityAfter, content)
+			if c.wantContainsExposes {
+				if !strings.Contains(content, "exposesAPI:") || !strings.Contains(content, "auth: "+c.wantAuthAfter) {
+					t.Fatalf("expected exposesAPI block with auth=%q in:\n%s", c.wantAuthAfter, content)
 				}
 			} else {
-				if strings.Contains(content, "api:") || strings.Contains(content, "security:") {
-					t.Fatalf("did NOT expect any api block in:\n%s", content)
+				if strings.Contains(content, "exposesAPI:") {
+					t.Fatalf("did NOT expect any exposesAPI block in:\n%s", content)
 				}
 			}
 
@@ -84,12 +87,12 @@ func TestComponentFrontmatterAPIRoundTrip(t *testing.T) {
 				t.Fatalf("expected 1 component, got %d", len(out.Components))
 			}
 			got := out.Components[0]
-			if c.wantContainsAPI {
-				if got.Api == nil || got.Api.Security != c.wantSecurityAfter {
-					t.Fatalf("after round-trip want api.security=%q, got %+v", c.wantSecurityAfter, got.Api)
+			if c.wantContainsExposes {
+				if got.ExposesAPI == nil || got.ExposesAPI.Auth != c.wantAuthAfter {
+					t.Fatalf("after round-trip want exposesAPI.auth=%q, got %+v", c.wantAuthAfter, got.ExposesAPI)
 				}
-			} else if got.Api != nil {
-				t.Fatalf("after round-trip want nil Api, got %+v", got.Api)
+			} else if got.ExposesAPI != nil {
+				t.Fatalf("after round-trip want nil ExposesAPI, got %+v", got.ExposesAPI)
 			}
 		})
 	}

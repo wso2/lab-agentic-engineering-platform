@@ -68,7 +68,7 @@ type Client interface {
 	// EnsureRedirectURIs appends the given URIs to the named OAuth2
 	// app's `inboundAuthConfig[0].config.redirectUris` set, idempotent
 	// on each URI (already-present entries are skipped). Used by the
-	// BFF when a web-app component with `auth.kind: oidc-spa` lands
+	// BFF when a web-app component with `callerIdentity.mode: end-user` lands
 	// `deployed` — its public URL is unknown until then, but Thunder
 	// rejects /oauth2/authorize requests whose redirect_uri isn't on
 	// the registered list. `clientID` is the OAuth client_id string
@@ -76,6 +76,26 @@ type Client interface {
 	// findApp resolves it. Returns true when at least one URI was
 	// added, false when every URI was already present (a no-op).
 	EnsureRedirectURIs(ctx context.Context, clientID string, uris []string) (added bool, err error)
+
+	// EnsureProjectOAuthClient declares a per-project public OAuth2 SPA
+	// client in Thunder. The client_id is the project name verbatim
+	// (e.g. "todo-app"). On first call it creates the application with
+	// PKCE required, public_client=true, token_endpoint_auth_method=none,
+	// and the supplied redirectURIs. On subsequent calls it merges the
+	// redirectURIs set, just like EnsureRedirectURIs.
+	//
+	// Used by the BFF when the first web-app component in a project is
+	// about to deploy — the SPA's bundle reads the same client_id from
+	// `window._env_.THUNDER_CLIENT_ID` to drive PKCE against Thunder.
+	//
+	// Returns the assigned clientID + created=true on the create branch,
+	// false when the application already existed.
+	EnsureProjectOAuthClient(ctx context.Context, projectName string, redirectURIs []string) (clientID string, created bool, err error)
+
+	// DeleteProjectOAuthClient removes the per-project SPA client. Used
+	// by the project-delete path. Returns (true, nil) on actual delete,
+	// (false, nil) when the app didn't exist (idempotent).
+	DeleteProjectOAuthClient(ctx context.Context, projectName string) (bool, error)
 }
 
 // Config bundles the construction params. Mirrors the agent-manager
@@ -328,6 +348,139 @@ func (c *client) RegenerateClientSecret(ctx context.Context, orgHandle string) (
 		return "", fmt.Errorf("thunder app %s not found, cannot regenerate secret", appName)
 	}
 	return c.regenerateSecret(ctx, token, internalID)
+}
+
+// -- EnsureProjectOAuthClient --------------------------------------------
+
+// ProjectOAuthClientName is the canonical naming function — exposed so
+// tests and dispatch wiring can assert names without re-deriving the
+// shape. The application's display name in Thunder; the OAuth client_id
+// is just `projectName` so SPA code can read it from
+// `window._env_.THUNDER_CLIENT_ID`.
+func ProjectOAuthClientName(projectName string) string {
+	return "asdlc-project-" + projectName
+}
+
+func (c *client) EnsureProjectOAuthClient(ctx context.Context, projectName string, redirectURIs []string) (string, bool, error) {
+	if projectName == "" {
+		return "", false, fmt.Errorf("projectName required")
+	}
+	token, err := c.getSystemToken(ctx)
+	if err != nil {
+		return "", false, fmt.Errorf("getSystemToken: %w", err)
+	}
+	appName := ProjectOAuthClientName(projectName)
+
+	_, existingClientID, err := c.findApp(ctx, token, appName)
+	if err != nil {
+		return "", false, err
+	}
+	if existingClientID != "" {
+		// Already exists. Merge redirect URIs (idempotent).
+		if len(redirectURIs) > 0 {
+			if _, mergeErr := c.EnsureRedirectURIs(ctx, existingClientID, redirectURIs); mergeErr != nil {
+				return existingClientID, false, fmt.Errorf("merge redirect URIs: %w", mergeErr)
+			}
+		}
+		return existingClientID, false, nil
+	}
+
+	ouID, err := c.getDefaultOUID(ctx, token)
+	if err != nil {
+		return "", false, err
+	}
+
+	clientID, err := c.createSPAApp(ctx, token, appName, projectName, ouID, redirectURIs)
+	if err != nil {
+		return "", false, err
+	}
+	return clientID, true, nil
+}
+
+func (c *client) DeleteProjectOAuthClient(ctx context.Context, projectName string) (bool, error) {
+	if projectName == "" {
+		return false, fmt.Errorf("projectName required")
+	}
+	token, err := c.getSystemToken(ctx)
+	if err != nil {
+		return false, fmt.Errorf("getSystemToken: %w", err)
+	}
+	appName := ProjectOAuthClientName(projectName)
+	internalID, _, err := c.findApp(ctx, token, appName)
+	if err != nil {
+		return false, err
+	}
+	if internalID == "" {
+		return false, nil
+	}
+	return c.deleteApp(ctx, token, internalID)
+}
+
+// createSPAApp creates a public OAuth2 client for an SPA — PKCE
+// required, no client_secret, authorization_code + refresh_token grants.
+// Shape mirrors wso2cloud-deployment's per-project console entries.
+func (c *client) createSPAApp(ctx context.Context, token, appName, projectName, ouID string, redirectURIs []string) (string, error) {
+	urisIface := make([]any, 0, len(redirectURIs))
+	for _, u := range redirectURIs {
+		urisIface = append(urisIface, u)
+	}
+	payload := map[string]any{
+		"name": appName,
+		"ouId": ouID,
+		"inboundAuthConfig": []map[string]any{
+			{
+				"type": "oauth2",
+				"config": map[string]any{
+					"clientId":                projectName,
+					"grantTypes":              []string{"authorization_code", "refresh_token"},
+					"responseTypes":           []string{"code"},
+					"pkceRequired":            true,
+					"publicClient":            true,
+					"tokenEndpointAuthMethod": "none",
+					"redirectUris":            urisIface,
+				},
+			},
+		},
+	}
+	body, _ := json.Marshal(payload)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/applications", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("thunder create SPA app: %w", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	respBody, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("thunder create SPA app returned %d: %s", resp.StatusCode, string(respBody))
+	}
+	slog.Info("Thunder project SPA client created", "appName", appName, "projectName", projectName, "status", resp.StatusCode)
+
+	var result struct {
+		ClientID    string `json:"clientId"`
+		InboundAuth []struct {
+			Config struct {
+				ClientID string `json:"clientId"`
+			} `json:"config"`
+		} `json:"inboundAuthConfig"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("thunder create SPA app decode: %w", err)
+	}
+	cid := result.ClientID
+	if cid == "" && len(result.InboundAuth) > 0 {
+		cid = result.InboundAuth[0].Config.ClientID
+	}
+	if cid == "" {
+		return "", fmt.Errorf("thunder create SPA app: clientId not found in response: %s", string(respBody))
+	}
+	return cid, nil
 }
 
 // -- EnsureRedirectURIs ---------------------------------------------------
