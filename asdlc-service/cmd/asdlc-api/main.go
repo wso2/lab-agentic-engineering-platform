@@ -376,6 +376,132 @@ func main() {
 		codingAgentDispatcher = codingagent.New(cgwClient)
 	}
 
+	// --- Credentials + in-process services (folded in after WS0.1.i) ---
+	credKey, err := base64.StdEncoding.DecodeString(cfg.CredentialEncryptionKey)
+	if err != nil || len(credKey) != 32 {
+		slog.Error("CREDENTIAL_ENCRYPTION_KEY must be a base64-encoded 32-byte key", "error", err)
+		os.Exit(1)
+	}
+	credStore, err := credentials.NewDBStore(db, credKey)
+	if err != nil {
+		slog.Error("credential store init failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("credential store: postgres (aes-256-gcm)")
+
+	wpClient, err := k8sclient.NewInClusterClient()
+	if err != nil {
+		slog.Warn("k8s client init failed — mint-build will skip Secret writes; builds will fail at clone", "error", err)
+		wpClient = nil
+	}
+
+	// App-token minter — best-effort App-key load. PR A's seed is user-pat
+	// only, so PR A boots with `appKey == nil` and the minter answers in
+	// no-app mode; PR B's connect surface lights up the App path lazily.
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 10*time.Second)
+	appKey, err := credentials.LoadAppKeyFromOpenBao(loadCtx, credStore)
+	cancelLoad()
+	if err != nil {
+		slog.Warn("app key load failed; App-mode credentials will return ErrAppNotConfigured", "error", err)
+		appKey = nil
+	}
+	minter, err := credentials.NewAppTokenMinter(appKey)
+	if err != nil {
+		slog.Error("app token minter init failed", "error", err)
+		os.Exit(1)
+	}
+	minter.WithOpenBao(credStore)
+
+	// Dev-only app-platform seed (App private key + client_secret + webhook
+	// HMAC). No-op outside DEPLOYMENT_TIER=dev.
+	{
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := seed.AppPlatformFromEnv(c, credStore, cfg); err != nil {
+			cancel()
+			slog.Error("app platform seed failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	if appKey == nil {
+		retryCtx, cancelRetry := context.WithTimeout(context.Background(), 10*time.Second)
+		if reloaded, rerr := credentials.LoadAppKeyFromOpenBao(retryCtx, credStore); rerr == nil && reloaded != nil {
+			cancelRetry()
+			minter, err = credentials.NewAppTokenMinter(reloaded)
+			if err != nil {
+				slog.Error("app token minter re-init failed", "error", err)
+				os.Exit(1)
+			}
+			minter.WithOpenBao(credStore)
+			slog.Info("github app loaded post-seed", "appId", reloaded.AppID)
+		} else {
+			cancelRetry()
+		}
+	}
+	if minter.AppID() != 0 {
+		idCtx, cancelID := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := minter.LoadAppBotIdentity(idCtx, "https://api.github.com"); err != nil {
+			slog.Warn("app bot identity load failed; will retry on first connect", "error", err)
+		}
+		cancelID()
+	}
+	var appClientSecret string
+	if minter.AppID() != 0 {
+		csCtx, cancelCS := context.WithTimeout(context.Background(), 10*time.Second)
+		if cs, err := minter.LoadAppClientSecret(csCtx); err != nil {
+			slog.Warn("app oauth client_secret load failed; bind path disabled", "error", err)
+		} else {
+			appClientSecret = cs
+		}
+		cancelCS()
+	}
+
+	credResolver := credentials.NewOrgResolver(db, credStore, minter)
+
+	githubClient := services.NewGitHubClient()
+	repoService := services.NewRepoService(repoRepo, githubClient, credResolver, cfg.GitHubRepoVisibility, cfg.RepoBasePath)
+	gitOpsService := services.NewGitOpsService(repoRepo, credResolver, cfg.RepoBasePath, githubClient)
+	artifactSvcGit := services.NewArtifactService(repoRepo, gitOpsService)
+	githubV2Client := services.NewGitHubV2Client()
+	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, credResolver)
+	gitOpsService.CleanupOrphanTmpClones()
+	go func() {
+		warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		warmed, failed := gitOpsService.PreWarmClones(warmCtx, 10)
+		slog.Info("pre-warm complete", "warmed", warmed, "failed", failed)
+	}()
+	branchService := services.NewBranchService(repoRepo, githubClient, issueService)
+	prService := services.NewPullRequestService(repoRepo, githubClient, issueService)
+	webhookRegService := services.NewWebhookService(repoRepo, githubClient, repoService, issueService, cfg.WebhookDeliveryURL, cfg.WebhookHMACSecret)
+	credRefreshService := services.NewCredentialsRefreshService(credResolver)
+	credService := services.NewCredentialService(db, credStore, minter, cfg.WebhookHMACSecret, cfg.GitHubAppClientID, appClientSecret, githubClient)
+	buildCredService := services.NewBuildCredentialsService(repoRepo, credResolver, wpClient)
+	credService.WithBuildSecretCleaner(buildCredService)
+	anthropicInvalidator := services.HTTPAgentsCacheInvalidator(cfg.AgentsServiceURL, "")
+	anthropicCredService := services.NewAnthropicCredentialService(db, credStore, wpClient, cfg.AnthropicPlatformKey, anthropicInvalidator)
+
+	// WS2.2 — SM-API mirror writer wired into both credential services.
+	// nil-safe: smClient is nil when SECRET_MANAGER_API_URL is unset,
+	// and WithSMAPIWriter accepts the no-op writer cleanly.
+	smWriter := services.NewSMAPIWriter(smClient, db)
+	credService.WithSMAPIWriter(smWriter)
+	anthropicCredService.WithSMAPIWriter(smWriter)
+	validatorProbes := services.NewValidatorProbes(credService, githubClient, credResolver, minter)
+	credValidator := credentials.NewValidator(db, validatorProbes, nil, cfg.CredentialValidatorInterval)
+	repoBoardService := services.NewRepoBoardService(repoRepo, githubV2Client, credResolver)
+
+	repoCtrl := controllers.NewRepoController(repoService)
+	gitOpsCtrl := controllers.NewGitOpsController(gitOpsService)
+	issueCtrl := controllers.NewIssueController(issueService)
+	branchCtrl := controllers.NewBranchController(branchService)
+	prCtrl := controllers.NewPullRequestController(prService)
+	webhookRegCtrl := controllers.NewWebhookRegistrationController(webhookRegService)
+	artifactCtrlGit := controllers.NewArtifactController(artifactSvcGit)
+	credRefreshCtrl := controllers.NewCredentialsRefreshController(credRefreshService)
+	gitProjectCtrl := controllers.NewGitProjectController(githubV2Client, credResolver, repoService)
+	repoBoardCtrl := controllers.NewRepoBoardController(repoBoardService)
+
 	// Artifact store — PR 2 of repo-storage-ownership: HTTP-backed via
 	// git-service. The BFF no longer mounts /data/repos.
 	artifactStore := services.NewArtifactStore(gitClient)
@@ -407,7 +533,7 @@ func main() {
 	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
 
 	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, gitClient, agentsClient, dbClient)
-	boardService := services.NewBoardService(gitClient, taskRepo)
+	boardService := services.NewBoardService(repoBoardService, taskRepo)
 
 	if hook, ok := designService.(services.DesignServiceWithTaskHook); ok {
 		hook.SetTaskService(taskService)
@@ -621,6 +747,17 @@ func main() {
 	// convergence backstop the §6 Phase 2 plan calls for.
 	traitSyncWatcher := webhook.NewTraitSyncWatcher(db, traitSyncService, tokenInject)
 
+	// Inbound JWT verifier — Thunder publishes the User JWT and Service JWT
+	// signing keys at JWKSURL. Lazy fetch on first request avoids compose
+	// start-order races.
+	var thunderJWKS *jwtassertion.JWKSCache
+	if cfg.JWKSURL != "" {
+		thunderJWKS = jwtassertion.NewJWKSCache(cfg.JWKSURL)
+		slog.Info("Inbound JWT verifier", "jwksURL", cfg.JWKSURL, "audience", cfg.JWTAllowedAudience, "issuer", cfg.JWTAllowedIssuer)
+	} else {
+		slog.Warn("JWKS_URL not set — inbound JWT verification disabled (dev/test only)")
+	}
+
 	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
 	disconnectSvc := services.NewOrgDisconnectService(taskRepo, db, gitClient)
 	orgGitHubCtrl := controllers.NewOrgGitHubController(
@@ -634,143 +771,6 @@ func main() {
 
 	// Per-org Anthropic settings surface. Same JWT gating as GitHub Integration.
 	orgAnthropicCtrl := controllers.NewOrgAnthropicController(anthropicCredService)
-
-	// Inbound JWT verifier — Thunder publishes the User JWT and Service JWT
-	// signing keys at JWKSURL. Lazy fetch on first request avoids compose
-	// start-order races.
-	var thunderJWKS *jwtassertion.JWKSCache
-	if cfg.JWKSURL != "" {
-		thunderJWKS = jwtassertion.NewJWKSCache(cfg.JWKSURL)
-		slog.Info("Inbound JWT verifier", "jwksURL", cfg.JWKSURL, "audience", cfg.JWTAllowedAudience, "issuer", cfg.JWTAllowedIssuer)
-	} else {
-		slog.Warn("JWKS_URL not set — inbound JWT verification disabled (dev/test only)")
-	}
-
-	// --- Git-service services + controllers (folded in after WS0.1.i) ---
-	credKey, err := base64.StdEncoding.DecodeString(cfg.CredentialEncryptionKey)
-	if err != nil || len(credKey) != 32 {
-		slog.Error("CREDENTIAL_ENCRYPTION_KEY must be a base64-encoded 32-byte key", "error", err)
-		os.Exit(1)
-	}
-	credStore, err := credentials.NewDBStore(db, credKey)
-	if err != nil {
-		slog.Error("credential store init failed", "error", err)
-		os.Exit(1)
-	}
-	slog.Info("credential store: postgres (aes-256-gcm)")
-
-	wpClient, err := k8sclient.NewInClusterClient()
-	if err != nil {
-		slog.Warn("k8s client init failed — mint-build will skip Secret writes; builds will fail at clone", "error", err)
-		wpClient = nil
-	}
-
-	// App-token minter — best-effort App-key load. PR A's seed is user-pat
-	// only, so PR A boots with `appKey == nil` and the minter answers in
-	// no-app mode; PR B's connect surface lights up the App path lazily.
-	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 10*time.Second)
-	appKey, err := credentials.LoadAppKeyFromOpenBao(loadCtx, credStore)
-	cancelLoad()
-	if err != nil {
-		slog.Warn("app key load failed; App-mode credentials will return ErrAppNotConfigured", "error", err)
-		appKey = nil
-	}
-	minter, err := credentials.NewAppTokenMinter(appKey)
-	if err != nil {
-		slog.Error("app token minter init failed", "error", err)
-		os.Exit(1)
-	}
-	minter.WithOpenBao(credStore)
-
-	// Dev-only app-platform seed (App private key + client_secret + webhook
-	// HMAC). No-op outside DEPLOYMENT_TIER=dev.
-	{
-		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		if err := seed.AppPlatformFromEnv(c, credStore, cfg); err != nil {
-			cancel()
-			slog.Error("app platform seed failed", "error", err)
-			os.Exit(1)
-		}
-		cancel()
-	}
-	if appKey == nil {
-		retryCtx, cancelRetry := context.WithTimeout(context.Background(), 10*time.Second)
-		if reloaded, rerr := credentials.LoadAppKeyFromOpenBao(retryCtx, credStore); rerr == nil && reloaded != nil {
-			cancelRetry()
-			minter, err = credentials.NewAppTokenMinter(reloaded)
-			if err != nil {
-				slog.Error("app token minter re-init failed", "error", err)
-				os.Exit(1)
-			}
-			minter.WithOpenBao(credStore)
-			slog.Info("github app loaded post-seed", "appId", reloaded.AppID)
-		} else {
-			cancelRetry()
-		}
-	}
-	if minter.AppID() != 0 {
-		idCtx, cancelID := context.WithTimeout(context.Background(), 10*time.Second)
-		if err := minter.LoadAppBotIdentity(idCtx, "https://api.github.com"); err != nil {
-			slog.Warn("app bot identity load failed; will retry on first connect", "error", err)
-		}
-		cancelID()
-	}
-	var appClientSecret string
-	if minter.AppID() != 0 {
-		csCtx, cancelCS := context.WithTimeout(context.Background(), 10*time.Second)
-		if cs, err := minter.LoadAppClientSecret(csCtx); err != nil {
-			slog.Warn("app oauth client_secret load failed; bind path disabled", "error", err)
-		} else {
-			appClientSecret = cs
-		}
-		cancelCS()
-	}
-
-	credResolver := credentials.NewOrgResolver(db, credStore, minter)
-
-	githubClient := services.NewGitHubClient()
-	repoService := services.NewRepoService(repoRepo, githubClient, credResolver, cfg.GitHubRepoVisibility, cfg.RepoBasePath)
-	gitOpsService := services.NewGitOpsService(repoRepo, credResolver, cfg.RepoBasePath, githubClient)
-	artifactSvcGit := services.NewArtifactService(repoRepo, gitOpsService)
-	githubV2Client := services.NewGitHubV2Client()
-	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, credResolver)
-	gitOpsService.CleanupOrphanTmpClones()
-	go func() {
-		warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-		defer cancel()
-		warmed, failed := gitOpsService.PreWarmClones(warmCtx, 10)
-		slog.Info("pre-warm complete", "warmed", warmed, "failed", failed)
-	}()
-	branchService := services.NewBranchService(repoRepo, githubClient, issueService)
-	prService := services.NewPullRequestService(repoRepo, githubClient, issueService)
-	webhookRegService := services.NewWebhookService(repoRepo, githubClient, repoService, issueService, cfg.WebhookDeliveryURL, cfg.WebhookHMACSecret)
-	credRefreshService := services.NewCredentialsRefreshService(credResolver)
-	credService := services.NewCredentialService(db, credStore, minter, cfg.WebhookHMACSecret, cfg.GitHubAppClientID, appClientSecret, githubClient)
-	buildCredService := services.NewBuildCredentialsService(repoRepo, credResolver, wpClient)
-	credService.WithBuildSecretCleaner(buildCredService)
-	anthropicInvalidator := services.HTTPAgentsCacheInvalidator(cfg.AgentsServiceURL, "")
-	anthropicCredService := services.NewAnthropicCredentialService(db, credStore, wpClient, cfg.AnthropicPlatformKey, anthropicInvalidator)
-
-	// WS2.2 — SM-API mirror writer wired into both credential services.
-	// nil-safe: smClient is nil when SECRET_MANAGER_API_URL is unset,
-	// and WithSMAPIWriter accepts the no-op writer cleanly.
-	smWriter := services.NewSMAPIWriter(smClient, db)
-	credService.WithSMAPIWriter(smWriter)
-	anthropicCredService.WithSMAPIWriter(smWriter)
-	validatorProbes := services.NewValidatorProbes(credService, githubClient, credResolver, minter)
-	credValidator := credentials.NewValidator(db, validatorProbes, nil, cfg.CredentialValidatorInterval)
-	repoBoardService := services.NewRepoBoardService(repoRepo, githubV2Client, credResolver)
-
-	repoCtrl := controllers.NewRepoController(repoService)
-	gitOpsCtrl := controllers.NewGitOpsController(gitOpsService)
-	issueCtrl := controllers.NewIssueController(issueService)
-	branchCtrl := controllers.NewBranchController(branchService)
-	prCtrl := controllers.NewPullRequestController(prService)
-	webhookRegCtrl := controllers.NewWebhookRegistrationController(webhookRegService)
-	artifactCtrlGit := controllers.NewArtifactController(artifactSvcGit)
-	credRefreshCtrl := controllers.NewCredentialsRefreshController(credRefreshService)
-	gitProjectCtrl := controllers.NewGitProjectController(githubV2Client, credResolver, repoService)
-	repoBoardCtrl := controllers.NewRepoBoardController(repoBoardService)
 
 	var serviceJWT, taskJWT jwtassertion.Middleware
 	if cfg.JWKSURL != "" {
