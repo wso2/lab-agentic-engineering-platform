@@ -67,6 +67,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Bootstrap — self-grant full privileges on owned schema objects so
+	// FK-creating migrations don't trip over a managed-DB REVOKE that
+	// stripped REFERENCES/TRIGGER from the owner role. Owner can always
+	// self-grant; non-fatal on failure.
+	{
+		c, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		_ = migrations.RunBootstrapGrants(c, db)
+		cancel()
+	}
+
 	// Phase 2 PR A migration — DROP TABLE org_credentials (relocated to
 	// git-service) and TRUNCATE the dev tables that held legacy
 	// 'platform' references. Idempotent and dev-only.
