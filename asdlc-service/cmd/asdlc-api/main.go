@@ -524,14 +524,14 @@ func main() {
 	}
 	configService := services.NewConfigService(configRepo, componentService)
 	requirementsDirLocker := services.NewRequirementsDirLocker(db)
-	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
+	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, artifactSvcGit)
 	if locked, ok := requirementsService.(interface {
 		WithLocker(*services.RequirementsDirLocker) services.RequirementsService
 	}); ok {
 		requirementsService = locked.WithLocker(requirementsDirLocker)
 	}
 	requirementsChatService := services.NewRequirementsChatService(artifactStore, agentsClient, gitClient, requirementsDirLocker)
-	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
+	designService := services.NewDesignService(artifactStore, agentsClient, artifactSvcGit)
 
 	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, gitClient, agentsClient, dbClient)
 	boardService := services.NewBoardService(repoBoardService, taskRepo)
