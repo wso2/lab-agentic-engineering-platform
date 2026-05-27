@@ -25,7 +25,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/utils"
 )
@@ -41,11 +40,11 @@ type OrgGitHubController interface {
 }
 
 type orgGitHubController struct {
-	gitClient    gitservice.Client
-	disconnectSv *services.OrgDisconnectService
-	bearerSvc    *services.BearerService
-	appSlug      string
-	publicURL    string // for the post-callback redirect
+	credentialSvc *services.CredentialService
+	disconnectSv  *services.OrgDisconnectService
+	bearerSvc     *services.BearerService
+	appSlug       string
+	publicURL     string // for the post-callback redirect
 	// appClientID is the GitHub App's OAuth client_id used to build the
 	// authorize URL. Empty disables the App-mode connect path (StartConnect 503).
 	appClientID string
@@ -57,7 +56,7 @@ type orgGitHubController struct {
 // appClientID is the GitHub App's OAuth client_id; empty disables
 // App-mode connect.
 func NewOrgGitHubController(
-	gitClient gitservice.Client,
+	credentialSvc *services.CredentialService,
 	disconnectSv *services.OrgDisconnectService,
 	bearerSvc *services.BearerService,
 	appSlug, publicURL, appClientID string,
@@ -69,12 +68,12 @@ func NewOrgGitHubController(
 		publicURL = "http://localhost:8090"
 	}
 	return &orgGitHubController{
-		gitClient:    gitClient,
-		disconnectSv: disconnectSv,
-		bearerSvc:    bearerSvc,
-		appSlug:      appSlug,
-		publicURL:    publicURL,
-		appClientID:  appClientID,
+		credentialSvc: credentialSvc,
+		disconnectSv:  disconnectSv,
+		bearerSvc:     bearerSvc,
+		appSlug:       appSlug,
+		publicURL:     publicURL,
+		appClientID:   appClientID,
 	}
 }
 
@@ -167,9 +166,9 @@ func (c *orgGitHubController) HandleConnectCallback(w http.ResponseWriter, r *ht
 // the pinned install is in the candidates before binding.
 func (c *orgGitHubController) handleOAuthCallback(w http.ResponseWriter, r *http.Request, claims *services.ConnectStateClaims, code, settingsURL string) {
 	redirectURI := c.publicURL + connectCallbackPath
-	candidates, err := c.gitClient.ResolveUserInstallations(r.Context(), claims.OcOrgID, code, redirectURI)
+	candidates, err := c.credentialSvc.ResolveUserInstallations(r.Context(), claims.OcOrgID, code, redirectURI)
 	if err != nil {
-		if errors.Is(err, gitservice.ErrAppBindNotConfigured) {
+		if errors.Is(err, services.ErrAppBindNotConfigured) {
 			http.Redirect(w, r, settingsURL+"?error=app_bind_not_configured", http.StatusSeeOther)
 			return
 		}
@@ -239,21 +238,22 @@ func (c *orgGitHubController) handlePostInstallCallback(w http.ResponseWriter, r
 // bindAndRedirect calls CreateOrReplaceCredential to insert the platform
 // row for the installation, then 302s to the settings page.
 func (c *orgGitHubController) bindAndRedirect(w http.ResponseWriter, r *http.Request, claims *services.ConnectStateClaims, installID int64, settingsURL string) {
-	_, err := c.gitClient.CreateOrReplaceCredential(r.Context(), claims.OcOrgID, gitservice.ConnectRequest{
+	_, err := c.credentialSvc.Connect(r.Context(), claims.OcOrgID, services.ConnectRequest{
 		Kind:           "app-installation",
 		InstallationID: installID,
 	})
 	if err != nil {
-		var ce *gitservice.CredentialError
+		var ce *services.ConflictError
+		var ve *services.ValidationError
 		switch {
-		case gitservice.IsConflict(err):
+		case errors.As(err, &ce):
 			http.Redirect(w, r, settingsURL+"?error=cross_mode", http.StatusSeeOther)
-		case errors.As(err, &ce) && ce.Code != "":
+		case errors.As(err, &ve) && ve.Code != "":
 			// Validation failure with a structured code — pass the code
 			// through so the console can map it to a friendly message.
 			slog.InfoContext(r.Context(), "connect callback: bind refused",
-				"ocOrgId", claims.OcOrgID, "installationId", installID, "code", ce.Code, "msg", ce.Msg)
-			http.Redirect(w, r, settingsURL+"?error="+url.QueryEscape(ce.Code), http.StatusSeeOther)
+				"ocOrgId", claims.OcOrgID, "installationId", installID, "code", ve.Code, "msg", ve.Error())
+			http.Redirect(w, r, settingsURL+"?error="+url.QueryEscape(ve.Code), http.StatusSeeOther)
 		default:
 			slog.ErrorContext(r.Context(), "connect callback: bind failed",
 				"ocOrgId", claims.OcOrgID, "installationId", installID, "error", err)
@@ -266,7 +266,7 @@ func (c *orgGitHubController) bindAndRedirect(w http.ResponseWriter, r *http.Req
 	http.Redirect(w, r, settingsURL+"?connected=app", http.StatusSeeOther)
 }
 
-// ConnectPAT proxies POST /github/pat to git-service.
+// ConnectPAT handles POST /github/pat — inserts or replaces a PAT-mode credential.
 func (c *orgGitHubController) ConnectPAT(w http.ResponseWriter, r *http.Request) {
 	orgHandle := r.PathValue("orgHandle")
 	if !requireOrgHandle(w, orgHandle) {
@@ -280,13 +280,13 @@ func (c *orgGitHubController) ConnectPAT(w http.ResponseWriter, r *http.Request)
 		utils.WriteErrorResponse(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	proj, err := c.gitClient.CreateOrReplaceCredential(r.Context(), orgHandle, gitservice.ConnectRequest{
+	proj, err := c.credentialSvc.Connect(r.Context(), orgHandle, services.ConnectRequest{
 		Kind:        "user-pat",
 		PAT:         body.PAT,
 		GitHubLogin: body.GitHubLogin,
 	})
 	if err != nil {
-		writeProxiedCredentialError(w, err)
+		writeCredentialServiceError(w, err)
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, proj)
@@ -299,9 +299,10 @@ func (c *orgGitHubController) GetStatus(w http.ResponseWriter, r *http.Request) 
 	if !requireOrgHandle(w, orgHandle) {
 		return
 	}
-	proj, err := c.gitClient.GetCredentialProjection(r.Context(), orgHandle)
+	proj, err := c.credentialSvc.Status(r.Context(), orgHandle)
 	if err != nil {
-		if gitservice.IsNotFound(err) {
+		var nfe *services.NotFoundError
+		if errors.As(err, &nfe) {
 			// Not connected — return a minimal payload so the UI can render
 			// the "Choose a connection method" panel without an error toast.
 			utils.WriteSuccessResponse(w, http.StatusOK, map[string]any{
@@ -311,7 +312,7 @@ func (c *orgGitHubController) GetStatus(w http.ResponseWriter, r *http.Request) 
 			})
 			return
 		}
-		writeProxiedCredentialError(w, err)
+		writeCredentialServiceError(w, err)
 		return
 	}
 	utils.WriteSuccessResponse(w, http.StatusOK, proj)
@@ -358,19 +359,5 @@ func actorFromContext(ctx context.Context) string {
 		}
 	}
 	return "unknown"
-}
-
-func writeProxiedCredentialError(w http.ResponseWriter, err error) {
-	var ce *gitservice.CredentialError
-	if errors.As(err, &ce) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(ce.Status)
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"error": ce.Msg,
-			"code":  ce.Code,
-		})
-		return
-	}
-	utils.WriteErrorResponse(w, http.StatusInternalServerError, err.Error())
 }
 

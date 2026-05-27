@@ -22,9 +22,10 @@
 | **Installations** | | |
 | `OrgIDByInstallationID` | `CredentialService.OrgIDByInstallationID` | |
 | `OrgIDByRepoFullName` | `CredentialService.OrgIDByRepoFullName` | |
-| `SetInstallationStatus` | `CredentialService.SetInstallationStatus` | **expose** (currently `setInstallationStatus`, unexported) |
+| `SetInstallationStatus(_, _, "suspended")` | `CredentialService.SuspendInstallation` | semantic split |
+| `SetInstallationStatus(_, _, "active")` | `CredentialService.UnsuspendInstallation` | semantic split |
 | `GetInstallationRepositories` | `CredentialService.ListInstallationRepos` | rename |
-| `MergeInstallationRepos` | `CredentialService.MergeInstallationRepos` | **NEW METHOD** — port from the deleted git-service binary |
+| `MergeInstallationRepos` | `CredentialService.MergeSelectedRepos` | rename |
 | `ResolveUserInstallations` | `CredentialService.ResolveUserInstallations` | |
 | **Anthropic credentials** | | |
 | `CreateOrReplaceAnthropic` | `AnthropicCredentialService.Connect` | |
@@ -72,25 +73,7 @@
 
 ## New code
 
-### 1. `CredentialService.MergeInstallationRepos`
-
-Port from the deleted `git-service/services/credentials/*.go`. ~20 LOC.
-
-```go
-// MergeInstallationRepos updates the org's tracked installation-repo set:
-// adds the slugs in `added`, removes the slugs in `removed`. Idempotent.
-// Used by webhook handlers when GitHub reports installation_repositories
-// added/removed events.
-func (s *CredentialService) MergeInstallationRepos(
-    ctx context.Context, installationID int64, added, removed []string,
-) error { … }
-```
-
-Location: `asdlc-service/services/credential_service.go`, alongside the existing installation methods (around line 1122).
-
-### 2. Export `CredentialService.SetInstallationStatus`
-
-Rename `setInstallationStatus` (line 863) to `SetInstallationStatus`. No behavioural change.
+**None.** Every method on `gitservice.Client` has an in-process equivalent already (verified by grep). The rewrite is pure rewiring.
 
 ---
 
@@ -132,7 +115,7 @@ Order: smallest blast radius first; verify `go build ./...` after each.
 - [ ] **`services/task_stream.go`** — `gitClient` → `issueSvc` + `repoSvc` + `artifactSvc`. 8 call sites.
 - [ ] **`services/requirements_service.go`** — `gitClient` → `artifactSvc`. 8 call sites.
 - [ ] **`services/design_service.go`** — `gitClient` → `artifactSvc`. 11 call sites.
-- [ ] **`services/artifact_store.go`** — `gitClient` → `artifactSvc`. 12 call sites. Note: `ArtifactStore` is a thin wrapper; consider whether to delete it entirely and let consumers use `artifactSvc` directly.
+- [ ] **`services/artifact_store.go`** — `gitClient` → `artifactSvc`. ~10 internal call sites. **Keep the public surface intact** — `ArtifactStore` owns the external-API catalog (`ExternalAPICatalog`) and the `DesignFile` YAML shape; it's not a pure forwarding wrapper. 7 downstream services (design_service, requirements_chat_service, requirements_service, trait_sync, runtime_config_service, project_service, component_service) consume the 13 public methods — those stay untouched.
 - [ ] **`services/dispatch_service.go`** — `gitClient` → `repoSvc` + `credentialSvc` + `issueSvc` + `repoBoardSvc` + `anthropicSvc`. 11 call sites.
 - [ ] **`services/webhook/installation_handlers.go`** — `gitClient` → `credentialSvc` + `issueSvc`. 9 call sites (incl. the new `MergeInstallationRepos`).
 - [ ] **`services/webhook/secrets.go`** — already interface-based (`SecretFetcher`); wire to `credentialSvc.GetWebhookSecrets`.
@@ -178,5 +161,4 @@ Order: smallest blast radius first; verify `go build ./...` after each.
 ## Out of scope (explicitly deferred)
 
 - **Renaming the runner-pod parameter** `WorkflowRun.parameters.gitService.url`. Touches the remote-worker image. Folded into a later cleanup.
-- **`ArtifactStore` collapse**. If `ArtifactStore` ends up as a pure forwarding wrapper to `artifactService`, deleting it is cleaner — but that's a follow-up PR; this one only removes the loopback.
 - **Test coverage backfill** for the few in-process methods that lacked direct test coverage when they lived in git-service (e.g. `MergeInstallationRepos`). The new tests fit better as a separate PR after this one merges.

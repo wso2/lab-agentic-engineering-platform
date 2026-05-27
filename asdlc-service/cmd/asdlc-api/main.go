@@ -622,25 +622,18 @@ func main() {
 	traitSyncWatcher := webhook.NewTraitSyncWatcher(db, traitSyncService, tokenInject)
 
 	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
-	var orgGitHubCtrl controllers.OrgGitHubController
-	if gitClient != nil {
-		disconnectSvc := services.NewOrgDisconnectService(taskRepo, db, gitClient)
-		orgGitHubCtrl = controllers.NewOrgGitHubController(
-			gitClient,
-			disconnectSvc,
-			bearerSvc,
-			cfg.GithubAppSlug,
-			cfg.BFFPublicURL,
-			cfg.GithubAppClientID,
-		)
-	}
+	disconnectSvc := services.NewOrgDisconnectService(taskRepo, db, gitClient)
+	orgGitHubCtrl := controllers.NewOrgGitHubController(
+		credService,
+		disconnectSvc,
+		bearerSvc,
+		cfg.GithubAppSlug,
+		cfg.BFFPublicURL,
+		cfg.GithubAppClientID,
+	)
 
-	// Per-org Anthropic settings surface. Proxies to git-service's internal
-	// credential routes; same JWT gating as GitHub Integration.
-	var orgAnthropicCtrl controllers.OrgAnthropicController
-	if gitClient != nil {
-		orgAnthropicCtrl = controllers.NewOrgAnthropicController(gitClient)
-	}
+	// Per-org Anthropic settings surface. Same JWT gating as GitHub Integration.
+	orgAnthropicCtrl := controllers.NewOrgAnthropicController(anthropicCredService)
 
 	// Inbound JWT verifier — Thunder publishes the User JWT and Service JWT
 	// signing keys at JWKSURL. Lazy fetch on first request avoids compose
