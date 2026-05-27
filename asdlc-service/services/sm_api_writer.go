@@ -207,6 +207,108 @@ func (w *SMAPIWriter) DeleteAnthropic(ctx context.Context, ocOrgID string) error
 		}).Error
 }
 
+// PublisherSecretFieldClientID and PublisherSecretFieldClientSecret are the
+// JSON field names inside the SM-API "publisher" secret. The dispatcher
+// (WS2.4) materialises both into the per-run Job as PUBLISHER_CLIENT_ID
+// and PUBLISHER_CLIENT_SECRET via a single 2-entry ExternalSecret. Token
+// URL is non-secret and rides as a plain Job env from BFF config.
+const (
+	PublisherSecretFieldClientID     = "client_id"
+	PublisherSecretFieldClientSecret = "client_secret"
+)
+
+// WritePublisher uploads the per-org Thunder publisher cc credentials to
+// SM-API as a single 2-field secret and stamps the triplet onto
+// `organization_idp_profiles`. Called from idp_service.EnsureOrgPublisher
+// (on create) and RegenerateClientSecret (on rotation). The triplet is
+// read at dispatch time to mint the per-run ExternalSecret that hands
+// the runner pod its cc credentials (WS2.4 replaces ASDLC_BEARER).
+//
+// Same semantics as WriteAnthropic: best-effort, errors returned, ctx
+// must carry the user JWT.
+func (w *SMAPIWriter) WritePublisher(ctx context.Context, ocOrgID, clientID, clientSecret string) (string, error) {
+	if !w.Enabled() {
+		return "", nil
+	}
+	if strings.TrimSpace(ocOrgID) == "" {
+		return "", errors.New("sm-api writer: ocOrgID required")
+	}
+	if strings.TrimSpace(clientID) == "" {
+		return "", errors.New("sm-api writer: clientID required")
+	}
+	if strings.TrimSpace(clientSecret) == "" {
+		return "", errors.New("sm-api writer: clientSecret required")
+	}
+	loc := secretmanagersvc.SecretLocation{
+		OrgName:    ocOrgID,
+		EntityName: "publisher",
+	}
+	secretRefName, err := w.client.CreateSecret(ctx, loc, map[string]string{
+		PublisherSecretFieldClientID:     clientID,
+		PublisherSecretFieldClientSecret: clientSecret,
+	})
+	if err != nil {
+		return "", fmt.Errorf("sm-api writer: publisher upload: %w", err)
+	}
+	vaultKey, err := w.resolveVaultKey(ctx, secretRefName)
+	if err != nil {
+		return secretRefName, fmt.Errorf("sm-api writer: resolve publisher vault key: %w", err)
+	}
+	now := time.Now().UTC()
+	if err := w.db.WithContext(ctx).
+		Model(&models.OrganizationIDPProfile{}).
+		Where("org_id = ?", ocOrgID).
+		Updates(map[string]any{
+			"sm_api_secret_ref_name": secretRefName,
+			"sm_api_kv_path":         vaultKey,
+			"sm_api_property":        "publisher",
+			"sm_api_written_at":      now,
+		}).Error; err != nil {
+		return secretRefName, fmt.Errorf("sm-api writer: stamp publisher triplet: %w", err)
+	}
+	slog.InfoContext(ctx, "sm-api writer: publisher creds uploaded",
+		"ocOrgId", ocOrgID,
+		"secretRefName", secretRefName,
+		"vaultKey", vaultKey)
+	return secretRefName, nil
+}
+
+// DeletePublisher best-effort removes the SM-API publisher secret + clears
+// the triplet on `organization_idp_profiles`. Called by
+// idp_service.RevokeOrgPublisher.
+func (w *SMAPIWriter) DeletePublisher(ctx context.Context, ocOrgID string) error {
+	if !w.Enabled() {
+		return nil
+	}
+	loc := secretmanagersvc.SecretLocation{
+		OrgName:    ocOrgID,
+		EntityName: "publisher",
+	}
+	var row models.OrganizationIDPProfile
+	if err := w.db.WithContext(ctx).Where("org_id = ?", ocOrgID).First(&row).Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return nil
+		}
+		return fmt.Errorf("sm-api writer: load idp profile row: %w", err)
+	}
+	refName := ""
+	if row.SMAPISecretRefName != nil {
+		refName = *row.SMAPISecretRefName
+	}
+	if err := w.client.DeleteSecret(ctx, loc, refName); err != nil {
+		return fmt.Errorf("sm-api writer: delete publisher secret: %w", err)
+	}
+	return w.db.WithContext(ctx).
+		Model(&models.OrganizationIDPProfile{}).
+		Where("org_id = ?", ocOrgID).
+		Updates(map[string]any{
+			"sm_api_secret_ref_name": nil,
+			"sm_api_kv_path":         nil,
+			"sm_api_property":        nil,
+			"sm_api_written_at":      nil,
+		}).Error
+}
+
 // DeleteGitHubPAT mirrors DeleteAnthropic on the GitHub side.
 func (w *SMAPIWriter) DeleteGitHubPAT(ctx context.Context, ocOrgID string) error {
 	if !w.Enabled() {

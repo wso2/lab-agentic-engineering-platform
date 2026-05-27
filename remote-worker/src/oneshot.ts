@@ -22,6 +22,7 @@ import type { DispatchRequest } from "./lib/types.js";
 import { emit, primeScrubber } from "./lib/progress/emitter.js";
 import { pullTaskSkills } from "./lib/skills_pull.js";
 import { materializeSkills } from "./lib/skills_materializer.js";
+import { ClientCredentialsTokenProvider } from "./lib/oauth.js";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -37,13 +38,26 @@ function readDispatchFromEnv(): DispatchRequest {
   const projectId = requireEnv("ASDLC_PROJECT_ID");
   const componentName = requireEnv("ASDLC_COMPONENT_NAME");
   const repoUrl = requireEnv("ASDLC_REPO_URL");
-  const bearer = requireEnv("ASDLC_BEARER");
+  // WS2.4 — Bearer is optional when publisher cc creds are present;
+  // required otherwise. Validated below after we peek at publisher envs.
+  const bearer = process.env.ASDLC_BEARER ?? "";
   const gitServiceUrl = requireEnv("ASDLC_GIT_SERVICE_URL");
   const prompt = requireEnv("ASDLC_PROMPT");
   const identityName = requireEnv("ASDLC_IDENTITY_NAME");
   const identityEmail = requireEnv("ASDLC_IDENTITY_EMAIL");
   const identityLogin = process.env.ASDLC_IDENTITY_LOGIN || "";
   const correlationId = process.env.ASDLC_CORRELATION_ID || randomUUID();
+
+  const publisherClientId = process.env.PUBLISHER_CLIENT_ID ?? "";
+  const publisherClientSecret = process.env.PUBLISHER_CLIENT_SECRET ?? "";
+  const publisherTokenUrl = process.env.PUBLISHER_TOKEN_URL ?? "";
+  const hasPublisher =
+    publisherClientId !== "" && publisherClientSecret !== "" && publisherTokenUrl !== "";
+  if (!hasPublisher && bearer === "") {
+    throw new Error(
+      "neither ASDLC_BEARER nor PUBLISHER_CLIENT_ID/SECRET/TOKEN_URL set — runner has no auth material",
+    );
+  }
 
   if (!isUUID(taskId)) throw new Error(`ASDLC_TASK_ID is not a valid UUID: ${taskId}`);
   if (!isSlug(orgId)) throw new Error(`ASDLC_ORG_ID is not a valid slug: ${orgId}`);
@@ -77,7 +91,44 @@ async function main(): Promise<number> {
     return 2;
   }
 
-  primeScrubber([process.env.ANTHROPIC_API_KEY, req.bearer]);
+  // WS2.4 — when publisher cc envs are set, mint a token via the cc helper
+  // and prefer it for runner→BFF callbacks. Falls back to ASDLC_BEARER
+  // (legacy TaskJWT) when cc envs are absent.
+  const publisherClientId = process.env.PUBLISHER_CLIENT_ID ?? "";
+  const publisherClientSecret = process.env.PUBLISHER_CLIENT_SECRET ?? "";
+  const publisherTokenUrl = process.env.PUBLISHER_TOKEN_URL ?? "";
+  let ccProvider: ClientCredentialsTokenProvider | undefined;
+  if (publisherClientId !== "" && publisherClientSecret !== "" && publisherTokenUrl !== "") {
+    ccProvider = new ClientCredentialsTokenProvider({
+      tokenUrl: publisherTokenUrl,
+      clientId: publisherClientId,
+      clientSecret: publisherClientSecret,
+    });
+    console.log("[oneshot] publisher cc creds present — using client_credentials for runner callbacks");
+  }
+
+  // When publisher cc is in play, pre-mint a token and stuff it into
+  // req.bearer + retarget the workspace-bootstrap refresh URL at the
+  // path-scoped WS2.4 endpoint. provisionWorkspace doesn't otherwise
+  // need to know which auth mode is active.
+  const platformURL = process.env.ASDLC_PLATFORM_URL ?? "";
+  if (ccProvider) {
+    try {
+      const ccToken = await ccProvider.getToken();
+      req.bearer = ccToken;
+      primeScrubber([ccToken]);
+      if (platformURL) {
+        const base = platformURL.endsWith("/") ? platformURL.slice(0, -1) : platformURL;
+        req.refreshUrl = `${base}/api/v1/tasks/${encodeURIComponent(req.taskId)}/credentials/refresh`;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[oneshot] cc token mint failed:", msg);
+      return 2;
+    }
+  }
+
+  primeScrubber([process.env.ANTHROPIC_API_KEY, req.bearer, publisherClientSecret]);
 
   emit({
     kind: "phase",
@@ -103,13 +154,13 @@ async function main(): Promise<number> {
   // See docs/design/skills-system.md > "Coding agent".
   let preloadBuiltinNames: string[] = [];
   let skillsPluginDir: string | undefined;
-  const platformURL = process.env.ASDLC_PLATFORM_URL ?? "";
   if (platformURL) {
     try {
+      const skillsBearer = ccProvider ? await ccProvider.getToken() : req.bearer;
       const skills = await pullTaskSkills({
         platformURL,
         taskId: req.taskId,
-        bearer: req.bearer,
+        bearer: skillsBearer,
         correlationId: req.correlationId,
       });
       const result = await materializeSkills(layout.workspace, skills.skills);

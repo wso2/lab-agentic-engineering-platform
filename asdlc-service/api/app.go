@@ -164,6 +164,11 @@ func NewHandler(params AppParams) http.Handler {
 		// JWT path, authenticated inside the handler with the per-task
 		// RS256 bearer the runner already holds.
 		mux.HandleFunc("GET /api/v1/tasks/{taskId}/skills", params.TaskController.Skills)
+		// WS2.4 — path-scoped credentials refresh that accepts both
+		// TaskJWT and Thunder publisher cc tokens. Legacy
+		// POST /api/v1/credentials/refresh stays mounted below for
+		// pre-WS2.4 runner images.
+		mux.HandleFunc("POST /api/v1/tasks/{taskId}/credentials/refresh", params.TaskController.RefreshCredentials)
 	}
 
 	// App-mode connect callback — outside JWT. The signed connect-state JWT

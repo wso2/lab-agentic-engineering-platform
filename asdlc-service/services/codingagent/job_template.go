@@ -11,7 +11,7 @@
 //                   ComponentTask. The watcher (WS2.5) keys on this.
 //   - orgNS       — per-org remote-worker namespace
 //                   (`wc-<orgUUID8>-<orgHash8>-remote-worker`).
-//   - anthropicSecretName / githubSecretName / thunderClientSecretName
+//   - anthropicSecretName / githubSecretName / publisherSecretName
 //                   — K8s Secret names materialized by per-run
 //                   ExternalSecrets just before the Job is applied.
 //                   Mounted as envFrom so a leaked process listing
@@ -37,7 +37,6 @@
 package codingagent
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -67,7 +66,15 @@ type JobInputs struct {
 	// secret is in place by the time the kubelet pulls the image.
 	AnthropicSecretName       string
 	GitHubSecretName          string
-	ThunderClientSecretName   string // optional — empty disables WS2.4 runner-auth
+	// PublisherSecretName is the K8s Secret holding the per-org publisher
+	// cc creds (client_id + client_secret) materialised by a per-run ES
+	// from SM-API. Empty disables the WS2.4 runner-auth path; the runner
+	// then falls back to ASDLC_BEARER for /credentials/refresh calls.
+	PublisherSecretName       string
+	// PublisherTokenURL is the Thunder /oauth2/token endpoint used by the
+	// runner's cc helper. Non-secret; rides as a plain env. Set in lockstep
+	// with PublisherSecretName.
+	PublisherTokenURL         string
 
 	// Dispatch payload — passed verbatim into the runner via ASDLC_* env vars.
 	RepoURL        string
@@ -80,7 +87,7 @@ type JobInputs struct {
 	CorrelationID  string // optional; runner synthesizes one if absent
 
 	// Bearer is the bespoke ASDLC_BEARER param. Deprecated by WS2.4 —
-	// when ThunderClientSecretName is set this field MUST be empty so
+	// when PublisherSecretName is set this field MUST be empty so
 	// the runner uses the Thunder client_credentials flow instead.
 	Bearer string
 
@@ -126,10 +133,15 @@ func Build(in JobInputs) (map[string]any, error) {
 		{"secretRef": map[string]any{"name": in.AnthropicSecretName}},
 		{"secretRef": map[string]any{"name": in.GitHubSecretName}},
 	}
-	if in.ThunderClientSecretName != "" {
+	if in.PublisherSecretName != "" {
 		envFrom = append(envFrom, map[string]any{
-			"secretRef": map[string]any{"name": in.ThunderClientSecretName},
+			"secretRef": map[string]any{"name": in.PublisherSecretName},
 		})
+		if in.PublisherTokenURL != "" {
+			envVars = append(envVars, map[string]any{
+				"name": "PUBLISHER_TOKEN_URL", "value": in.PublisherTokenURL,
+			})
+		}
 	}
 
 	labels := map[string]string{
@@ -208,9 +220,6 @@ func validate(in JobInputs) error {
 
 	if len(in.RunName) > 63 {
 		return fmt.Errorf("codingagent: RunName %q exceeds K8s 63-char DNS label limit", in.RunName)
-	}
-	if in.Bearer != "" && in.ThunderClientSecretName != "" {
-		return errors.New("codingagent: Bearer + ThunderClientSecretName both set; WS2.4 expects one or the other")
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("codingagent: missing required field(s): %s", strings.Join(missing, ", "))

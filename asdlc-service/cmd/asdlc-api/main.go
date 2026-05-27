@@ -226,6 +226,20 @@ func main() {
 		os.Exit(1)
 	}
 
+	{
+		// Phase 8 — SM-API triplet on organization_idp_profiles (WS2.4).
+		// Mirrors phase3 sm_api_columns shape; populated by
+		// SMAPIWriter.WritePublisher after EnsureOrgPublisher provisions
+		// the Thunder cc app.
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunPhase8IDPSMAPIColumns(c, db); err != nil {
+			cancel()
+			slog.Error("phase8_idp_sm_api_columns migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+
 	// Skill bootstrap — UPSERT the four bundled built-in skills into
 	// the `skills` table, prune any built-ins removed between releases.
 	// Best-effort: log + warn on failure rather than refusing to start
@@ -353,6 +367,11 @@ func main() {
 	}
 	_ = smClient // wired into dispatch + connect controllers in WS2.
 
+	// WS2.2 — SM-API mirror writer. Hoisted ahead of the credential / IDP
+	// service constructors so all consumers can attach via WithSMAPIWriter
+	// (the no-op case when smClient is nil is fine).
+	smWriter := services.NewSMAPIWriter(smClient, db)
+
 	// --- Phase 1 — cluster-gateway-proxy client (WS1.4) ----------------
 	// Same shape as wso2cloud/backend/core/internal/ou's cpapi: no
 	// Authorization header, X-Correlation-ID-only tracing. When the URL
@@ -472,7 +491,7 @@ func main() {
 	idpService := services.NewIDPService(db, thunderAdminClient, services.PlatformIDPConfig{
 		Issuer:  cfg.PlatformIDP.Issuer,
 		JWKSURL: cfg.PlatformIDP.JWKSURL,
-	})
+	}).WithSMAPIWriter(smWriter)
 	// Make idpService available to trait_sync so first-protected-deploy
 	// provisions the publisher app lazily.
 	traitSyncService.SetIDPService(idpService)
@@ -759,9 +778,8 @@ func main() {
 	anthropicCredService := services.NewAnthropicCredentialService(db, credStore, wpClient, cfg.AnthropicPlatformKey, anthropicInvalidator)
 
 	// WS2.2 — SM-API mirror writer wired into both credential services.
-	// nil-safe: smClient is nil when SECRET_MANAGER_API_URL is unset,
-	// and WithSMAPIWriter accepts the no-op writer cleanly.
-	smWriter := services.NewSMAPIWriter(smClient, db)
+	// The writer itself was hoisted ahead of the IDP service constructor
+	// (WS2.4) so it's already built; nil-safe via Enabled() check.
 	credService.WithSMAPIWriter(smWriter)
 	anthropicCredService.WithSMAPIWriter(smWriter)
 	validatorProbes := services.NewValidatorProbes(credService, githubClient, credResolver, minter)
@@ -824,6 +842,22 @@ func main() {
 				SetSkillsService(*services.TaskSkillsService)
 			}); ok {
 				setter.SetSkillsService(taskSkillsSvc)
+			}
+			// WS2.4 — wire publisher cc token verifier (Thunder JWKS,
+			// audience prefix "asdlc-publisher-"). When ThunderJWKS is
+			// nil (local dev without platform IDP), verifier is nil and
+			// runner callbacks accept TaskJWT only.
+			if pv := services.NewPublisherTokenVerifier(thunderJWKS, cfg.PlatformIDP.Issuer, "asdlc-publisher-"); pv != nil {
+				if setter, ok := tc.(interface {
+					SetPublisherVerifier(*services.PublisherTokenVerifier)
+				}); ok {
+					setter.SetPublisherVerifier(pv)
+				}
+			}
+			if setter, ok := tc.(interface {
+				SetCredentialsRefreshService(services.CredentialsRefreshService)
+			}); ok {
+				setter.SetCredentialsRefreshService(credRefreshService)
 			}
 			return tc
 		}(),

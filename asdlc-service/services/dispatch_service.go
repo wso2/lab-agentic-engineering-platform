@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -472,6 +473,34 @@ func (s *dispatchService) tryDispatchViaProxy(
 		return false, "", nil
 	}
 
+	// WS2.4 — optional publisher cc creds. When the IDP profile carries
+	// the SM-API triplet, the dispatcher emits a third per-run
+	// ExternalSecret materialising PUBLISHER_CLIENT_ID +
+	// PUBLISHER_CLIENT_SECRET into the runner pod (TS runner then prefers
+	// cc → /credentials/refresh and falls back to ASDLC_BEARER when
+	// PUBLISHER_TOKEN_URL is absent). Missing row is fine — the runner
+	// keeps using ASDLC_BEARER.
+	var (
+		publisherSR       *codingagent.SecretRef
+		publisherTokenURL string
+	)
+	var idpRow models.OrganizationIDPProfile
+	if err := s.db.WithContext(ctx).Where("org_id = ?", task.OrgID).First(&idpRow).Error; err == nil {
+		if idpRow.SMAPIKVPath != nil && idpRow.SMAPISecretRefName != nil {
+			publisherSR = &codingagent.SecretRef{
+				SecretRefName: derefStr(idpRow.SMAPISecretRefName),
+				KVPath:        derefStr(idpRow.SMAPIKVPath),
+				Property:      derefStr(idpRow.SMAPIProperty),
+			}
+			publisherTokenURL = deriveTokenURLFromJWKS(idpRow.JWKSURL)
+			if publisherTokenURL == "" {
+				slog.WarnContext(ctx, "proxy dispatch: publisher creds present but JWKS URL malformed; falling back to bearer only",
+					"task", task.ID, "jwksURL", idpRow.JWKSURL)
+				publisherSR = nil
+			}
+		}
+	}
+
 	// OrgUUID lookup. The BFF Organization row carries the UUID the
 	// NS derivation needs (`wc-<orgUUID8>-<orgHash8>-remote-worker`).
 	orgUUID, err := s.lookupOrgUUID(ctx, task.OrgID)
@@ -499,12 +528,13 @@ func (s *dispatchService) tryDispatchViaProxy(
 		// `ASDLC_BEARER` keeps the legacy per-task RS256 JWT path alive
 		// on the new dispatcher. The runner's `oneshot.ts` validates
 		// the env var at startup and uses it for /credentials/refresh
-		// callbacks. WS2.4's eventual switch to Thunder
-		// `client_credentials` (third per-run ExternalSecret =
-		// ThunderClientSR) lets us drop this; for now both paths are
-		// load-bearing and we mint the bearer here just like the
-		// legacy `wfRunService.TriggerCodingAgent` call does above.
-		Bearer: bearer,
+		// callbacks. WS2.4 adds the publisher cc path alongside —
+		// PublisherSR (below) populates a 3rd per-run ExternalSecret;
+		// the TS runner prefers cc when PUBLISHER_CLIENT_ID is present
+		// and falls back to Bearer otherwise. Drop Bearer here once
+		// the TS runner is fully migrated.
+		Bearer:            bearer,
+		PublisherTokenURL: publisherTokenURL,
 	}
 
 	rn, err := s.codingAgentDispatcher.Dispatch(ctx, codingagent.Inputs{
@@ -512,6 +542,7 @@ func (s *dispatchService) tryDispatchViaProxy(
 		Job:                    job,
 		AnthropicSR:            codingagent.SecretRef{SecretRefName: derefStr(anthropicRow.SMAPISecretRefName), KVPath: derefStr(anthropicRow.SMAPIKVPath), Property: derefStr(anthropicRow.SMAPIProperty)},
 		GitHubSR:               codingagent.SecretRef{SecretRefName: derefStr(githubRow.SMAPISecretRefName), KVPath: derefStr(githubRow.SMAPIKVPath), Property: derefStr(githubRow.SMAPIProperty)},
+		PublisherSR:            publisherSR,
 		ClusterSecretStoreName: s.clusterSecretStore,
 	})
 	if err != nil {
@@ -565,6 +596,18 @@ func derefStr(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// deriveTokenURLFromJWKS swaps the trailing `/oauth2/jwks` path on the
+// org's JWKS URL for `/oauth2/token`. The two endpoints live on the same
+// Thunder host so this is safe; returns "" on shapes we don't recognise
+// (caller skips the publisher path in that case).
+func deriveTokenURLFromJWKS(jwksURL string) string {
+	const suffix = "/oauth2/jwks"
+	if !strings.HasSuffix(jwksURL, suffix) {
+		return ""
+	}
+	return jwksURL[:len(jwksURL)-len(suffix)] + "/oauth2/token"
 }
 
 func failResult(r DispatchResult, msg string) DispatchResult {

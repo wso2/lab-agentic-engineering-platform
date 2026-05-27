@@ -41,18 +41,26 @@ type TaskController interface {
 	// per-task JWT.
 	Skills(w http.ResponseWriter, r *http.Request)
 
+	// RefreshCredentials (WS2.4) is the path-scoped equivalent of the
+	// legacy /api/v1/credentials/refresh endpoint. Accepts both the
+	// legacy BFF-signed TaskJWT and Thunder-issued publisher cc tokens
+	// via authorizeRunnerCallback. Used by the runner's credhelper.
+	RefreshCredentials(w http.ResponseWriter, r *http.Request)
+
 	// Progress endpoints — task-execution-progress.md §5.2.
 	GetTaskAgentProgress(w http.ResponseWriter, r *http.Request)
 	GetTaskBuildProgress(w http.ResponseWriter, r *http.Request)
 }
 
 type taskController struct {
-	service     services.TaskService
-	dispatchSvc services.DispatchService
-	progressSvc services.ProgressService
-	ocClient    openchoreo.ComponentClient
-	taskTokens  *services.TaskTokenManager
-	skillsSvc   *services.TaskSkillsService
+	service           services.TaskService
+	dispatchSvc       services.DispatchService
+	progressSvc       services.ProgressService
+	ocClient          openchoreo.ComponentClient
+	taskTokens        *services.TaskTokenManager
+	publisherVerifier *services.PublisherTokenVerifier
+	skillsSvc         *services.TaskSkillsService
+	credsRefreshSvc   services.CredentialsRefreshService
 }
 
 func NewTaskController(
@@ -75,6 +83,74 @@ func NewTaskController(
 // when nil, the handler returns 503.
 func (c *taskController) SetSkillsService(s *services.TaskSkillsService) {
 	c.skillsSvc = s
+}
+
+// SetPublisherVerifier wires WS2.4's publisher cc token verifier so the
+// runner-callback handlers accept Thunder-issued cc tokens alongside the
+// legacy BFF-signed TaskJWTs. Optional — when nil, only TaskJWTs work.
+func (c *taskController) SetPublisherVerifier(v *services.PublisherTokenVerifier) {
+	c.publisherVerifier = v
+}
+
+// SetCredentialsRefreshService wires the credentials-refresh service so
+// the WS2.4 path-scoped /api/v1/tasks/{taskId}/credentials/refresh
+// endpoint can delegate. Optional — when nil, the handler returns 503
+// and the runner must fall back to the legacy /api/v1/credentials/refresh
+// route (TaskJWT path).
+func (c *taskController) SetCredentialsRefreshService(s services.CredentialsRefreshService) {
+	c.credsRefreshSvc = s
+}
+
+// authorizeRunnerCallback validates the inbound Authorization header for
+// runner-facing routes (Skills, VerificationFailed, the WS2.4
+// per-task /credentials/refresh). Tries the BFF TaskJWT first; on
+// failure tries the publisher cc verifier (WS2.4). Returns the canonical
+// org handle the caller may need for downstream lookups.
+//
+// On error, writes the HTTP error response and returns ok=false.
+func (c *taskController) authorizeRunnerCallback(w http.ResponseWriter, r *http.Request, taskID string) (orgHandle string, ok bool) {
+	authz := r.Header.Get("Authorization")
+	const prefix = "Bearer "
+	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
+		utils.WriteErrorResponse(w, http.StatusUnauthorized, "bearer token required")
+		return "", false
+	}
+	tok := authz[len(prefix):]
+
+	if c.taskTokens != nil {
+		if claims, err := c.taskTokens.Verify(tok); err == nil {
+			if claims.TaskID != taskID {
+				slog.WarnContext(r.Context(), "runner callback: task bearer subject mismatch",
+					"task", taskID, "claimTaskId", claims.TaskID)
+				utils.WriteErrorResponse(w, http.StatusForbidden, "task bearer does not match path")
+				return "", false
+			}
+			return claims.OcOrgID, true
+		}
+	}
+
+	if c.publisherVerifier != nil {
+		if claims, err := c.publisherVerifier.Verify(tok); err == nil {
+			task, terr := c.service.GetTask(r.Context(), taskID)
+			if terr != nil || task == nil {
+				slog.WarnContext(r.Context(), "runner callback: task lookup failed",
+					"task", taskID, "error", terr)
+				utils.WriteErrorResponse(w, http.StatusForbidden, "task not found")
+				return "", false
+			}
+			if task.OrgID != claims.OrgHandle {
+				slog.WarnContext(r.Context(), "runner callback: publisher org mismatch",
+					"task", taskID, "taskOrg", task.OrgID, "publisherOrg", claims.OrgHandle)
+				utils.WriteErrorResponse(w, http.StatusForbidden, "publisher token does not match task org")
+				return "", false
+			}
+			return claims.OrgHandle, true
+		}
+	}
+
+	slog.WarnContext(r.Context(), "runner callback: bearer rejected by all verifiers", "task", taskID)
+	utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid bearer")
+	return "", false
 }
 
 func (c *taskController) ListTasks(w http.ResponseWriter, r *http.Request) {
@@ -379,22 +455,7 @@ func (c *taskController) VerificationFailed(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	authz := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
-		utils.WriteErrorResponse(w, http.StatusUnauthorized, "bearer token required")
-		return
-	}
-	claims, err := c.taskTokens.Verify(authz[len(prefix):])
-	if err != nil {
-		slog.WarnContext(r.Context(), "verification-failed: invalid bearer", "task", taskID, "error", err)
-		utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid task bearer")
-		return
-	}
-	if claims.TaskID != taskID {
-		slog.WarnContext(r.Context(), "verification-failed: bearer subject mismatch",
-			"task", taskID, "claimTaskId", claims.TaskID)
-		utils.WriteErrorResponse(w, http.StatusForbidden, "task bearer does not match path")
+	if _, ok := c.authorizeRunnerCallback(w, r, taskID); !ok {
 		return
 	}
 
@@ -469,22 +530,7 @@ func (c *taskController) Skills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	authz := r.Header.Get("Authorization")
-	const prefix = "Bearer "
-	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
-		utils.WriteErrorResponse(w, http.StatusUnauthorized, "bearer token required")
-		return
-	}
-	claims, err := c.taskTokens.Verify(authz[len(prefix):])
-	if err != nil {
-		slog.WarnContext(r.Context(), "skills: invalid bearer", "task", taskID, "error", err)
-		utils.WriteErrorResponse(w, http.StatusUnauthorized, "invalid task bearer")
-		return
-	}
-	if claims.TaskID != taskID {
-		slog.WarnContext(r.Context(), "skills: bearer subject mismatch",
-			"task", taskID, "claimTaskId", claims.TaskID)
-		utils.WriteErrorResponse(w, http.StatusForbidden, "task bearer does not match path")
+	if _, ok := c.authorizeRunnerCallback(w, r, taskID); !ok {
 		return
 	}
 
@@ -499,5 +545,34 @@ func (c *taskController) Skills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	utils.WriteSuccessResponse(w, http.StatusOK, resp)
+}
+
+// RefreshCredentials (WS2.4) is the path-scoped credential refresh
+// endpoint that accepts either a legacy TaskJWT or a Thunder-issued
+// publisher cc token. The runner's credhelper.sh hits this after WS2.4
+// so the same auth-mode the runner uses for everything else also covers
+// /credentials/refresh. Legacy route `POST /api/v1/credentials/refresh`
+// still exists (TaskJWT only) and is deleted in WS2.6.
+func (c *taskController) RefreshCredentials(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("taskId")
+	if !requireTaskID(w, taskID) {
+		return
+	}
+	if c.credsRefreshSvc == nil {
+		utils.WriteErrorResponse(w, http.StatusServiceUnavailable, "credentials refresh not configured")
+		return
+	}
+	orgHandle, ok := c.authorizeRunnerCallback(w, r, taskID)
+	if !ok {
+		return
+	}
+	resp, err := c.credsRefreshSvc.Refresh(r.Context(), taskID, orgHandle)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "refresh credentials failed",
+			"taskId", taskID, "ocOrgId", orgHandle, "error", err)
+		utils.WriteErrorResponse(w, http.StatusInternalServerError, "failed to refresh credentials")
+		return
+	}
 	utils.WriteSuccessResponse(w, http.StatusOK, resp)
 }

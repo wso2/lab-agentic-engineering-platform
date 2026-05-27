@@ -35,14 +35,24 @@ type ExternalSecretInputs struct {
 
 	// RemoteRefKey + RemoteRefProperty point at the SM-API-managed
 	// SecretReference (key=KV path, property=field name). Persisted on
-	// the per-org credential row by WS2.2's Connect flow.
+	// the per-org credential row by WS2.2's Connect flow. Single-field
+	// shape; for multi-field secrets (WS2.4 publisher) populate
+	// DataEntries instead and leave these empty.
 	RemoteRefKey      string
 	RemoteRefProperty string
 
 	// LocalKey is the env var name the runner reads (e.g.
 	// "ANTHROPIC_API_KEY" or "GITHUB_TOKEN"). The K8s Secret data map
-	// is keyed by this string.
+	// is keyed by this string. Single-field shape; for multi-field
+	// secrets populate DataEntries.
 	LocalKey string
+
+	// DataEntries is the multi-field shape. When non-empty, RemoteRefKey
+	// is used as the single shared KV path and one ES data entry is
+	// emitted per element. Used by WS2.4 publisher (client_id +
+	// client_secret in one SM-API secret → one ES → one K8s Secret with
+	// two keys). Empty falls back to the single-field shape above.
+	DataEntries []ExternalSecretDataEntry
 
 	// RefreshInterval — ESO reconcile cadence. Empty defaults to 5m,
 	// which is plenty for a short-lived Job. Set to "0" to disable
@@ -57,6 +67,14 @@ type ExternalSecretInputs struct {
 	OwnerRunUID  string
 }
 
+// ExternalSecretDataEntry is one {localKey, remoteProperty} pair in a
+// multi-field ExternalSecret. All entries share the parent inputs'
+// RemoteRefKey (the KV path).
+type ExternalSecretDataEntry struct {
+	LocalKey          string
+	RemoteRefProperty string
+}
+
 // BuildExternalSecret returns the ESO ExternalSecret manifest as a
 // `map[string]any` ready for clustergatewayproxy.ApplyExternalSecret.
 func BuildExternalSecret(in ExternalSecretInputs) (map[string]any, error) {
@@ -66,6 +84,30 @@ func BuildExternalSecret(in ExternalSecretInputs) (map[string]any, error) {
 	refresh := in.RefreshInterval
 	if refresh == "" {
 		refresh = "5m"
+	}
+
+	var data []map[string]any
+	if len(in.DataEntries) > 0 {
+		data = make([]map[string]any, 0, len(in.DataEntries))
+		for _, e := range in.DataEntries {
+			data = append(data, map[string]any{
+				"secretKey": e.LocalKey,
+				"remoteRef": map[string]any{
+					"key":      in.RemoteRefKey,
+					"property": e.RemoteRefProperty,
+				},
+			})
+		}
+	} else {
+		data = []map[string]any{
+			{
+				"secretKey": in.LocalKey,
+				"remoteRef": map[string]any{
+					"key":      in.RemoteRefKey,
+					"property": in.RemoteRefProperty,
+				},
+			},
+		}
 	}
 
 	manifest := map[string]any{
@@ -85,15 +127,7 @@ func BuildExternalSecret(in ExternalSecretInputs) (map[string]any, error) {
 				"name":           in.TargetSecretName,
 				"creationPolicy": "Owner",
 			},
-			"data": []map[string]any{
-				{
-					"secretKey": in.LocalKey,
-					"remoteRef": map[string]any{
-						"key":      in.RemoteRefKey,
-						"property": in.RemoteRefProperty,
-					},
-				},
-			},
+			"data": data,
 		},
 	}
 
@@ -126,8 +160,15 @@ func validateES(in ExternalSecretInputs) error {
 	check("TargetSecretName", in.TargetSecretName)
 	check("ClusterSecretStoreName", in.ClusterSecretStoreName)
 	check("RemoteRefKey", in.RemoteRefKey)
-	check("RemoteRefProperty", in.RemoteRefProperty)
-	check("LocalKey", in.LocalKey)
+	if len(in.DataEntries) > 0 {
+		for i, e := range in.DataEntries {
+			check(fmt.Sprintf("DataEntries[%d].LocalKey", i), e.LocalKey)
+			check(fmt.Sprintf("DataEntries[%d].RemoteRefProperty", i), e.RemoteRefProperty)
+		}
+	} else {
+		check("RemoteRefProperty", in.RemoteRefProperty)
+		check("LocalKey", in.LocalKey)
+	}
 	if len(in.Name) > 253 {
 		return errors.New("codingagent: ExternalSecret name exceeds 253-char DNS subdomain limit")
 	}

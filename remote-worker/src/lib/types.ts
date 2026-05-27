@@ -22,4 +22,12 @@ export interface DispatchRequest {
   prompt: string;
   /** Optional correlation ID for distributed tracing. Forwarded to git-service via credhelper. */
   correlationId?: string;
+  /**
+   * WS2.4 — full URL for the credentials/refresh endpoint used during
+   * workspace bootstrap. Defaults to the legacy
+   * `${gitServiceUrl}/api/v1/credentials/refresh`; oneshot.ts overrides
+   * to the path-scoped `${platformUrl}/api/v1/tasks/{taskId}/credentials/refresh`
+   * when publisher cc creds are present.
+   */
+  refreshUrl?: string;
 }

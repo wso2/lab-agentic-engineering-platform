@@ -50,6 +50,11 @@ export interface ProvisionRequest {
   identity: { name: string; email: string; login?: string };
   gitServiceUrl: string;
   correlationId?: string;
+  // WS2.4 — full refresh URL override (defaults to
+  // `${gitServiceUrl}/api/v1/credentials/refresh`). oneshot.ts sets this
+  // to the path-scoped `${platformUrl}/api/v1/tasks/{taskId}/credentials/refresh`
+  // when publisher cc creds drive auth.
+  refreshUrl?: string;
 }
 
 // computeLayout names every path the dispatch flow touches. Pure function
@@ -82,9 +87,16 @@ async function resolvePATForClone(
     throw new Error("bearer file is empty");
   }
 
-  const url = new URL(req.gitServiceUrl);
-  if (!url.pathname.endsWith("/")) url.pathname += "/";
-  url.pathname += "api/v1/credentials/refresh";
+  // WS2.4 — refreshUrl overrides the legacy git-service path when
+  // publisher cc creds drive auth (oneshot.ts sets it).
+  let url: URL;
+  if (req.refreshUrl && req.refreshUrl !== "") {
+    url = new URL(req.refreshUrl);
+  } else {
+    url = new URL(req.gitServiceUrl);
+    if (!url.pathname.endsWith("/")) url.pathname += "/";
+    url.pathname += "api/v1/credentials/refresh";
+  }
 
   const headers: Record<string, string> = {
     "Authorization": `Bearer ${bearer.trim()}`,

@@ -182,7 +182,7 @@ func (w *JobWatcher) checkOne(ctx context.Context, task *models.ComponentTask) {
 
 // cleanupPerRunExternalSecrets deletes the per-run ExternalSecrets
 // applied by codingagent.Dispatcher (anthropic + github, plus the
-// optional WS2.4 runner-auth). Owner-ref-based GC isn't possible
+// optional WS2.4 publisher). Owner-ref-based GC isn't possible
 // because the Job UID doesn't exist when the ESes are created
 // (chicken-and-egg: the Job needs the materialized Secrets to start),
 // so the watcher does explicit cleanup on terminal phase. Best-effort:
@@ -196,7 +196,7 @@ func (w *JobWatcher) cleanupPerRunExternalSecrets(ctx context.Context, task *mod
 	names := []string{
 		task.LastCodingAgentRunName + "-anthropic-es",
 		task.LastCodingAgentRunName + "-github-es",
-		task.LastCodingAgentRunName + "-runner-auth-es", // WS2.4 — no-op when absent (404 tolerated)
+		task.LastCodingAgentRunName + "-publisher-es", // WS2.4 — no-op when absent (404 tolerated)
 	}
 	for _, name := range names {
 		if err := w.proxy.DeleteExternalSecret(ctx, ns, name); err != nil {
