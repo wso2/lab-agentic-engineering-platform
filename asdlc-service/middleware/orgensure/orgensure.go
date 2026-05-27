@@ -42,7 +42,11 @@ func Middleware(svc services.OrganizationService) func(http.Handler) http.Handle
 				next.ServeHTTP(w, r)
 				return
 			}
-			if err := svc.EnsureForOuHandle(r.Context(), ouHandle); err != nil {
+			thunderOrgUUID := ""
+			if claims != nil {
+				thunderOrgUUID = claims.OuId
+			}
+			if err := svc.EnsureForOuHandle(r.Context(), ouHandle, thunderOrgUUID); err != nil {
 				slog.WarnContext(r.Context(), "org-ensure verify failed; continuing", "ouHandle", ouHandle, "error", err)
 			}
 			next.ServeHTTP(w, r)

@@ -1,5 +1,7 @@
 package config
 
+import "time"
+
 // Config holds all application configuration.
 type Config struct {
 	ServerHost string
@@ -115,6 +117,86 @@ type Config struct {
 	// pinned to the target service.
 	ServiceAuthGitService    ServiceAuthConfig
 	ServiceAuthAgentsService ServiceAuthConfig
+
+	// --- Folded in from git-service after WS0.1.g --------------------
+	// These were previously git-service/config.Config fields; the fold
+	// keeps the field names as-is so the copied services compile
+	// unchanged. Some overlap conceptually with the asdlc-side fields
+	// above (e.g. GitHubAppSlug vs GithubAppSlug); the loader sets both
+	// from the same env vars during the transition.
+
+	RepoBasePath string
+
+	GitHubRepoVisibility string
+	GitHubCommitterName  string
+	GitHubCommitterEmail string
+
+	// WebhookDeliveryURL is the URL the platform registers on each repo.
+	WebhookDeliveryURL string
+	// WebhookHMACSecret is the HMAC key for inbound webhook validation
+	// (single-tenant in Phase 0; per-org in Phase 2).
+	WebhookHMACSecret string
+
+	// CredentialEncryptionKey is the base64-encoded 32-byte AES-256 key
+	// used to encrypt per-org credentials at rest in org_secrets.
+	CredentialEncryptionKey string
+
+	// OpenBaoAddr / OpenBaoToken — retained until _platform secret
+	// env-mount migration lands.
+	OpenBaoAddr  string
+	OpenBaoToken string
+
+	GitHubAppID             string
+	GitHubAppClientID       string
+	GitHubAppClientSecret   string
+	GitHubAppSlug           string
+	GitHubAppPrivateKeyPath string
+
+	// CredentialValidatorInterval — Phase 2 PR D §6.10. Default 24h.
+	CredentialValidatorInterval time.Duration
+
+	// BFFJWKSURL is the BFF's JWKS endpoint used to verify Task JWTs.
+	BFFJWKSURL string
+
+	TaskJWTAllowedIssuer   string
+	TaskJWTAllowedAudience string
+
+	// AnthropicPlatformKey — platform-wide fallback Anthropic API key.
+	AnthropicPlatformKey string
+
+	// AgentsServiceURL — in-cluster base URL of asdlc-agents-service.
+	// (Folded-in name; the asdlc-side equivalent is AgentsService.BaseURL.)
+	AgentsServiceURL string
+
+	// --- Phase 1: Secret Manager API + cluster-gateway-proxy ----------
+	// SM-API URL the merged binary writes per-org credentials to (the
+	// `sm-api` secretmanagersvc provider). Empty disables the provider —
+	// the legacy `org_secrets` DB path keeps working but the new
+	// dispatch + cascade flows that depend on SecretReference / ESO
+	// will 503. ADR-0002: same provider in local + cloud.
+	SecretManagerAPIURL     string
+	SecretManagerAPITimeout time.Duration
+
+	// Cluster-gateway-proxy URL the merged binary POSTs Job +
+	// ExternalSecret manifests to on dispatch (ou-service shape;
+	// un-authed today). Empty disables the new dispatch path; the
+	// merged binary still boots and serves the spec/design endpoints.
+	ClusterGatewayProxyURL string
+
+	// AgentRunnerImage is the docker image the per-task coding-agent
+	// Job uses. Pinned at deploy time; `:latest` is OK in dev but the
+	// cloud release-binding should resolve to a digest.
+	AgentRunnerImage string
+
+	// AgentClusterSecretStore is the ESO ClusterSecretStore that backs
+	// per-run ExternalSecret reads in the remote-worker NS on DP.
+	// On cloud-dp-oc-dp this MUST be `application-secrets-read` (Vault
+	// AppRole `approle-creds-application-read-permission` — covers
+	// `user-app-secrets/*`). `secretstore-read` on the same cluster only
+	// covers platform-component paths (CA bundles, observability creds)
+	// and will silently no-op our reads. Local k3d reuses the existing
+	// `default` CSS (per WS1.1 compose wiring).
+	AgentClusterSecretStore string
 }
 
 // ThunderAdminConfig holds the asdlc-system-client OAuth2 credentials

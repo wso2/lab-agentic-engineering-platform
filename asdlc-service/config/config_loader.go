@@ -7,6 +7,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type configReader struct {
@@ -99,6 +100,39 @@ func Load() (Config, error) {
 		DatabaseService: DatabaseServiceConfig{
 			BaseURL: r.readOptionalString("DATABASE_SERVICE_BASE_URL", ""),
 		},
+
+		// Folded in from git-service after WS0.1.g. Loader reuses the same
+		// env-var names the standalone git-service used so existing local
+		// .env files / release-bindings keep working.
+		RepoBasePath:                r.readOptionalString("REPO_BASE_PATH", "/tmp/asdlc-repos"),
+		GitHubRepoVisibility:        r.readOptionalString("GITHUB_REPO_VISIBILITY", "private"),
+		GitHubCommitterName:         r.readOptionalString("GIT_COMMITTER_NAME", "ASDLC Bot"),
+		GitHubCommitterEmail:        r.readOptionalString("GIT_COMMITTER_EMAIL", "bot@asdlc.dev"),
+		WebhookDeliveryURL:          r.readOptionalString("GITHUB_WEBHOOK_DELIVERY_URL", ""),
+		WebhookHMACSecret:           r.readOptionalString("GITHUB_WEBHOOK_SECRET", ""),
+		CredentialEncryptionKey:     r.readOptionalString("CREDENTIAL_ENCRYPTION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="),
+		OpenBaoAddr:                 r.readOptionalString("OPENBAO_ADDR", ""),
+		OpenBaoToken:                r.readOptionalString("OPENBAO_TOKEN", ""),
+		GitHubAppID:                 r.readOptionalString("GITHUB_APP_ID", ""),
+		GitHubAppClientID:           r.readOptionalString("GITHUB_CLIENT_ID", ""),
+		GitHubAppClientSecret:       r.readOptionalString("GITHUB_CLIENT_SECRET", ""),
+		GitHubAppSlug:               r.readOptionalString("GITHUB_APP_SLUG", "asdlc-platform"),
+		GitHubAppPrivateKeyPath:     r.readOptionalString("GITHUB_APP_PRIVATE_KEY_PATH", ""),
+		CredentialValidatorInterval: r.readOptionalDuration("CREDENTIAL_VALIDATOR_INTERVAL", 24*time.Hour),
+		BFFJWKSURL:                  r.readOptionalString("BFF_JWKS_URL", ""),
+		TaskJWTAllowedIssuer:        r.readOptionalString("TASK_JWT_ISSUER", "asdlc-bff"),
+		TaskJWTAllowedAudience:      r.readOptionalString("TASK_JWT_AUDIENCE", "git-service"),
+		AnthropicPlatformKey:        r.readOptionalString("ANTHROPIC_PLATFORM_KEY", ""),
+		AgentsServiceURL:            r.readOptionalString("AGENTS_SERVICE_URL", ""),
+
+		// Phase 1 — SM-API + cluster-gateway-proxy.
+		SecretManagerAPIURL:     r.readOptionalString("SECRET_MANAGER_API_URL", ""),
+		SecretManagerAPITimeout: r.readOptionalDuration("SECRET_MANAGER_API_TIMEOUT", 30*time.Second),
+		ClusterGatewayProxyURL:  r.readOptionalString("CLUSTER_GATEWAY_PROXY_URL", ""),
+
+		// WS2.3 — agent runner image + ESO CSS for per-run ExternalSecrets.
+		AgentRunnerImage:        r.readOptionalString("AGENT_RUNNER_IMAGE", "docker.io/xlight05/app-factory-coding-agent-runner:latest"),
+		AgentClusterSecretStore: r.readOptionalString("AGENT_CLUSTER_SECRET_STORE", "default"),
 	}
 
 	if len(r.errors) > 0 {
@@ -186,6 +220,21 @@ func (r *configReader) readOptionalInt(key string, defaultVal int) int {
 		return defaultVal
 	}
 	return n
+}
+
+// readOptionalDuration parses time.ParseDuration values; falls back to
+// defaultVal on empty input, records an error on unparseable input.
+func (r *configReader) readOptionalDuration(key string, defaultVal time.Duration) time.Duration {
+	val := os.Getenv(key)
+	if val == "" {
+		return defaultVal
+	}
+	d, err := time.ParseDuration(val)
+	if err != nil {
+		r.errors = append(r.errors, fmt.Errorf("%s: %w", key, err))
+		return defaultVal
+	}
+	return d
 }
 
 func (r *configReader) readOptionalBool(key string, defaultVal bool) bool {

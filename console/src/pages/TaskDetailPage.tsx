@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { Link as RouterLink, useParams } from 'react-router-dom';
 import {
   Box,
@@ -12,7 +12,8 @@ import {
   Stack,
   Typography,
 } from '@wso2/oxygen-ui';
-import { ChevronLeft } from '@wso2/oxygen-ui-icons-react';
+import { ChevronLeft, RotateCcw } from '@wso2/oxygen-ui-icons-react';
+import { api } from '../services/api';
 import { useTaskStatus } from '../hooks/useTaskStatus';
 import { useTaskAgentProgress } from '../hooks/useTaskAgentProgress';
 import { useTaskBuildProgress } from '../hooks/useTaskBuildProgress';
@@ -69,6 +70,31 @@ export default function TaskDetailPage() {
   const status = useTaskStatus(orgId, projectId, taskId);
   const task = status.data?.task;
   const taskStatus = task?.status as TaskStatus | undefined;
+  const [isRetrying, setIsRetrying] = useState(false);
+
+  // Retry re-dispatches a terminally-failed task. Same handler as
+  // TaskDetailPanel (kanban card); both call POST /tasks/{id}/retry
+  // which clears LastCodingAgentRunName + DispatchedAt server-side
+  // and runs through dispatchSvc.RetryTask → tryDispatchViaProxy.
+  // Covers both `verification_failed` (tech-lead caught it) and
+  // `failed` (coding-agent Job terminal Failed).
+  const handleRetry = async () => {
+    if (!orgId || !projectId || !taskId) return;
+    setIsRetrying(true);
+    try {
+      await api.retryTask(orgId, projectId, taskId);
+      // useTaskStatus polls — the next tick will pick up the new
+      // status. No optimistic update needed; the API doesn't return
+      // the row.
+      status.refetch();
+    } catch {
+      // Surface via the existing inline error banner below; nothing
+      // else to do here. Polling continues.
+    } finally {
+      setIsRetrying(false);
+    }
+  };
+  const canRetry = taskStatus === 'failed' || taskStatus === 'verification_failed';
 
   const agent = useTaskAgentProgress(orgId, projectId, taskId, taskStatus);
   const build = useTaskBuildProgress(orgId, projectId, taskId, taskStatus);
@@ -135,6 +161,18 @@ export default function TaskDetailPage() {
             size="small"
             sx={{ textTransform: 'uppercase', fontSize: '0.7rem', fontWeight: 700 }}
           />
+          {canRetry && (
+            <Button
+              variant="contained"
+              size="small"
+              color="warning"
+              startIcon={isRetrying ? <CircularProgress size={12} color="inherit" /> : <RotateCcw size={12} />}
+              disabled={isRetrying}
+              onClick={handleRetry}
+            >
+              {isRetrying ? 'Retrying…' : 'Retry'}
+            </Button>
+          )}
           {elapsed && (
             <Typography variant="caption" color="text.disabled" sx={{ minWidth: 70, textAlign: 'right' }}>
               {elapsed}

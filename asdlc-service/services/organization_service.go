@@ -43,7 +43,13 @@ type OrganizationService interface {
 	// 404, the call returns ErrOrganizationNotProvisioned and the auth
 	// middleware passes through, letting the controller surface a
 	// user-meaningful error.
-	EnsureForOuHandle(ctx context.Context, ouHandle string) error
+	//
+	// `thunderOrgUUID` is the authoritative org UUID from the JWT's `ouId`
+	// claim (empty for unauthenticated or non-user-JWT paths). When
+	// non-empty and missing/stale on the local row, it's persisted onto
+	// `thunder_org_uuid` so downstream callers (dispatcher / SMAPIWriter)
+	// can compute the same per-org NS SM-API derives.
+	EnsureForOuHandle(ctx context.Context, ouHandle string, thunderOrgUUID string) error
 }
 
 // ErrOrganizationNotProvisioned signals that the inbound JWT's `ouHandle`
@@ -107,7 +113,7 @@ func (s *organizationService) List(ctx context.Context) (*models.OrganizationLis
 	for i, v := range views {
 		row, ok := byName[v.Name]
 		if !ok {
-			row = s.backfillRow(ctx, v)
+			row = s.backfillRow(ctx, v, "")
 			if row.UUID == uuid.Nil {
 				continue
 			}
@@ -127,42 +133,55 @@ func (s *organizationService) List(ctx context.Context) (*models.OrganizationLis
 // local row for it. On success the next handler runs with the cache
 // warmed; on missing namespace it returns ErrOrganizationNotProvisioned
 // which the middleware logs and lets through.
-func (s *organizationService) EnsureForOuHandle(ctx context.Context, ouHandle string) error {
+func (s *organizationService) EnsureForOuHandle(ctx context.Context, ouHandle string, thunderOrgUUID string) error {
 	if ouHandle == "" {
 		return fmt.Errorf("ouHandle is required")
 	}
 
-	// Hot path: recently-verified ouHandle.
+	// Hot path: recently-verified ouHandle. The thunder UUID
+	// backfill is not gated by the cache — it runs once per (ouHandle,
+	// thunderUUID) pair via singleflight so a stale row gets fixed up
+	// even when the verify cache is warm.
 	s.ensureMu.RLock()
 	verifiedAt, ok := s.ensureCache[ouHandle]
 	s.ensureMu.RUnlock()
-	if ok && time.Since(verifiedAt) < ensureCacheTTL {
-		return nil
+	cacheWarm := ok && time.Since(verifiedAt) < ensureCacheTTL
+
+	if !cacheWarm {
+		// Coalesce concurrent first-sights of the same handle into one
+		// DB+OC verify.
+		if _, err, _ := s.ensureInflight.Do(ouHandle, func() (any, error) {
+			// Re-check the cache inside the singleflight critical
+			// section — a sibling call may have just populated it.
+			s.ensureMu.RLock()
+			verifiedAt, ok := s.ensureCache[ouHandle]
+			s.ensureMu.RUnlock()
+			if ok && time.Since(verifiedAt) < ensureCacheTTL {
+				return nil, nil
+			}
+			if err := s.verifyForOuHandle(ctx, ouHandle, thunderOrgUUID); err != nil {
+				return nil, err
+			}
+			s.ensureMu.Lock()
+			s.ensureCache[ouHandle] = time.Now()
+			s.ensureMu.Unlock()
+			return nil, nil
+		}); err != nil {
+			return err
+		}
 	}
 
-	// Coalesce concurrent first-sights of the same handle into one
-	// DB+OC verify.
-	_, err, _ := s.ensureInflight.Do(ouHandle, func() (any, error) {
-		// Re-check the cache inside the singleflight critical
-		// section — a sibling call may have just populated it.
-		s.ensureMu.RLock()
-		verifiedAt, ok := s.ensureCache[ouHandle]
-		s.ensureMu.RUnlock()
-		if ok && time.Since(verifiedAt) < ensureCacheTTL {
-			return nil, nil
-		}
-		if err := s.verifyForOuHandle(ctx, ouHandle); err != nil {
-			return nil, err
-		}
-		s.ensureMu.Lock()
-		s.ensureCache[ouHandle] = time.Now()
-		s.ensureMu.Unlock()
-		return nil, nil
-	})
-	return err
+	// Best-effort: backfill thunder_org_uuid if it's missing on the row
+	// (idempotent — the SQL is a no-op when already set to the right
+	// value, and logs a warning on drift). Cheap UPDATE so we don't
+	// guard it behind the verify cache.
+	if thunderOrgUUID != "" {
+		s.ensureThunderUUID(ctx, ouHandle, thunderOrgUUID)
+	}
+	return nil
 }
 
-func (s *organizationService) verifyForOuHandle(ctx context.Context, ouHandle string) error {
+func (s *organizationService) verifyForOuHandle(ctx context.Context, ouHandle, thunderOrgUUID string) error {
 	var row models.Organization
 	switch err := s.db.WithContext(ctx).Where("name = ?", ouHandle).First(&row).Error; {
 	case err == nil:
@@ -181,18 +200,54 @@ func (s *organizationService) verifyForOuHandle(ctx context.Context, ouHandle st
 		return translateHTTPError(err)
 	}
 
-	s.backfillRow(ctx, *view)
+	s.backfillRow(ctx, *view, thunderOrgUUID)
 	return nil
+}
+
+// ensureThunderUUID upserts the Thunder org UUID onto the local row.
+// No-op when the row already carries the same value; logs+overwrites
+// on drift (Thunder is authoritative).
+func (s *organizationService) ensureThunderUUID(ctx context.Context, ouHandle, thunderOrgUUID string) {
+	parsed, err := uuid.Parse(thunderOrgUUID)
+	if err != nil {
+		slog.WarnContext(ctx, "ensureThunderUUID: invalid UUID in JWT", "ouHandle", ouHandle, "thunderOrgUUID", thunderOrgUUID, "error", err)
+		return
+	}
+	var row models.Organization
+	if err := s.db.WithContext(ctx).Where("name = ?", ouHandle).First(&row).Error; err != nil {
+		// Row may not exist yet (verify failed earlier); caller already logged.
+		return
+	}
+	if row.ThunderOrgUUID != nil && *row.ThunderOrgUUID == parsed {
+		return
+	}
+	if row.ThunderOrgUUID != nil {
+		slog.WarnContext(ctx, "ensureThunderUUID: row UUID differs from JWT — overwriting (Thunder is authoritative)",
+			"ouHandle", ouHandle, "current", row.ThunderOrgUUID.String(), "newFromJWT", parsed.String())
+	}
+	if err := s.db.WithContext(ctx).
+		Model(&models.Organization{}).
+		Where("name = ?", ouHandle).
+		Update("thunder_org_uuid", parsed).Error; err != nil {
+		slog.WarnContext(ctx, "ensureThunderUUID: update failed", "ouHandle", ouHandle, "error", err)
+	}
 }
 
 // backfillRow inserts a local row for an OC namespace we just discovered.
 // Returns the resulting (possibly racing) row; on hard failure returns a
 // zero row and logs.
-func (s *organizationService) backfillRow(ctx context.Context, view models.OrganizationView) models.Organization {
+func (s *organizationService) backfillRow(ctx context.Context, view models.OrganizationView, thunderOrgUUID string) models.Organization {
 	row := models.Organization{
 		UUID:        uuid.New(),
 		Name:        view.Name,
 		DisplayName: view.DisplayName,
+	}
+	if thunderOrgUUID != "" {
+		if parsed, perr := uuid.Parse(thunderOrgUUID); perr == nil {
+			row.ThunderOrgUUID = &parsed
+		} else {
+			slog.WarnContext(ctx, "backfillRow: invalid Thunder UUID in JWT — leaving column NULL", "name", view.Name, "thunderOrgUUID", thunderOrgUUID, "error", perr)
+		}
 	}
 	err := s.db.WithContext(ctx).Create(&row).Error
 	if err == nil {

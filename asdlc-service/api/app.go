@@ -1,11 +1,15 @@
 package api
 
 import (
+	"log/slog"
 	"net/http"
 	"strings"
 
+	"gorm.io/gorm"
+
 	"github.com/wso2/asdlc/asdlc-service/config"
 	"github.com/wso2/asdlc/asdlc-service/controllers"
+	"github.com/wso2/asdlc/asdlc-service/internal/credentials"
 	"github.com/wso2/asdlc/asdlc-service/middleware"
 	jwtmw "github.com/wso2/asdlc/asdlc-service/middleware/jwt"
 	"github.com/wso2/asdlc/asdlc-service/middleware/jwtassertion"
@@ -44,6 +48,38 @@ type AppParams struct {
 	// May be nil in dev/test, in which case inbound auth falls back to
 	// unverified claim extraction — gated by IsLocalDevEnv.
 	ThunderJWKS *jwtassertion.JWKSCache
+
+	// --- Folded in from git-service after WS0.1.i ----------------------
+	// Controllers + services for the repo / git-ops / credential surfaces
+	// the standalone git-service used to expose. Wired onto the same
+	// outer mux but under separate sub-routers so JWT verification
+	// matches the original audience expectations (Service JWT for
+	// /api/v1/repos + /internal/credentials, Task JWT for
+	// /api/v1/credentials/refresh).
+	DB                   *gorm.DB
+	RepoCtrl             controllers.RepoController
+	GitOpsCtrl           controllers.GitOpsController
+	IssueCtrl            controllers.IssueController
+	GitProjectCtrl       controllers.GitProjectController
+	BranchCtrl           controllers.BranchController
+	PullRequestCtrl      controllers.PullRequestController
+	WebhookRegCtrl       controllers.WebhookRegistrationController
+	ArtifactCtrl         controllers.ArtifactController
+	CredCtrl             controllers.CredentialsRefreshController
+	RepoBoardCtrl        controllers.RepoBoardController
+	RepoService          services.RepoService
+	RepoRepo             repositories.RepoRepository
+	CredService          *services.CredentialService
+	BuildCredService     *services.BuildCredentialsService
+	AnthropicCredService *services.AnthropicCredentialService
+	Validator            *credentials.Validator
+
+	// ServiceJWT verifies User/Service JWTs presented to /api/v1/repos/* and
+	// /internal/credentials/*. JWKS resolves to Thunder.
+	ServiceJWT jwtassertion.Middleware
+	// TaskJWT verifies Task JWTs presented to /api/v1/credentials/refresh.
+	// JWKS resolves to the BFF's /auth/external/jwks.json.
+	TaskJWT jwtassertion.Middleware
 }
 
 // NewHandler assembles the full HTTP handler with middleware and routes.
@@ -129,6 +165,69 @@ func NewHandler(params AppParams) http.Handler {
 
 	if params.CollabController != nil {
 		registerCollabRoutes(apiMux, mux, params.CollabController)
+	}
+
+	// --- Git-service-side routes (folded in after WS0.1.i) -------------
+	// Wired onto a dedicated git-service mux to keep their auth posture
+	// (Service JWT for /api/v1/repos + /internal/credentials, Task JWT
+	// for /api/v1/credentials/refresh) decoupled from the BFF's User
+	// JWT path. The dedicated mux is mounted at the outer mux so its
+	// middleware chain is independent from the User-JWT-gated /api/.
+	gsMux := http.NewServeMux()
+	if params.RepoCtrl != nil {
+		var orgScope func(http.Handler) http.Handler
+		if params.RepoRepo != nil {
+			orgScope = middleware.RequireOrgScope(params.RepoRepo)
+		}
+		registerRepoOnlyRoutes(gsMux,
+			params.RepoCtrl,
+			params.GitOpsCtrl,
+			params.IssueCtrl,
+			params.BranchCtrl,
+			params.PullRequestCtrl,
+			params.WebhookRegCtrl,
+			params.ArtifactCtrl,
+			orgScope,
+		)
+	}
+	if params.CredService != nil {
+		registerCredentialsInternalRoutes(gsMux, params.CredService, params.BuildCredService, params.Validator)
+	}
+	if params.AnthropicCredService != nil {
+		registerAnthropicCredentialsRoutes(gsMux, params.AnthropicCredService)
+		// agents-service calls /effective-key without a Service JWT
+		// (matches cloud release-binding which carries no
+		// SERVICE_AUTH_GIT_* envs). Mount on the outer mux to bypass
+		// the gsMux's ServiceJWT wrapper.
+		registerAnthropicEffectiveKeyUnauth(mux, params.AnthropicCredService)
+	}
+	if params.GitProjectCtrl != nil {
+		registerOrgRoutes(mux, params.GitProjectCtrl)
+	}
+	if params.RepoBoardCtrl != nil {
+		registerRepoBoardRoutes(mux, params.RepoBoardCtrl)
+	}
+
+	taskMux := http.NewServeMux()
+	if params.CredCtrl != nil {
+		taskMux.HandleFunc("POST /api/v1/credentials/refresh", params.CredCtrl.Refresh)
+	}
+
+	if params.ServiceJWT != nil {
+		mux.Handle("/api/v1/repos/", params.ServiceJWT(gsMux))
+		mux.Handle("/api/v1/repos", params.ServiceJWT(gsMux))
+		mux.Handle("/internal/credentials/", params.ServiceJWT(gsMux))
+		slog.Info("git-service routes mounted under Service JWT")
+	} else {
+		mux.Handle("/api/v1/repos/", gsMux)
+		mux.Handle("/api/v1/repos", gsMux)
+		mux.Handle("/internal/credentials/", gsMux)
+		slog.Warn("git-service routes mounted WITHOUT Service JWT (dev/test)")
+	}
+	if params.TaskJWT != nil {
+		mux.Handle("/api/v1/credentials/", middleware.RequireTaskBearer(params.TaskJWT)(taskMux))
+	} else {
+		mux.Handle("/api/v1/credentials/", taskMux)
 	}
 
 	jwt := jwtmw.Middleware(jwtmw.Config{

@@ -531,6 +531,51 @@ EOF
 
 echo "✅ .env file generated at $(realpath "$ENV_FILE")"
 
+# ──────────────────────────────────────────────────────────────────────────
+# Local-only: pre-create the default org's base namespace `wc-<…>` that
+# SM-API writes SecretReference CRs into during Connect.
+#
+# On cloud, `ou-service` creates this NS at org-onboard time. Locally
+# there is no equivalent. Without this NS, Connect's SM-API mirror
+# returns 500 (`namespaces wc-… not found`) and the BFF falls back to
+# the legacy SSA path — silent on success, surprising during dispatch.
+#
+# Derives the NS deterministically from Thunder's ouId for the default
+# org (= `wc-<ouId8>-<sha256(ouId)[:8]>`), matching
+# `secret-manager-api/internal/auth/jwt.go::GenerateNamespaceName` and
+# `services/codingagent/namespace.go::OrgBaseNamespace`.
+echo ""
+echo "🪪 Pre-creating default org base namespace (local-only, ou-service equivalent)..."
+THUNDER_URL="${THUNDER_URL:-http://thunder.openchoreo.localhost:8080}"
+SEEDER_CLIENT_ID="${SEEDER_CLIENT_ID:-asdlc-local-dev-seeder}"
+SEEDER_CLIENT_SECRET="${SEEDER_CLIENT_SECRET:-asdlc-local-dev-seeder-secret}"
+TOKEN_JSON=$(curl -sS -X POST "${THUNDER_URL}/oauth2/token" \
+    -d "grant_type=client_credentials&client_id=${SEEDER_CLIENT_ID}&client_secret=${SEEDER_CLIENT_SECRET}&scope=openid" || true)
+TOKEN=$(printf '%s' "$TOKEN_JSON" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d.get("access_token",""))' 2>/dev/null || true)
+if [ -z "$TOKEN" ]; then
+    echo "⚠️  could not mint seeder token from Thunder; skipping NS pre-create (re-run after Thunder is reachable)"
+else
+    # Decode JWT payload (middle base64url segment), extract ouId.
+    PAYLOAD=$(printf '%s' "$TOKEN" | cut -d. -f2)
+    # base64url → base64 with padding (Python handles missing padding).
+    OUID=$(printf '%s' "$PAYLOAD" | python3 -c '
+import sys, base64, json
+s = sys.stdin.read().strip().replace("-", "+").replace("_", "/")
+s += "=" * (-len(s) % 4)
+print(json.loads(base64.b64decode(s)).get("ouId", ""))' 2>/dev/null)
+    if [ -z "$OUID" ]; then
+        echo "⚠️  no ouId claim in seeder JWT; skipping NS pre-create"
+    else
+        # Compute NS = wc-<ouId8>-<sha256(ouId)[:8]>
+        CLEAN=$(printf '%s' "$OUID" | tr -d '-')
+        PREFIX=$(printf '%s' "$CLEAN" | cut -c1-8)
+        SALT=$(printf '%s' "$OUID" | shasum -a 256 | cut -c1-8)
+        ORG_NS="wc-${PREFIX}-${SALT}"
+        kubectl create namespace "$ORG_NS" --dry-run=client -o yaml | kubectl apply -f -
+        echo "✅ org base namespace ready: $ORG_NS (Thunder ouId=$OUID)"
+    fi
+fi
+
 echo ""
 echo "✅ ASDLC setup complete!"
 echo ""

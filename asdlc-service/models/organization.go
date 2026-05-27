@@ -18,6 +18,12 @@ type Organization struct {
 	DisplayName string    `gorm:"" json:"displayName,omitempty"`
 	CreatedBy   string    `gorm:"" json:"createdBy,omitempty"`
 	CreatedAt   time.Time `gorm:"not null;default:CURRENT_TIMESTAMP" json:"createdAt"`
+	// ThunderOrgUUID is the org UUID Thunder assigns and embeds as the
+	// JWT's `ouId` claim. SM-API derives per-org namespaces from this,
+	// not from UUID (which is just the BFF's local PK). Populated
+	// lazily by orgensure middleware on the first authed request that
+	// carries an `ouId` claim. Nullable for backward compatibility.
+	ThunderOrgUUID *uuid.UUID `gorm:"type:uuid;column:thunder_org_uuid;index" json:"thunderOrgUuid,omitempty"`
 }
 
 // OrganizationView is the API response shape — joins the local UUID with the

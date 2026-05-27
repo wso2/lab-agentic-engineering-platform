@@ -9,10 +9,14 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/clients/thundersvc"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
+	"github.com/wso2/asdlc/asdlc-service/services/codingagent"
+	"gorm.io/gorm"
 )
 
 // DispatchResult represents the outcome of dispatching a single task.
@@ -105,6 +109,28 @@ type dispatchService struct {
 	// register step logs and skips, and the operator must add the URL
 	// manually before browser sign-in works for that webapp.
 	thunderAdmin thundersvc.Client
+
+	// codingAgentDispatcher, when non-nil, is the WS2.3 proxy-based
+	// dispatch path (NS + SA + ExternalSecret×2 + Job). When the
+	// dispatcher is wired AND the per-org SM-API triplets are
+	// populated, the new path runs and the legacy
+	// wfRunService.TriggerCodingAgent is skipped. Both being absent
+	// keeps the legacy ClusterWorkflow path live.
+	codingAgentDispatcher *codingagent.Dispatcher
+
+	// db backs the SM-API triplet lookup; nil disables the new
+	// dispatch path even when codingAgentDispatcher is set. Wired by
+	// main.go after WS2.3.
+	db *gorm.DB
+
+	// clusterSecretStore is the ESO ClusterSecretStore name the
+	// per-run ExternalSecrets target. On DP this is `secretstore-read`;
+	// local k3d reuses `default` (see deployments/docker-compose.yml).
+	clusterSecretStore string
+
+	// runnerImage is the docker image the per-run Job uses. Pinned by
+	// the BFF from cfg.AgentRunnerImage.
+	runnerImage string
 }
 
 // UserAppsOIDC is the BFF-side mirror of config.UserAppsOIDCConfig —
@@ -132,6 +158,18 @@ func (s *dispatchService) SetUserAppsOIDC(cfg UserAppsOIDC) {
 // is a logged no-op and the operator must register URIs by hand.
 func (s *dispatchService) SetThunderAdminClient(c thundersvc.Client) {
 	s.thunderAdmin = c
+}
+
+// WithCodingAgentDispatcher wires the WS2.3 proxy-based dispatch path.
+// db is required for the SM-API triplet lookup; clusterSecretStore +
+// runnerImage are pinned by the caller. Returns the receiver for
+// chained construction.
+func (s *dispatchService) WithCodingAgentDispatcher(d *codingagent.Dispatcher, db *gorm.DB, clusterSecretStore, runnerImage string) DispatchService {
+	s.codingAgentDispatcher = d
+	s.db = db
+	s.clusterSecretStore = clusterSecretStore
+	s.runnerImage = runnerImage
+	return s
 }
 
 // DispatchServiceWithTraitSync surfaces the trait_sync setter without
@@ -366,21 +404,36 @@ func (s *dispatchService) dispatchOne(
 		return failResult(res, task.ErrorMessage)
 	}
 
-	runName, err := s.wfRunService.TriggerCodingAgent(ctx, CodingAgentTrigger{
-		Task:               task,
-		RepoURL:            repoInfo.RepoURL,
-		IdentityName:       identity.Name,
-		IdentityEmail:      identity.Email,
-		IdentityLogin:      identity.Login,
-		Prompt:             prompt,
-		Bearer:             bearer,
-		GitServiceURL:      s.gitServiceURL,
-		PlatformURL:        s.platformURL,
-		AnthropicSecretRef: anthropicRes.SecretRefName,
-	})
+	// WS2.3 — new dispatch path. When the proxy-based dispatcher is
+	// wired AND the per-org SM-API triplets are populated, dispatch
+	// goes through cluster-gateway-proxy (NS + SA + ExternalSecret×2
+	// + Job) instead of the legacy ClusterWorkflow path. Fall back to
+	// the legacy `wfRunService.TriggerCodingAgent` when the proxy
+	// path's prerequisites aren't satisfied — keeps mixed dev
+	// environments working until WS2.6 cuts over fully.
+	var runName string
+	used, runName, err := s.tryDispatchViaProxy(ctx, task, repoInfo.RepoURL, prompt, identity, bearer)
 	if err != nil {
-		s.markFailed(ctx, task, fmt.Sprintf("trigger coding-agent: %v", err))
+		s.markFailed(ctx, task, fmt.Sprintf("dispatch via proxy: %v", err))
 		return failResult(res, task.ErrorMessage)
+	}
+	if !used {
+		runName, err = s.wfRunService.TriggerCodingAgent(ctx, CodingAgentTrigger{
+			Task:               task,
+			RepoURL:            repoInfo.RepoURL,
+			IdentityName:       identity.Name,
+			IdentityEmail:      identity.Email,
+			IdentityLogin:      identity.Login,
+			Prompt:             prompt,
+			Bearer:             bearer,
+			GitServiceURL:      s.gitServiceURL,
+			PlatformURL:        s.platformURL,
+			AnthropicSecretRef: anthropicRes.SecretRefName,
+		})
+		if err != nil {
+			s.markFailed(ctx, task, fmt.Sprintf("trigger coding-agent: %v", err))
+			return failResult(res, task.ErrorMessage)
+		}
 	}
 
 	now := time.Now()
@@ -406,6 +459,159 @@ func (s *dispatchService) dispatchOne(
 	res.RunName = runName
 	res.Status = "running"
 	return res
+}
+
+// tryDispatchViaProxy is WS2.3's proxy-based dispatch attempt. Returns
+// (used=true, runName, nil) when dispatch succeeded; (used=false, "", nil)
+// when prerequisites aren't met so the caller falls back to the legacy
+// ClusterWorkflow path; (used=false, "", err) on actual failure.
+//
+// Prerequisites:
+//   - codingAgentDispatcher wired (cluster-gateway-proxy client present);
+//   - db wired (for the SM-API triplet lookup);
+//   - runnerImage + clusterSecretStore configured;
+//   - the org's anthropic + github credential rows carry the SM-API
+//     triplet (populated by WS2.2's Connect flow);
+//   - the BFF has an Organization row with the OrgUUID for the NS derivation.
+//
+// When any of these fail, the function returns used=false with nil
+// error and the legacy path runs — operators see a single log line per
+// dispatch noting the fallback reason.
+func (s *dispatchService) tryDispatchViaProxy(
+	ctx context.Context,
+	task *models.ComponentTask,
+	repoURL, prompt string,
+	identity *gitservice.IdentityProjection,
+	bearer string,
+) (bool, string, error) {
+	if s.codingAgentDispatcher == nil || s.db == nil {
+		return false, "", nil
+	}
+	if s.runnerImage == "" || s.clusterSecretStore == "" {
+		slog.WarnContext(ctx, "proxy dispatch: missing runnerImage or clusterSecretStore — falling back to legacy path",
+			"task", task.ID)
+		return false, "", nil
+	}
+
+	// SM-API triplets — fetched in one round-trip each from the
+	// per-org credential rows. The Connect flow guarantees these are
+	// stamped together (in the same tx as the encrypted blob), so a
+	// half-populated row is not expected.
+	var (
+		anthropicRow models.OrgAnthropicCredential
+		githubRow    models.OrgCredential
+	)
+	if err := s.db.WithContext(ctx).Where("oc_org_id = ?", task.OrgID).First(&anthropicRow).Error; err != nil {
+		slog.InfoContext(ctx, "proxy dispatch: anthropic row missing; falling back",
+			"task", task.ID, "ocOrgId", task.OrgID, "error", err)
+		return false, "", nil
+	}
+	if err := s.db.WithContext(ctx).Where("oc_org_id = ?", task.OrgID).First(&githubRow).Error; err != nil {
+		slog.InfoContext(ctx, "proxy dispatch: github row missing; falling back",
+			"task", task.ID, "ocOrgId", task.OrgID, "error", err)
+		return false, "", nil
+	}
+	if anthropicRow.SMAPIKVPath == nil || githubRow.SMAPIKVPath == nil {
+		slog.InfoContext(ctx, "proxy dispatch: SM-API triplet missing on credential row(s); falling back",
+			"task", task.ID,
+			"anthropicMissing", anthropicRow.SMAPIKVPath == nil,
+			"githubMissing", githubRow.SMAPIKVPath == nil)
+		return false, "", nil
+	}
+
+	// OrgUUID lookup. The BFF Organization row carries the UUID the
+	// NS derivation needs (`wc-<orgUUID8>-<orgHash8>-remote-worker`).
+	orgUUID, err := s.lookupOrgUUID(ctx, task.OrgID)
+	if err != nil {
+		slog.InfoContext(ctx, "proxy dispatch: org UUID not found; falling back",
+			"task", task.ID, "ocOrgId", task.OrgID, "error", err)
+		return false, "", nil
+	}
+
+	runName := codingAgentRunName(task)
+	job := codingagent.JobInputs{
+		RunName:       runName,
+		TaskID:        task.ID,
+		OrgID:         task.OrgID,
+		ProjectID:     task.ProjectID,
+		ComponentName: task.ComponentName,
+		RunnerImage:   s.runnerImage,
+		RepoURL:       repoURL,
+		Prompt:        prompt,
+		IdentityName:  identity.Name,
+		IdentityEmail: identity.Email,
+		IdentityLogin: identity.Login,
+		GitServiceURL: s.gitServiceURL,
+		CallbackURL:   s.platformURL,
+		// `ASDLC_BEARER` keeps the legacy per-task RS256 JWT path alive
+		// on the new dispatcher. The runner's `oneshot.ts` validates
+		// the env var at startup and uses it for /credentials/refresh
+		// callbacks. WS2.4's eventual switch to Thunder
+		// `client_credentials` (third per-run ExternalSecret =
+		// ThunderClientSR) lets us drop this; for now both paths are
+		// load-bearing and we mint the bearer here just like the
+		// legacy `wfRunService.TriggerCodingAgent` call does above.
+		Bearer: bearer,
+	}
+
+	rn, err := s.codingAgentDispatcher.Dispatch(ctx, codingagent.Inputs{
+		OrgUUID:                orgUUID,
+		Job:                    job,
+		AnthropicSR:            codingagent.SecretRef{SecretRefName: derefStr(anthropicRow.SMAPISecretRefName), KVPath: derefStr(anthropicRow.SMAPIKVPath), Property: derefStr(anthropicRow.SMAPIProperty)},
+		GitHubSR:               codingagent.SecretRef{SecretRefName: derefStr(githubRow.SMAPISecretRefName), KVPath: derefStr(githubRow.SMAPIKVPath), Property: derefStr(githubRow.SMAPIProperty)},
+		ClusterSecretStoreName: s.clusterSecretStore,
+	})
+	if err != nil {
+		return false, "", err
+	}
+	return true, rn, nil
+}
+
+func (s *dispatchService) lookupOrgUUID(ctx context.Context, ocOrgID string) (string, error) {
+	var org models.Organization
+	if err := s.db.WithContext(ctx).Where("name = ?", ocOrgID).First(&org).Error; err != nil {
+		return "", err
+	}
+	// Prefer the Thunder-issued ouId persisted on `thunder_org_uuid`
+	// (the authoritative UUID that SM-API also derives NS from).
+	// Fall back to the local PK `uuid` only when the row predates the
+	// orgensure lazy-fill — in that case the NS will mismatch and the
+	// proxy path will silently fail, but we let it through so legacy
+	// callers don't lose dispatch capability mid-rollout.
+	if org.ThunderOrgUUID != nil && *org.ThunderOrgUUID != uuid.Nil {
+		return org.ThunderOrgUUID.String(), nil
+	}
+	if org.UUID == uuid.Nil {
+		return "", fmt.Errorf("organization %s has no UUID", ocOrgID)
+	}
+	slog.WarnContext(ctx, "dispatch: thunder_org_uuid missing on org row; falling back to local PK (NS derivation will likely mismatch SM-API)",
+		"name", ocOrgID, "uuid", org.UUID.String())
+	return org.UUID.String(), nil
+}
+
+// codingAgentRunName derives a deterministic run name from the task ID
+// + a UTC minute bucket. Same task dispatched twice in the same minute
+// reuses the run name (the Job is immutable so ApplyJob does a
+// DELETE+POST, restarting the agent). Bucket is intentionally coarse
+// so retries within a minute are idempotent.
+func codingAgentRunName(task *models.ComponentTask) string {
+	min := time.Now().UTC().Format("0601021504")
+	shortID := task.ID
+	if len(shortID) > 8 {
+		shortID = shortID[:8]
+	}
+	name := fmt.Sprintf("ca-%s-%s", shortID, min)
+	if len(name) > 63 {
+		name = name[:63]
+	}
+	return name
+}
+
+func derefStr(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func failResult(r DispatchResult, msg string) DispatchResult {

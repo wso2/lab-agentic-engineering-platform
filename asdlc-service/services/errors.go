@@ -18,4 +18,14 @@ var (
 	ErrDeploymentFailed    = errors.New("deployment failed")
 	ErrLogsUnavailable     = errors.New("observability service not configured")
 	ErrTaskNotFound        = errors.New("task not found")
+
+	// Folded in from git-service after WS0.1.g.
+	ErrRepoNotFound      = errors.New("repository not found")
+	ErrRepoAlreadyExists = errors.New("repository already exists for this project")
+	ErrRepoNotReady      = errors.New("repository is not ready")
+	ErrAuthFailed        = errors.New("git authentication failed")
+	ErrPushConflict      = errors.New("push rejected")
+	ErrFileNotFound      = errors.New("file not found")
+	ErrTagNotFound       = errors.New("tag not found")
+	ErrTagAlreadyExists  = errors.New("tag already exists")
 )

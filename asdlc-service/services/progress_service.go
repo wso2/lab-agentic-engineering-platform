@@ -1,18 +1,25 @@
 package services
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"golang.org/x/sync/singleflight"
+	"gorm.io/gorm"
 
+	"github.com/wso2/asdlc/asdlc-service/clients/clustergatewayproxy"
 	"github.com/wso2/asdlc/asdlc-service/clients/observer"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
 	"github.com/wso2/asdlc/asdlc-service/models"
+	"github.com/wso2/asdlc/asdlc-service/services/codingagent"
 )
 
 // Default cap on lines per /progress/* response. Keeps Observer query
@@ -49,6 +56,13 @@ type progressService struct {
 	taskSvc        TaskService
 	ocClient       openchoreo.ComponentClient
 	observerClient observer.Client
+
+	// proxy + db drive the new-path log surface (cgw-proxy pods/log +
+	// coding_agent_logs sidecar). Both nil-safe — the service falls
+	// back to Observer when either is missing OR when the task's
+	// runName format matches the legacy ClusterWorkflow shape.
+	proxy *clustergatewayproxy.Client
+	db    *gorm.DB
 
 	// Singleflight collapses N concurrent viewers of the same
 	// (runName, sinceMillis-bucket) into one Observer call. The leader
@@ -89,11 +103,35 @@ func NewProgressService(
 	}
 }
 
+// WithCodingAgentLogSource wires the cluster-gateway-proxy + DB so
+// GetAgentProgress can serve new-path (`ca-…` runName) tasks via
+// pods/log + the `coding_agent_logs` sidecar instead of Observer.
+// Both must be non-nil to enable the path. Idempotent.
+func (s *progressService) WithCodingAgentLogSource(proxy *clustergatewayproxy.Client, db *gorm.DB) ProgressService {
+	s.proxy = proxy
+	s.db = db
+	return s
+}
+
 // ErrProgressUnavailable signals that the Observer is not reachable.
 // The controller maps this to HTTP 503 progress_unavailable.
 var ErrProgressUnavailable = errors.New("progress unavailable")
 
 func (s *progressService) GetAgentProgress(ctx context.Context, taskID string, sinceMillis int64, limit int) (*ProgressResponse, error) {
+	// New-path branch: when the task's runName matches `ca-…` (the
+	// dispatcher's deterministic format) AND the proxy + DB are wired,
+	// serve from cgw-proxy pods/log + coding_agent_logs sidecar.
+	// Falls through to the Observer path on any other runName shape so
+	// legacy-dispatch tasks keep working.
+	if s.proxy != nil && s.db != nil {
+		task, err := s.taskSvc.GetTask(ctx, taskID)
+		if err != nil {
+			return nil, err
+		}
+		if isNewPathRunName(task.LastCodingAgentRunName) {
+			return s.getAgentProgressNewPath(ctx, task, sinceMillis, limit)
+		}
+	}
 	if s.observerClient == nil {
 		return nil, ErrProgressUnavailable
 	}
@@ -367,3 +405,285 @@ func isAgentActive(task *models.ComponentTask) bool {
 func isBuildActive(task *models.ComponentTask) bool {
 	return task.Status == string(models.TaskStatusBuilding)
 }
+
+// isNewPathRunName returns true for runNames minted by
+// dispatch_service.codingAgentRunName (`ca-<id8>-<minute-bucket>`).
+// Legacy WP-SSA dispatches use `coding-agent-<id8>-<unix-millis>`
+// which doesn't start with `ca-`. Used to branch GetAgentProgress
+// onto the new pods/log + sidecar source.
+func isNewPathRunName(runName string) bool {
+	return strings.HasPrefix(runName, "ca-")
+}
+
+// newPathLogPageBytes caps how much sidecar/live-tail text we surface
+// per /progress/agent call. Together with the dispatcher's
+// 256KiB final-capture limit this keeps a single response from
+// blowing past the BFF's response-buffer expectations.
+const newPathLogPageBytes = 64 * 1024
+
+// getAgentProgressNewPath serves logs for `ca-…` runNames. While the
+// Job is active it tails `pods/log` via the proxy; once terminal it
+// reads the captured snapshot from `coding_agent_logs`. The Observer
+// client is not touched here.
+//
+// Cursor semantics — both branches filter lines by the K8s
+// `timestamps=true` prefix (RFC3339Nano), returning only events
+// strictly newer than `sinceMillis`. This is required because:
+//   - the live tail returns the same `?limitBytes=64KiB` window on
+//     every poll, so without per-line filtering the console would
+//     see the same lines on every refresh and accumulate duplicates;
+//   - the live → snapshot handoff (when the Job hits terminal and the
+//     watcher persists) would otherwise dump the full snapshot on top
+//     of the already-appended live-tail lines — same duplicate problem.
+//
+// CursorMillis returned is the latest line's ts when there are lines,
+// else max(sinceMillis, captured_at) on the snapshot path / now()
+// on the live path. Final is true iff the snapshot row exists.
+func (s *progressService) getAgentProgressNewPath(ctx context.Context, task *models.ComponentTask, sinceMillis int64, limit int) (*ProgressResponse, error) {
+	// Normalize `limit` here too — `GetAgentProgress` does the same
+	// before its legacy Observer branch but our new-path code runs
+	// before that, so a caller hitting `/progress/agent` without
+	// `?limit=` would otherwise get limit=0 which truncates every
+	// line and surfaces as "blank but Final=true" in the console.
+	if limit <= 0 || limit > defaultProgressLimit {
+		limit = defaultProgressLimit
+	}
+	resp := &ProgressResponse{
+		SchemaVersion: observer.ProgressSchemaVersion,
+		Lines:         []observer.ProgressEvent{},
+		CursorMillis:  sinceMillis,
+		Final:         false,
+	}
+	if task.LastCodingAgentRunName == "" {
+		return resp, nil
+	}
+	taskUUID, perr := uuid.Parse(task.ID)
+	if perr != nil {
+		return nil, fmt.Errorf("parse task id: %w", perr)
+	}
+
+	// Snapshot path: prefer the persisted sidecar row when present
+	// (the watcher wrote it on terminal Job state).
+	var snap models.CodingAgentLog
+	switch err := s.db.WithContext(ctx).
+		Where("task_id = ? AND run_name = ?", taskUUID, task.LastCodingAgentRunName).
+		First(&snap).Error; {
+	case err == nil:
+		all := textToProgressEvents(snap.LogText, defaultProgressLimit, nil)
+		newer := filterEventsAfter(all, sinceMillis)
+		if len(newer) > limit {
+			newer = newer[:limit]
+			resp.Truncated = true
+		}
+		resp.Lines = newer
+		// Cursor advances to either the last line's ts or — if the
+		// snapshot is fully consumed (no new lines) — the snapshot's
+		// captured_at so a second poll's sinceMillis is at or past
+		// captured_at and the cursor doesn't slide backwards.
+		if cur := lastEventMillis(newer); cur > resp.CursorMillis {
+			resp.CursorMillis = cur
+		}
+		if capturedMs := snap.CapturedAt.UnixMilli(); capturedMs > resp.CursorMillis {
+			resp.CursorMillis = capturedMs
+		}
+		resp.Final = true
+		return resp, nil
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		// fall through to live tail
+	default:
+		return nil, fmt.Errorf("read sidecar log: %w", err)
+	}
+
+	// Live tail path: dispatch-side persistent state hasn't captured
+	// yet. Compute the NS the same way the dispatcher + watcher do
+	// and tail through the proxy.
+	ns, ok := s.resolveNewPathNS(ctx, task)
+	if !ok {
+		// NS resolution fails when the Org row is missing or has no
+		// Thunder UUID yet. Surface as 503 so the console keeps polling
+		// — the orgensure middleware will fill the row on the next
+		// authed request, and the watcher will capture on terminal
+		// state regardless.
+		return nil, ErrProgressUnavailable
+	}
+	podName, err := s.proxy.GetJobPodName(ctx, ns, task.LastCodingAgentRunName)
+	if err != nil {
+		if errors.Is(err, clustergatewayproxy.ErrNotFound) {
+			// Job pod hasn't been scheduled yet (Job just created) OR
+			// has been GC'd past TTL with no snapshot captured. Return
+			// empty + non-final so the console keeps polling for the
+			// pod to appear, OR for an admin to ack the lost run.
+			return resp, nil
+		}
+		return nil, fmt.Errorf("get job pod name: %w", err)
+	}
+
+	// Live tail: `?limitBytes=64KiB` returns the LAST 64KB of pod
+	// stdout. Old lines scroll off; the console gets the freshest
+	// content each poll. K8s has no native `?sinceMillis` knob — we
+	// request the most-recent window then filter by ts client-side.
+	body, err := s.proxy.TailPodLog(ctx, ns, podName, clustergatewayproxy.PodLogOptions{
+		Timestamps: true,
+		LimitBytes: newPathLogPageBytes,
+	})
+	if err != nil {
+		if errors.Is(err, clustergatewayproxy.ErrNotFound) {
+			return resp, nil
+		}
+		return nil, fmt.Errorf("tail pod log: %w", err)
+	}
+	all := textToProgressEvents(string(body), defaultProgressLimit, nil)
+	newer := filterEventsAfter(all, sinceMillis)
+	if len(newer) > limit {
+		newer = newer[:limit]
+		resp.Truncated = true
+	}
+	resp.Lines = newer
+	// Advance the cursor to the newest line we saw, NOT to now() —
+	// using now() would make the next poll's window start past lines
+	// that landed in the meantime (between this fetch and `now()`),
+	// silently dropping them.
+	if cur := lastEventMillis(newer); cur > resp.CursorMillis {
+		resp.CursorMillis = cur
+	}
+	// Final is false while Job is live; the watcher's snapshot capture
+	// (or the next poll after Job becomes terminal) will flip Final
+	// via the snapshot branch above.
+	return resp, nil
+}
+
+// filterEventsAfter drops events whose ts is at or before
+// `sinceMillis`. Events without a parseable ts are kept (we have no
+// basis to compare them) so the BFF never silently loses content.
+// Events whose ts equals sinceMillis are dropped, mirroring the
+// half-open `(sinceMillis, +∞)` interval the legacy Observer path
+// uses (see fetchObserverLogs's `sinceTime.Unix()` bucketing).
+func filterEventsAfter(events []observer.ProgressEvent, sinceMillis int64) []observer.ProgressEvent {
+	if sinceMillis <= 0 {
+		return events
+	}
+	out := events[:0:len(events)]
+	for _, e := range events {
+		if e.Ts == "" {
+			out = append(out, e)
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, e.Ts)
+		if err != nil {
+			out = append(out, e)
+			continue
+		}
+		if t.UnixMilli() > sinceMillis {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// lastEventMillis returns the highest UnixMilli ts in `events`, or 0
+// when none of the events carry a parseable ts. Used to advance the
+// cursor only as far as actually-emitted content reaches, so the
+// next poll's window never skips past late-arriving lines.
+func lastEventMillis(events []observer.ProgressEvent) int64 {
+	var max int64
+	for _, e := range events {
+		if e.Ts == "" {
+			continue
+		}
+		t, err := time.Parse(time.RFC3339Nano, e.Ts)
+		if err != nil {
+			continue
+		}
+		if m := t.UnixMilli(); m > max {
+			max = m
+		}
+	}
+	return max
+}
+
+// resolveNewPathNS mirrors JobWatcher.resolveNS — keep them in sync
+// or extract to a shared helper if a third caller appears.
+func (s *progressService) resolveNewPathNS(ctx context.Context, task *models.ComponentTask) (string, bool) {
+	var org models.Organization
+	if err := s.db.WithContext(ctx).Where("name = ?", task.OrgID).First(&org).Error; err != nil {
+		return "", false
+	}
+	var uid string
+	if org.ThunderOrgUUID != nil && *org.ThunderOrgUUID != uuid.Nil {
+		uid = org.ThunderOrgUUID.String()
+	} else {
+		uid = org.UUID.String()
+	}
+	if uid == "" || uid == "00000000-0000-0000-0000-000000000000" {
+		return "", false
+	}
+	return codingagent.RemoteWorkerNamespace(uid), true
+}
+
+// textToProgressEvents splits raw stdout/stderr into the
+// observer.ProgressEvent envelope the console already knows how to
+// render. Each line becomes one event; the K8s `timestamps=true`
+// prefix (`YYYY-MM-DDTHH:MM:SS.NNNNNNNNNZ <line>`) is split off the
+// front when present and used as the event Ts.
+func textToProgressEvents(text string, limit int, truncated *bool) []observer.ProgressEvent {
+	if text == "" {
+		return []observer.ProgressEvent{}
+	}
+	if limit <= 0 || limit > defaultProgressLimit {
+		limit = defaultProgressLimit
+	}
+	out := make([]observer.ProgressEvent, 0, 256)
+	scanner := bufio.NewScanner(strings.NewReader(text))
+	// Allow long lines — agent output occasionally dumps long JSON
+	// blobs (Anthropic API responses) that exceed the default 64K
+	// scanner buffer.
+	scanner.Buffer(make([]byte, 0, 4096), 1024*1024)
+	for scanner.Scan() {
+		ts, msg := splitTimestampPrefix(scanner.Text())
+		out = append(out, observer.ProgressEvent{
+			SchemaVersion: observer.ProgressSchemaVersion,
+			Ts:            ts,
+			// `kind: log` + `summary` matches the typed envelope the
+			// console's `summaryFor`/`iconFor` switch on (see
+			// console/src/components/tasks/TaskActivityFeed.tsx:38, 52
+			// and console/src/services/api/types.ts:260). The legacy
+			// Observer path uses the same shape (see
+			// clients/observer/schema.go:64). Using `summary` (not
+			// `message`) lets the console render without any client
+			// change.
+			Kind:    "log",
+			Summary: msg,
+		})
+	}
+	if len(out) > limit {
+		// Keep the newest `limit` events so the live tail surfaces
+		// fresh output rather than the oldest captured window.
+		out = out[len(out)-limit:]
+		if truncated != nil {
+			*truncated = true
+		}
+	}
+	return out
+}
+
+// splitTimestampPrefix peels the K8s `?timestamps=true` prefix off a
+// log line. Returns (ts, rest); ts="" when no prefix is present so
+// the caller's event Ts falls back to the empty string and the
+// console renders without a timestamp.
+func splitTimestampPrefix(line string) (string, string) {
+	i := strings.IndexByte(line, ' ')
+	if i <= 0 {
+		return "", line
+	}
+	candidate := line[:i]
+	// K8s emits RFC3339Nano always; cheap shape check.
+	if _, err := time.Parse(time.RFC3339Nano, candidate); err != nil {
+		return "", line
+	}
+	return candidate, line[i+1:]
+}
+
+// silence unused-import linter on io for environments where this
+// file is included without the streaming-tail branch (none today —
+// kept for future expansion to true streaming via ResponseWriter).
+var _ = io.EOF

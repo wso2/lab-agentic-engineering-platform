@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -14,24 +15,32 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/api"
 	"github.com/wso2/asdlc/asdlc-service/clients/agents"
 	"github.com/wso2/asdlc/asdlc-service/clients/auth"
+	"github.com/wso2/asdlc/asdlc-service/clients/clustergatewayproxy"
 	dbclient "github.com/wso2/asdlc/asdlc-service/clients/database"
 	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
+	k8sclient "github.com/wso2/asdlc/asdlc-service/clients/k8s"
 	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
 	"github.com/wso2/asdlc/asdlc-service/clients/observability"
 	"github.com/wso2/asdlc/asdlc-service/clients/observer"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
+	"github.com/wso2/asdlc/asdlc-service/clients/secretmanagersvc"
+	"github.com/wso2/asdlc/asdlc-service/clients/secretmanagersvc/providers/secretmanagerapi"
 	"github.com/wso2/asdlc/asdlc-service/clients/thundersvc"
 	"github.com/wso2/asdlc/asdlc-service/config"
 	"github.com/wso2/asdlc/asdlc-service/controllers"
 	"github.com/wso2/asdlc/asdlc-service/database"
 	"github.com/wso2/asdlc/asdlc-service/database/migrations"
+	"github.com/wso2/asdlc/asdlc-service/internal/credentials"
+	"github.com/wso2/asdlc/asdlc-service/internal/seed"
 	"github.com/wso2/asdlc/asdlc-service/middleware"
 	"github.com/wso2/asdlc/asdlc-service/middleware/jwtassertion"
 	"github.com/wso2/asdlc/asdlc-service/middleware/logger"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 	"github.com/wso2/asdlc/asdlc-service/services"
+	"github.com/wso2/asdlc/asdlc-service/services/codingagent"
 	"github.com/wso2/asdlc/asdlc-service/services/webhook"
+	"gorm.io/gorm"
 )
 
 func main() {
@@ -111,9 +120,109 @@ func main() {
 		os.Exit(1)
 	}
 
+	// --- Git-service migrations (folded in after WS0.1.i) ----------------
+	// Idempotent. Phase 2 PR A schema → PR C repo_slug → org_secrets →
+	// per-org secret-name collapse → org_anthropic_credentials projection.
+	// Schema migrations must run before AutoMigrate so raw-SQL CHECK
+	// constraints + partial indexes win over GORM struct-tag inference.
+	migCtx := func(d time.Duration) (context.Context, context.CancelFunc) {
+		return context.WithTimeout(context.Background(), d)
+	}
+	{
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunPhase2PRASchema(c, db); err != nil {
+			cancel()
+			slog.Error("phase2_pra_schema migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	{
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunPhase2PRC(c, db); err != nil {
+			cancel()
+			slog.Error("phase2_prc migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	{
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunOrgSecretsMigration(c, db); err != nil {
+			cancel()
+			slog.Error("org_secrets migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	{
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunPerOrgSecretName(c, db); err != nil {
+			cancel()
+			slog.Error("per_org_secret_name migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	{
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunOrgAnthropicCredentialsMigration(c, db); err != nil {
+			cancel()
+			slog.Error("org_anthropic_credentials migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	{
+		// WS2.2 — SM-API triplet columns on per-org credential tables.
+		// Nullable; back-fills happen lazily on next Connect.
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunPhase3SMAPIColumns(c, db); err != nil {
+			cancel()
+			slog.Error("phase3_sm_api_columns migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	{
+		// Phase 3 — `thunder_org_uuid` column on organizations. Lets the
+		// BFF persist Thunder's authoritative ouId per row so the new
+		// dispatch path can compute the same `wc-<…>` NS that SM-API
+		// writes into.
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunPhase3ThunderOrgUUID(c, db); err != nil {
+			cancel()
+			slog.Error("phase3_thunder_org_uuid migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	{
+		// Phase 3 — `coding_agent_logs` sidecar table. Captures final
+		// pod-log tail for new-path dispatches (legacy path keeps using
+		// Observer/OpenSearch). Sidecar to keep MB-scale blobs off the
+		// hot `component_tasks` rows.
+		c, cancel := migCtx(30 * time.Second)
+		if err := migrations.RunPhase3CodingAgentLogs(c, db); err != nil {
+			cancel()
+			slog.Error("phase3_coding_agent_logs migration failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	if err := db.AutoMigrate(&models.GitRepository{}); err != nil {
+		slog.Error("automigrate GitRepository failed", "error", err)
+		os.Exit(1)
+	}
+	if err := os.MkdirAll(cfg.RepoBasePath, 0o755); err != nil {
+		slog.Error("failed to create repo base path", "path", cfg.RepoBasePath, "error", err)
+		os.Exit(1)
+	}
+
 	// Repositories — only task and config remain
 	taskRepo := repositories.NewTaskRepository(db)
 	configRepo := repositories.NewConfigRepository(db)
+	repoRepo := repositories.NewRepoRepository(db)
 
 	// Token provider for service-to-service auth. OC authorizes requests by
 	// the service client subject (asdlc-api-client), so every OC API call
@@ -199,6 +308,53 @@ func main() {
 	if cfg.DatabaseService.BaseURL != "" {
 		dbClient = dbclient.NewClient(cfg.DatabaseService.BaseURL)
 		slog.Info("Database service", "baseURL", cfg.DatabaseService.BaseURL)
+	}
+
+	// --- Phase 1 — SM-API provider (ADR-0002) -------------------------
+	// Same provider in local + cloud. Local SM-API binary lives in the
+	// docker-compose stack (WS1.1); cloud SM-API is reached at its
+	// public DNS. When SECRET_MANAGER_API_URL is empty the provider is
+	// not constructed and downstream callers handle the absence.
+	var smClient secretmanagersvc.SecretManagementClient
+	if cfg.SecretManagerAPIURL != "" {
+		smProvider := secretmanagerapi.NewProvider(secretmanagerapi.Config{
+			BaseURL: cfg.SecretManagerAPIURL,
+			Timeout: cfg.SecretManagerAPITimeout,
+		})
+		smClient, err = secretmanagersvc.NewSecretManagementClient(&secretmanagersvc.StoreConfig{
+			Provider: secretmanagerapi.ProviderName,
+		}, smProvider)
+		if err != nil {
+			slog.Error("sm-api client init failed", "error", err)
+			os.Exit(1)
+		}
+		slog.Info("sm-api client", "baseURL", cfg.SecretManagerAPIURL, "timeout", cfg.SecretManagerAPITimeout)
+	} else {
+		slog.Warn("SECRET_MANAGER_API_URL not set — Phase 1 secret writes disabled")
+	}
+	_ = smClient // wired into dispatch + connect controllers in WS2.
+
+	// --- Phase 1 — cluster-gateway-proxy client (WS1.4) ----------------
+	// Same shape as wso2cloud/backend/core/internal/ou's cpapi: no
+	// Authorization header, X-Correlation-ID-only tracing. When the URL
+	// is empty the client is not constructed; the new dispatch path
+	// will short-circuit and the legacy ClusterWorkflow path keeps
+	// running until WS2.3 cuts over.
+	var cgwClient *clustergatewayproxy.Client
+	if cfg.ClusterGatewayProxyURL != "" {
+		cgwClient = clustergatewayproxy.New(clustergatewayproxy.Config{
+			BaseURL: cfg.ClusterGatewayProxyURL,
+		})
+		slog.Info("cluster-gateway-proxy client", "baseURL", cfg.ClusterGatewayProxyURL)
+	} else {
+		slog.Warn("CLUSTER_GATEWAY_PROXY_URL not set — Phase 2 dispatch disabled")
+	}
+	// WS2.3 — construct the coding-agent dispatcher when the proxy
+	// client is present. nil-safe at the call-site (dispatch_service
+	// falls back to the legacy ClusterWorkflow path).
+	var codingAgentDispatcher *codingagent.Dispatcher
+	if cgwClient != nil {
+		codingAgentDispatcher = codingagent.New(cgwClient)
 	}
 
 	// Artifact store — PR 2 of repo-storage-ownership: HTTP-backed via
@@ -374,6 +530,18 @@ func main() {
 	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
 		hook.SetTraitSync(traitSyncService)
 	}
+	// WS2.3 — wire the proxy-based dispatcher. nil dispatcher → the
+	// legacy ClusterWorkflow path stays the only dispatch flow.
+	if codingAgentDispatcher != nil {
+		if setter, ok := dispatchSvc.(interface {
+			WithCodingAgentDispatcher(*codingagent.Dispatcher, *gorm.DB, string, string) services.DispatchService
+		}); ok {
+			setter.WithCodingAgentDispatcher(codingAgentDispatcher, db, cfg.AgentClusterSecretStore, cfg.AgentRunnerImage)
+			slog.Info("dispatch: proxy-based coding-agent path enabled",
+				"runnerImage", cfg.AgentRunnerImage,
+				"clusterSecretStore", cfg.AgentClusterSecretStore)
+		}
+	}
 	// Wire the user-apps OIDC config so dispatch posts the
 	// `## OIDC client provisioned` comment on web-app issues with
 	// design.auth.kind=oidc-spa. See docs/design/oauth-protected-webapp.md.
@@ -472,6 +640,156 @@ func main() {
 		slog.Warn("JWKS_URL not set — inbound JWT verification disabled (dev/test only)")
 	}
 
+	// --- Git-service services + controllers (folded in after WS0.1.i) ---
+	credKey, err := base64.StdEncoding.DecodeString(cfg.CredentialEncryptionKey)
+	if err != nil || len(credKey) != 32 {
+		slog.Error("CREDENTIAL_ENCRYPTION_KEY must be a base64-encoded 32-byte key", "error", err)
+		os.Exit(1)
+	}
+	credStore, err := credentials.NewDBStore(db, credKey)
+	if err != nil {
+		slog.Error("credential store init failed", "error", err)
+		os.Exit(1)
+	}
+	slog.Info("credential store: postgres (aes-256-gcm)")
+
+	wpClient, err := k8sclient.NewInClusterClient()
+	if err != nil {
+		slog.Warn("k8s client init failed — mint-build will skip Secret writes; builds will fail at clone", "error", err)
+		wpClient = nil
+	}
+
+	// App-token minter — best-effort App-key load. PR A's seed is user-pat
+	// only, so PR A boots with `appKey == nil` and the minter answers in
+	// no-app mode; PR B's connect surface lights up the App path lazily.
+	loadCtx, cancelLoad := context.WithTimeout(context.Background(), 10*time.Second)
+	appKey, err := credentials.LoadAppKeyFromOpenBao(loadCtx, credStore)
+	cancelLoad()
+	if err != nil {
+		slog.Warn("app key load failed; App-mode credentials will return ErrAppNotConfigured", "error", err)
+		appKey = nil
+	}
+	minter, err := credentials.NewAppTokenMinter(appKey)
+	if err != nil {
+		slog.Error("app token minter init failed", "error", err)
+		os.Exit(1)
+	}
+	minter.WithOpenBao(credStore)
+
+	// Dev-only app-platform seed (App private key + client_secret + webhook
+	// HMAC). No-op outside DEPLOYMENT_TIER=dev.
+	{
+		c, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := seed.AppPlatformFromEnv(c, credStore, cfg); err != nil {
+			cancel()
+			slog.Error("app platform seed failed", "error", err)
+			os.Exit(1)
+		}
+		cancel()
+	}
+	if appKey == nil {
+		retryCtx, cancelRetry := context.WithTimeout(context.Background(), 10*time.Second)
+		if reloaded, rerr := credentials.LoadAppKeyFromOpenBao(retryCtx, credStore); rerr == nil && reloaded != nil {
+			cancelRetry()
+			minter, err = credentials.NewAppTokenMinter(reloaded)
+			if err != nil {
+				slog.Error("app token minter re-init failed", "error", err)
+				os.Exit(1)
+			}
+			minter.WithOpenBao(credStore)
+			slog.Info("github app loaded post-seed", "appId", reloaded.AppID)
+		} else {
+			cancelRetry()
+		}
+	}
+	if minter.AppID() != 0 {
+		idCtx, cancelID := context.WithTimeout(context.Background(), 10*time.Second)
+		if err := minter.LoadAppBotIdentity(idCtx, "https://api.github.com"); err != nil {
+			slog.Warn("app bot identity load failed; will retry on first connect", "error", err)
+		}
+		cancelID()
+	}
+	var appClientSecret string
+	if minter.AppID() != 0 {
+		csCtx, cancelCS := context.WithTimeout(context.Background(), 10*time.Second)
+		if cs, err := minter.LoadAppClientSecret(csCtx); err != nil {
+			slog.Warn("app oauth client_secret load failed; bind path disabled", "error", err)
+		} else {
+			appClientSecret = cs
+		}
+		cancelCS()
+	}
+
+	credResolver := credentials.NewOrgResolver(db, credStore, minter)
+
+	githubClient := services.NewGitHubClient()
+	repoService := services.NewRepoService(repoRepo, githubClient, credResolver, cfg.GitHubRepoVisibility, cfg.RepoBasePath)
+	gitOpsService := services.NewGitOpsService(repoRepo, credResolver, cfg.RepoBasePath, githubClient)
+	artifactSvcGit := services.NewArtifactService(repoRepo, gitOpsService)
+	githubV2Client := services.NewGitHubV2Client()
+	issueService := services.NewIssueService(repoRepo, githubClient, githubV2Client, credResolver)
+	gitOpsService.CleanupOrphanTmpClones()
+	go func() {
+		warmCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		warmed, failed := gitOpsService.PreWarmClones(warmCtx, 10)
+		slog.Info("pre-warm complete", "warmed", warmed, "failed", failed)
+	}()
+	branchService := services.NewBranchService(repoRepo, githubClient, issueService)
+	prService := services.NewPullRequestService(repoRepo, githubClient, issueService)
+	webhookRegService := services.NewWebhookService(repoRepo, githubClient, repoService, issueService, cfg.WebhookDeliveryURL, cfg.WebhookHMACSecret)
+	credRefreshService := services.NewCredentialsRefreshService(credResolver)
+	credService := services.NewCredentialService(db, credStore, minter, cfg.WebhookHMACSecret, cfg.GitHubAppClientID, appClientSecret, githubClient)
+	buildCredService := services.NewBuildCredentialsService(repoRepo, credResolver, wpClient)
+	credService.WithBuildSecretCleaner(buildCredService)
+	anthropicInvalidator := services.HTTPAgentsCacheInvalidator(cfg.AgentsServiceURL, "")
+	anthropicCredService := services.NewAnthropicCredentialService(db, credStore, wpClient, cfg.AnthropicPlatformKey, anthropicInvalidator)
+
+	// WS2.2 — SM-API mirror writer wired into both credential services.
+	// nil-safe: smClient is nil when SECRET_MANAGER_API_URL is unset,
+	// and WithSMAPIWriter accepts the no-op writer cleanly.
+	smWriter := services.NewSMAPIWriter(smClient, db)
+	credService.WithSMAPIWriter(smWriter)
+	anthropicCredService.WithSMAPIWriter(smWriter)
+	validatorProbes := services.NewValidatorProbes(credService, githubClient, credResolver, minter)
+	credValidator := credentials.NewValidator(db, validatorProbes, nil, cfg.CredentialValidatorInterval)
+	repoBoardService := services.NewRepoBoardService(repoRepo, githubV2Client, credResolver)
+
+	repoCtrl := controllers.NewRepoController(repoService)
+	gitOpsCtrl := controllers.NewGitOpsController(gitOpsService)
+	issueCtrl := controllers.NewIssueController(issueService)
+	branchCtrl := controllers.NewBranchController(branchService)
+	prCtrl := controllers.NewPullRequestController(prService)
+	webhookRegCtrl := controllers.NewWebhookRegistrationController(webhookRegService)
+	artifactCtrlGit := controllers.NewArtifactController(artifactSvcGit)
+	credRefreshCtrl := controllers.NewCredentialsRefreshController(credRefreshService)
+	gitProjectCtrl := controllers.NewGitProjectController(githubV2Client, credResolver, repoService)
+	repoBoardCtrl := controllers.NewRepoBoardController(repoBoardService)
+
+	var serviceJWT, taskJWT jwtassertion.Middleware
+	if cfg.JWKSURL != "" {
+		thunderJWKSForGS := jwtassertion.NewJWKSCache(cfg.JWKSURL)
+		serviceJWT = jwtassertion.Authenticator(jwtassertion.Config{
+			JWKS:                thunderJWKSForGS,
+			AllowedIssuers:      splitAndTrim(cfg.JWTAllowedIssuer),
+			AllowedAudiences:    splitAndTrim(cfg.JWTAllowedAudience),
+			ResourceMetadataURL: cfg.JWTResourceMetadataURL,
+		})
+	} else {
+		slog.Warn("JWKS_URL not set — git-service Service JWT verification disabled (dev/test only)")
+	}
+	if cfg.BFFJWKSURL != "" {
+		bffJWKS := jwtassertion.NewJWKSCache(cfg.BFFJWKSURL)
+		taskJWT = jwtassertion.Authenticator(jwtassertion.Config{
+			JWKS:                bffJWKS,
+			AllowedIssuers:      splitAndTrim(cfg.TaskJWTAllowedIssuer),
+			AllowedAudiences:    splitAndTrim(cfg.TaskJWTAllowedAudience),
+			ResourceMetadataURL: cfg.JWTResourceMetadataURL,
+		})
+	} else {
+		slog.Warn("BFF_JWKS_URL not set — Task JWT verification disabled (dev/test only)")
+	}
+
 	// Controllers
 	params := api.AppParams{
 		Config:                 cfg,
@@ -484,7 +802,7 @@ func main() {
 		TaskController: controllers.NewTaskController(
 			taskService,
 			dispatchSvc,
-			services.NewProgressService(taskService, componentClient, observerClient),
+			progressService(taskService, componentClient, observerClient, cgwClient, db),
 			componentClient,
 			taskTokens,
 		),
@@ -500,6 +818,27 @@ func main() {
 		JWKSController:         controllers.NewJWKSController(taskTokens),
 		ThunderJWKS:            thunderJWKS,
 		OrganizationService:    organizationService,
+
+		// Folded-in git-service surface
+		DB:                   db,
+		RepoCtrl:             repoCtrl,
+		GitOpsCtrl:           gitOpsCtrl,
+		IssueCtrl:            issueCtrl,
+		GitProjectCtrl:       gitProjectCtrl,
+		BranchCtrl:           branchCtrl,
+		PullRequestCtrl:      prCtrl,
+		WebhookRegCtrl:       webhookRegCtrl,
+		ArtifactCtrl:         artifactCtrlGit,
+		CredCtrl:             credRefreshCtrl,
+		RepoBoardCtrl:        repoBoardCtrl,
+		RepoService:          repoService,
+		RepoRepo:             repoRepo,
+		CredService:          credService,
+		BuildCredService:     buildCredService,
+		AnthropicCredService: anthropicCredService,
+		Validator:            credValidator,
+		ServiceJWT:           serviceJWT,
+		TaskJWT:              taskJWT,
 	}
 
 	slog.Info("OpenChoreo API", "baseURL", cfg.PlatformAPI.BaseURL)
@@ -535,6 +874,26 @@ func main() {
 	go codingAgentWatcher.Run(watcherCtx)
 	go onHoldWatcher.Run(watcherCtx)
 	go traitSyncWatcher.Run(watcherCtx)
+
+	// WS2.5 — proxy-based Job watcher. Polls per-task Jobs in the
+	// remote-worker NS via cluster-gateway-proxy and surfaces failures
+	// as task.status=failed. No-op when the proxy isn't configured
+	// (cgwClient nil); the legacy codingAgentWatcher above keeps
+	// running and watching the OC WorkflowRun side until WS2.6.
+	if cgwClient != nil {
+		jobWatcher := codingagent.NewJobWatcher(db, cgwClient)
+		go jobWatcher.Run(watcherCtx)
+		slog.Info("codingagent.JobWatcher: enabled (cluster-gateway-proxy configured)")
+	}
+
+	// Periodic credential validator (folded in from git-service). Walks
+	// every active org_credentials row once per
+	// cfg.CredentialValidatorInterval (default 24h), probes GitHub, and
+	// flags identity drift on confirmed unauthorised credentials.
+	go func() {
+		slog.Info("credential validator started", "interval", cfg.CredentialValidatorInterval)
+		credValidator.Run(watcherCtx)
+	}()
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -585,6 +944,51 @@ func buildAuthProvider(target string, c config.ServiceAuthConfig) *auth.AuthProv
 		ClientSecret: c.ClientSecret,
 		HostHeader:   c.HostHeader,
 	})
+}
+
+// splitAndTrim mirrors api.splitAndTrim — splits a comma-separated env
+// value into a list, dropping empty entries.
+func splitAndTrim(s string) []string {
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// progressService builds the BFF's progress service and, when the
+// cluster-gateway-proxy + DB are configured, wires the new-path log
+// source (cgw-proxy pods/log + coding_agent_logs sidecar) so tasks
+// dispatched via WS2.3 surface logs in the UI even though Observer's
+// hardcoded NS filter no longer applies. Tasks on the legacy
+// ClusterWorkflow path are unaffected — same Observer fallback.
+func progressService(
+	taskSvc services.TaskService,
+	ocClient openchoreo.ComponentClient,
+	observerClient observer.Client,
+	cgwClient *clustergatewayproxy.Client,
+	db *gorm.DB,
+) services.ProgressService {
+	svc := services.NewProgressService(taskSvc, ocClient, observerClient)
+	if cgwClient != nil && db != nil {
+		if setter, ok := svc.(interface {
+			WithCodingAgentLogSource(*clustergatewayproxy.Client, *gorm.DB) services.ProgressService
+		}); ok {
+			svc = setter.WithCodingAgentLogSource(cgwClient, db)
+			slog.Info("progress: cluster-gateway-proxy log source enabled (new-path ca-… runs)")
+		}
+	}
+	return svc
 }
 
 func setupLogger(level string) {
