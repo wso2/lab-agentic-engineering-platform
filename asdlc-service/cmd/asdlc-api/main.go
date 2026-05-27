@@ -502,9 +502,10 @@ func main() {
 	gitProjectCtrl := controllers.NewGitProjectController(githubV2Client, credResolver, repoService)
 	repoBoardCtrl := controllers.NewRepoBoardController(repoBoardService)
 
-	// Artifact store — PR 2 of repo-storage-ownership: HTTP-backed via
-	// git-service. The BFF no longer mounts /data/repos.
-	artifactStore := services.NewArtifactStore(gitClient)
+	// Artifact store — in-process via artifactSvcGit. Adds the
+	// external-API catalog + the `DesignFile` YAML split/assemble layer
+	// on top of raw file I/O.
+	artifactStore := services.NewArtifactStore(artifactSvcGit)
 
 	// Services. componentService is constructed before configService so
 	// configService can call back into it to mirror env-var edits onto
