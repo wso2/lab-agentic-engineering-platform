@@ -1,6 +1,6 @@
-// Pure rubric helper that mirrors the api.security classification rules
-// in prompt.ts ("API security classification (api.security)"). Kept as a
-// standalone function so the rubric is:
+// Pure rubric helper that mirrors the `exposesAPI` classification rules
+// in prompt.ts ("API security classification (`exposesAPI`)"). Kept as
+// a standalone function so the rubric is:
 //   1. Unit-testable in CI without an LLM round-trip.
 //   2. Available as a deterministic fallback (e.g. for non-LLM design
 //      paths the BFF emits).
@@ -10,13 +10,11 @@
 //
 // Returns:
 //   - 'required' when the description triggers any of the protected
-//     keyword families.
+//     keyword families. Callers should map this to
+//     `exposesAPI: { auth: end-user-required, userContext: X-User-Id }`.
 //   - 'none' when nothing triggers (the canonical "public" hint).
-//
-// Note: 'none' is the suggestion to OMIT the api block entirely (the
-// BFF reads absence as public — see services.ResolveAPISecurityEnabled).
-// Callers that wire this into a Component shape should drop the api
-// field when 'none' is returned, not emit `security: none`.
+//     Callers should OMIT the `exposesAPI` block entirely (the BFF
+//     reads absence as public — see services.ResolveAPISecurityEnabled).
 
 export type APISecurityHint = "required" | "none";
 
@@ -90,7 +88,7 @@ const PROTECTED_RULES: KeywordRule[] = [
 ];
 
 /**
- * Classify a free-form description against the api.security rubric.
+ * Classify a free-form description against the `exposesAPI` rubric.
  *
  * @param text Combined description: typically the component's
  *   `componentAgentInstructions` plus, when available, the relevant

@@ -176,7 +176,8 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 	specDiff := computeSpecDiff(prevSpec, specContent)
 
 	// T3: open Phase 1.
-	planReq := buildPlanRequest(projectID, specContent, design.Components, designDiff, specDiff, existingForPrompt, mode)
+	attachedDescs, resolvedSkills := s.resolveProjectSkills(ctx, orgID, design)
+	planReq := buildPlanRequest(projectID, specContent, design.Components, designDiff, specDiff, existingForPrompt, mode, attachedDescs)
 	planUpstream, err := s.agentsClient.StreamTechLeadPlan(ctx, orgID, planReq)
 	if err != nil {
 		return fmt.Errorf("plan upstream: %w", err)
@@ -214,7 +215,7 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 	slog.InfoContext(ctx, "tech-lead T5: phase 2 trigger",
 		"persisted", len(persisted), "survived", len(survived))
 	if len(survived) > 0 {
-		s.runPhase2(ctx, w, orgID, projectID, specContent, survived, design, allTasks, repoURL, repoSlug)
+		s.runPhase2(ctx, w, orgID, projectID, specContent, survived, design, allTasks, repoURL, repoSlug, resolvedSkills)
 	}
 
 	// T6: reconciliation.
@@ -247,8 +248,9 @@ func (s *taskService) runPhase2(
 	design *DesignFile,
 	allTasks []models.ComponentTask,
 	repoURL, repoSlug string,
+	resolvedSkills []agents.SkillRecord,
 ) {
-	detailReq := buildDetailRequest(projectID, specContent, survived, design, allTasks)
+	detailReq := buildDetailRequest(projectID, specContent, survived, design, allTasks, resolvedSkills)
 	slog.InfoContext(ctx, "tech-lead phase 2: opening detail stream", "items", len(detailReq.Items))
 
 	detailUpstream, err := s.agentsClient.StreamTechLeadDetail(ctx, orgID, detailReq)
@@ -718,7 +720,12 @@ func (s *taskService) RegenerateTaskBody(ctx context.Context, taskID string, out
 		TempID: "p-retry",
 		Task:   task,
 	}}
-	detailReq := buildDetailRequest(task.ProjectID, specContent, survived, design, allTasks)
+	// RetryTask path: re-resolve the project's attached skills from the
+	// live design. Snapshot-aware path (read from
+	// design_version_skill_snapshots for task.SourceDesignVersion) lands
+	// in PR 3 when the snapshot writer is wired.
+	_, resolvedSkills := s.resolveProjectSkills(ctx, task.OrgID, design)
+	detailReq := buildDetailRequest(task.ProjectID, specContent, survived, design, allTasks, resolvedSkills)
 	upstream, err := s.agentsClient.StreamTechLeadDetail(ctx, task.OrgID, detailReq)
 	if err != nil {
 		return fmt.Errorf("detail upstream: %w", err)
@@ -792,6 +799,7 @@ func buildPlanRequest(
 	specDiff string,
 	existingForPrompt []agents.TechLeadExistingTaskSummary,
 	mode string,
+	attachedSkills []agents.SkillDescription,
 ) agents.TechLeadPlanRequest {
 	slim := make([]agents.TechLeadSlimComponent, len(components))
 	for i, c := range components {
@@ -808,11 +816,12 @@ func buildPlanRequest(
 	}
 
 	req := agents.TechLeadPlanRequest{
-		ProjectName: projectName,
-		Spec:        spec,
-		SlimDesign:  slim,
-		Mode:        mode,
-		ExistingTasks: existingForPrompt,
+		ProjectName:    projectName,
+		Spec:           spec,
+		SlimDesign:     slim,
+		Mode:           mode,
+		ExistingTasks:  existingForPrompt,
+		AttachedSkills: attachedSkills,
 	}
 	if mode == "incremental" {
 		req.SpecDiff = specDiff
@@ -848,6 +857,7 @@ func buildDetailRequest(
 	persisted []persistedItem,
 	design *DesignFile,
 	allTasks []models.ComponentTask,
+	resolvedSkills []agents.SkillRecord,
 ) agents.TechLeadDetailRequest {
 	byName := make(map[string]models.DesignComponent, len(design.Components))
 	for _, c := range design.Components {
@@ -922,6 +932,7 @@ func buildDetailRequest(
 			DesignSlice:                designSlice,
 			DepSummaries:               depSummaries,
 			ExistingTitlesForComponent: existingTitles,
+			SkillsResolved:             resolvedSkills,
 		})
 	}
 	return agents.TechLeadDetailRequest{
@@ -929,6 +940,35 @@ func buildDetailRequest(
 		Spec:        spec,
 		Items:       items,
 	}
+}
+
+// resolveProjectSkills resolves the design's `skillsApplied` list into
+// (descriptions for the planner, full bodies for the detail phase).
+// Empty slices when SkillService isn't wired or skillsApplied is empty.
+// See docs/design/skills-system.md > "Tech-lead".
+func (s *taskService) resolveProjectSkills(ctx context.Context, orgID string, design *DesignFile) ([]agents.SkillDescription, []agents.SkillRecord) {
+	if s.skillSvc == nil || design == nil || len(design.SkillsApplied) == 0 {
+		return nil, nil
+	}
+	resolved, err := s.skillSvc.ResolveMany(ctx, orgID, design.SkillsApplied)
+	if err != nil {
+		slog.WarnContext(ctx, "tech-lead: skill resolve failed — continuing without", "orgID", orgID, "error", err)
+		return nil, nil
+	}
+	descs := make([]agents.SkillDescription, 0, len(resolved))
+	records := make([]agents.SkillRecord, 0, len(resolved))
+	for _, sk := range resolved {
+		descs = append(descs, agents.SkillDescription{
+			Name:        sk.Name,
+			Description: sk.Description,
+		})
+		records = append(records, agents.SkillRecord{
+			Name:        sk.Name,
+			Description: sk.Description,
+			Body:        sk.SkillMD,
+		})
+	}
+	return descs, records
 }
 
 // AssembleDesign is defined in artifact_store.go.

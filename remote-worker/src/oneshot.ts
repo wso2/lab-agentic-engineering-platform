@@ -20,6 +20,8 @@ import { openTaskLog } from "./lib/logger.js";
 import { isUUID, isSlug } from "./lib/uuid.js";
 import type { DispatchRequest } from "./lib/types.js";
 import { emit, primeScrubber } from "./lib/progress/emitter.js";
+import { pullTaskSkills } from "./lib/skills_pull.js";
+import { materializeSkills } from "./lib/skills_materializer.js";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -94,8 +96,45 @@ async function main(): Promise<number> {
 
   emit({ kind: "phase", phase: "workspace_ready" });
 
+  // Per-task skills — pull snapshotted SKILL.md bodies from the BFF,
+  // materialise into the AgentSkills plugin tree under
+  // .asdlc/skills-plugin/. Best-effort: failures log + continue
+  // (empty pull means runner loads the base asdlc plugin only).
+  // See docs/design/skills-system.md > "Coding agent".
+  let preloadBuiltinNames: string[] = [];
+  let skillsPluginDir: string | undefined;
+  const platformURL = process.env.ASDLC_PLATFORM_URL ?? "";
+  if (platformURL) {
+    try {
+      const skills = await pullTaskSkills({
+        platformURL,
+        taskId: req.taskId,
+        bearer: req.bearer,
+        correlationId: req.correlationId,
+      });
+      const result = await materializeSkills(layout.workspace, skills.skills);
+      if (result) {
+        skillsPluginDir = result.pluginDir;
+        preloadBuiltinNames = result.builtinNames;
+        console.log(
+          `[oneshot] materialised ${skills.skills.length} skill(s); preload=${preloadBuiltinNames.length} builtin(s)`,
+        );
+      } else {
+        console.log("[oneshot] no per-task skills to materialise");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[oneshot] skill pull/materialize failed — continuing without per-task plugin:", msg);
+    }
+  } else {
+    console.log("[oneshot] ASDLC_PLATFORM_URL not set — skipping per-task skills pull");
+  }
+
   const log = openTaskLog(layout.workspace);
-  const { completion } = runClaudeQuery(req, layout, log);
+  const { completion } = runClaudeQuery(req, layout, log, {
+    skillsPluginDir,
+    preloadBuiltinNames,
+  });
   const result = await completion;
   return result.exitCode;
 }

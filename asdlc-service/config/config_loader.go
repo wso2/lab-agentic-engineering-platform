@@ -41,7 +41,6 @@ func Load() (Config, error) {
 		GithubAppClientID:      r.readOptionalString("GITHUB_CLIENT_ID", ""),
 		BFFPublicURL:           r.readOptionalString("BFF_PUBLIC_URL", "http://localhost:8090"),
 		BuildAuthRetryBudget:   r.readOptionalInt("BUILD_AUTH_RETRY_BUDGET", 3),
-		FeatureEmitAPITrait:    r.readOptionalBool("FEATURE_EMIT_API_TRAIT", true),
 		ThunderAdmin: ThunderAdminConfig{
 			BaseURL:      r.readOptionalString("THUNDER_ADMIN_URL", ""),
 			ClientID:     r.readOptionalString("THUNDER_SYSTEM_CLIENT_ID", "asdlc-system-client"),
@@ -50,12 +49,6 @@ func Load() (Config, error) {
 		PlatformIDP: PlatformIDPDefaults{
 			Issuer:  r.readOptionalString("PLATFORM_IDP_ISSUER", "http://thunder.openchoreo.localhost:8080"),
 			JWKSURL: r.readOptionalString("PLATFORM_IDP_JWKS_URL", "http://thunder-service.thunder.svc.cluster.local:8090/oauth2/jwks"),
-		},
-		UserAppsOIDC: UserAppsOIDCConfig{
-			Issuer:            r.readOptionalString("USER_APPS_OIDC_ISSUER", "http://thunder.openchoreo.localhost:8080"),
-			ClientID:          r.readOptionalString("USER_APPS_OIDC_CLIENT_ID", ""),
-			Scopes:            r.readOptionalString("USER_APPS_OIDC_SCOPES", "openid profile"),
-			InternalProxyPass: r.readOptionalString("USER_APPS_OIDC_INTERNAL_PROXY_PASS", "http://thunder-service.thunder.svc.cluster.local:8090/oauth2/"),
 		},
 		TaskTokenSigningKey:    r.taskSigningKey(),
 		TaskTokenIssuer:        r.readOptionalString("BFF_TASK_TOKEN_ISSUER", "asdlc-bff"),

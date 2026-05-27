@@ -8,23 +8,45 @@ import (
 
 func TestResolveAPISecurityEnabled(t *testing.T) {
 	cases := []struct {
-		name string
-		api  *models.APISecurity
-		want bool
+		name    string
+		exposes *models.ExposesAPI
+		want    bool
 	}{
 		{"nil block", nil, false},
-		{"empty security", &models.APISecurity{Security: ""}, false},
-		{"none", &models.APISecurity{Security: "none"}, false},
-		{"required", &models.APISecurity{Security: "required"}, true},
-		{"REQUIRED — case insensitive", &models.APISecurity{Security: "REQUIRED"}, true},
-		{"whitespace tolerant", &models.APISecurity{Security: "  required  "}, true},
-		{"unrecognised value defensive false", &models.APISecurity{Security: "yes"}, false},
+		{"empty auth", &models.ExposesAPI{Auth: ""}, false},
+		{"none", &models.ExposesAPI{Auth: "none"}, false},
+		{"end-user-required", &models.ExposesAPI{Auth: "end-user-required"}, true},
+		{"service-required", &models.ExposesAPI{Auth: "service-required"}, true},
+		{"whitespace tolerant", &models.ExposesAPI{Auth: "  end-user-required  "}, true},
+		{"unrecognised value defensive false", &models.ExposesAPI{Auth: "yes"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := ResolveAPISecurityEnabled(models.DesignComponent{Api: c.api})
+			got := ResolveAPISecurityEnabled(models.DesignComponent{ExposesAPI: c.exposes})
 			if got != c.want {
 				t.Fatalf("got %v, want %v", got, c.want)
+			}
+		})
+	}
+}
+
+func TestResolveAPISecurityCallerKind(t *testing.T) {
+	cases := []struct {
+		name    string
+		exposes *models.ExposesAPI
+		want    string
+	}{
+		{"nil block", nil, ""},
+		{"none", &models.ExposesAPI{Auth: "none"}, ""},
+		{"end-user-required", &models.ExposesAPI{Auth: "end-user-required"}, "end-user"},
+		{"service-required", &models.ExposesAPI{Auth: "service-required"}, "service"},
+		{"unrecognised", &models.ExposesAPI{Auth: "yes"}, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := ResolveAPISecurityCallerKind(models.DesignComponent{ExposesAPI: c.exposes})
+			if got != c.want {
+				t.Fatalf("got %q, want %q", got, c.want)
 			}
 		})
 	}

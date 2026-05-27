@@ -51,6 +51,7 @@ import {
   projectCreatePath,
 } from '../lib/paths';
 import { resolveOuHandle } from '../utils/orgClaims';
+import wso2LogoUrl from '../assets/wso2-logo.svg';
 
 export default function AsdlcLayout() {
   const navigate = useNavigate();
@@ -291,23 +292,40 @@ export default function AsdlcLayout() {
     <AppShell>
       <AppShell.Navbar>
         <Header>
-          <Header.Toggle collapsed={collapsed} onToggle={() => setCollapsed((prev) => !prev)} />
-
           <Header.Brand>
             <Stack
-              direction="column"
+              component="button"
+              type="button"
+              direction="row"
+              alignItems="center"
+              gap={1}
               onClick={() => navigate(organizationOverviewPath(routeOrgId))}
-              sx={{ cursor: 'pointer', lineHeight: 1 }}
+              sx={{
+                cursor: 'pointer',
+                lineHeight: 1,
+                background: 'none',
+                border: 0,
+                p: 0,
+                m: 0,
+                textAlign: 'left',
+              }}
             >
-              <Box component="span" sx={{ lineHeight: 1.1, whiteSpace: 'nowrap' }}>
-                <Box component="span" sx={{ fontWeight: 700, fontSize: '1.25rem' }}>WSO2</Box>
-                <Box component="span" sx={{ fontWeight: 400, fontSize: '1rem' }}> Labs</Box>
-
-              </Box>
-              <Box component="span" sx={{ fontSize: '0.95rem', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
-                <Box component="span" sx={{ fontWeight: 700 }}>Agentic</Box>
-                <Box component="span" sx={{ fontWeight: 400 }}> Engineer</Box>
-              </Box>
+              <Box
+                component="img"
+                src={wso2LogoUrl}
+                alt="WSO2"
+                sx={{ height: 36, width: 36, display: 'block' }}
+              />
+              <Stack direction="column" sx={{ lineHeight: 1 }}>
+                <Box component="span" sx={{ lineHeight: 1.1, whiteSpace: 'nowrap' }}>
+                  <Box component="span" sx={{ fontWeight: 700, fontSize: '1.25rem' }}>WSO2</Box>
+                  <Box component="span" sx={{ fontWeight: 400, fontSize: '1rem' }}> Labs</Box>
+                </Box>
+                <Box component="span" sx={{ fontSize: '0.95rem', lineHeight: 1.1, whiteSpace: 'nowrap' }}>
+                  <Box component="span" sx={{ fontWeight: 700 }}>Agentic</Box>
+                  <Box component="span" sx={{ fontWeight: 400 }}> Engineer</Box>
+                </Box>
+              </Stack>
             </Stack>
           </Header.Brand>
 

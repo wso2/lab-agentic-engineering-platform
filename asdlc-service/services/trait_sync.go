@@ -19,7 +19,7 @@ import (
 //  1. Dispatch path (`dispatch_service.go`): after CreateComponent so a
 //     newly-protected component lands with traits set immediately.
 //  2. Design edit path (`design_service.UpdateDesignFile`): after the
-//     user toggles `api.security` on `design.md` so the trait shape
+//     user toggles `exposesAPI.auth` on `design.md` so the trait shape
 //     propagates without waiting for the next dispatch.
 //
 // Concurrency: every call acquires a per-component mutex keyed by
@@ -43,11 +43,6 @@ import (
 type TraitSyncService struct {
 	componentClient openchoreo.ComponentClient
 	store           *ArtifactStore
-	// enabled gates the Phase 2 emit/reconcile path. When false the
-	// service no-ops every method so dispatch + design PUT + watcher
-	// behave like pre-Phase-2. Set at construction via the
-	// FEATURE_EMIT_API_TRAIT config flag (config.Config.FeatureEmitAPITrait).
-	enabled bool
 	// idp, when non-nil, is invoked on every protected reconcile to
 	// lazily ensure the org's Thunder publisher app exists. Failures
 	// are logged but don't block the trait emit — the API stays
@@ -69,23 +64,12 @@ func (s *TraitSyncService) SetIDPService(idp IDPService) {
 	s.idp = idp
 }
 
-func NewTraitSyncService(componentClient openchoreo.ComponentClient, store *ArtifactStore, enabled bool) *TraitSyncService {
+func NewTraitSyncService(componentClient openchoreo.ComponentClient, store *ArtifactStore) *TraitSyncService {
 	return &TraitSyncService{
 		componentClient: componentClient,
 		store:           store,
-		enabled:         enabled,
 		locks:           make(map[string]*sync.Mutex),
 	}
-}
-
-// Enabled reports whether trait emission is gated on (FEATURE_EMIT_API_TRAIT).
-// Exposed so callers (watcher init, controllers) can suppress related logging
-// or metrics when the feature is off.
-func (s *TraitSyncService) Enabled() bool {
-	if s == nil {
-		return false
-	}
-	return s.enabled
 }
 
 // SyncComponentTraits reconciles the OC Component CR + its ReleaseBindings
@@ -106,7 +90,7 @@ func (s *TraitSyncService) Enabled() bool {
 // log and continue (the design tree is the canonical source; the watcher
 // will reconcile on the next sweep).
 func (s *TraitSyncService) SyncComponentTraits(ctx context.Context, orgID, projectID, componentName string) error {
-	if s == nil || !s.enabled {
+	if s == nil {
 		return nil
 	}
 	if orgID == "" || projectID == "" || componentName == "" {
@@ -171,7 +155,26 @@ func (s *TraitSyncService) SyncComponentTraits(ctx context.Context, orgID, proje
 		}
 	}
 
-	traits, configs := DesiredAPIConfigurationTraitWithIssuers(componentName, desiredEnabled, issuers)
+	// Sibling-CORS: when this component is a service exposing a managed
+	// API to BROWSER callers (end-user-required), populate
+	// `cors.allowedOrigins` with every external web-app component in
+	// the same project. Service-to-service APIs (`service-required`)
+	// have no browser caller — emitting SPA origins there would
+	// unnecessarily widen the CORS surface.
+	//
+	// If a sibling lookup fails transiently, return the error to the
+	// caller (the watcher retries) — a partial allowlist would silently
+	// block the missing SPA's preflight.
+	var allowedOrigins []string
+	if desiredEnabled && ResolveAPISecurityCallerKind(*match) == "end-user" {
+		origins, originsErr := s.siblingSPAOrigins(ctx, orgID, projectID, design)
+		if originsErr != nil {
+			return fmt.Errorf("trait_sync: sibling SPA origins: %w", originsErr)
+		}
+		allowedOrigins = origins
+	}
+
+	traits, configs := DesiredAPIConfigurationTraitWithIssuers(componentName, desiredEnabled, issuers, allowedOrigins)
 
 	// Patch the Component CR's spec.traits. Skip when there's nothing to
 	// change — but the OC client's GET-then-PUT is harmless so we always
@@ -239,14 +242,127 @@ func (s *TraitSyncService) DeleteComponentCascade(ctx context.Context, orgID, pr
 		return fmt.Errorf("trait_sync: delete component: %w", err)
 	}
 
-	if s.enabled {
-		slog.InfoContext(ctx, "trait_sync: component deleted; OC RenderedRelease finalizer GCs trait resources",
-			"orgID", orgID,
-			"projectID", projectID,
-			"componentName", componentName,
-		)
+	slog.InfoContext(ctx, "trait_sync: component deleted; OC RenderedRelease finalizer GCs trait resources",
+		"orgID", orgID,
+		"projectID", projectID,
+		"componentName", componentName,
+	)
+	return nil
+}
+
+// SyncProjectAPITraits re-emits `api-configuration` trait state on every
+// service component in the project whose design has `exposesAPI.auth: end-user-required`.
+// Called from the dispatch path so that when ANY component lands `deployed`
+// (and especially a freshly-added SPA), every protected API in the project
+// picks up the new sibling origin in its `cors.allowedOrigins`. Without
+// this, stale CORS silently breaks preflight for newly added SPAs.
+//
+// Idempotent + best-effort: a failure on one component logs and continues
+// to the next. Returns nil unless reading design itself fails (no design ⇒
+// nothing to reconcile, returns nil).
+func (s *TraitSyncService) SyncProjectAPITraits(ctx context.Context, orgID, projectID string) error {
+	if s == nil {
+		return nil
+	}
+	if orgID == "" || projectID == "" {
+		return fmt.Errorf("trait_sync: empty orgID/projectID")
+	}
+	design, err := s.store.ReadDesign(ctx, orgID, projectID)
+	if err != nil {
+		if IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("trait_sync: read design: %w", err)
+	}
+	if design == nil {
+		return nil
+	}
+	for _, c := range design.Components {
+		if c.ComponentType != "service" {
+			continue
+		}
+		if !ResolveAPISecurityEnabled(c) {
+			continue
+		}
+		k8sName := toK8sName(c.Name)
+		if err := s.SyncComponentTraits(ctx, orgID, projectID, k8sName); err != nil {
+			slog.WarnContext(ctx, "trait_sync: sibling re-emit failed; continuing",
+				"orgID", orgID,
+				"projectID", projectID,
+				"componentName", k8sName,
+				"error", err,
+			)
+		}
 	}
 	return nil
+}
+
+// siblingSPAOrigins returns the external SPA origins for every web-app
+// component declared in the project's design. Used as `cors.allowedOrigins`
+// on protected API ReleaseBindings (sibling-CORS rule). Pulls live URLs
+// from OC ListDeployments.
+//
+// When a SPA's lookup ERRORS transiently, the function returns the
+// error rather than silently dropping that SPA — a partial allowlist
+// would commit a CORS list that blocks the missing SPA's preflight.
+// When a SPA simply hasn't deployed yet (no items, no error), it
+// contributes nothing — the next cascade tick will pick it up. The
+// returned slice is empty when no SPA exists yet in the project — the
+// caller treats that as wildcard-CORS-fallback to keep dev curl
+// working.
+func (s *TraitSyncService) siblingSPAOrigins(ctx context.Context, orgID, projectID string, design *DesignFile) ([]string, error) {
+	if s.componentClient == nil || design == nil {
+		return nil, nil
+	}
+	origins := make([]string, 0, len(design.Components))
+	seen := make(map[string]struct{}, len(design.Components))
+	for _, c := range design.Components {
+		if c.ComponentType != "web-app" {
+			continue
+		}
+		k8sName := toK8sName(c.Name)
+		list, err := s.componentClient.ListDeployments(ctx, orgID, projectID, k8sName)
+		if err != nil {
+			return nil, fmt.Errorf("list deployments for %q: %w", c.Name, err)
+		}
+		if list == nil {
+			continue
+		}
+		for _, d := range list.Items {
+			origin := originFromEndpointURL(d.EndpointURL)
+			if origin == "" {
+				continue
+			}
+			if _, ok := seen[origin]; ok {
+				continue
+			}
+			seen[origin] = struct{}{}
+			origins = append(origins, origin)
+		}
+	}
+	return origins, nil
+}
+
+// originFromEndpointURL extracts the scheme+host+port prefix from a
+// ListDeployments-style URL like `http://todo-web-...localhost:19080/`.
+// Returns "" when parsing fails — callers skip empty origins.
+func originFromEndpointURL(u string) string {
+	if u == "" {
+		return ""
+	}
+	// Trim path/query: keep scheme://authority only.
+	// Manual scan to avoid pulling net/url for this hot path.
+	const sep = "://"
+	i := strings.Index(u, sep)
+	if i < 0 {
+		return ""
+	}
+	rest := u[i+len(sep):]
+	end := strings.IndexAny(rest, "/?#")
+	if end < 0 {
+		return u
+	}
+	return u[:i+len(sep)+end]
 }
 
 func (s *TraitSyncService) lockFor(orgID, projectID, componentName string) *sync.Mutex {
@@ -277,11 +393,12 @@ func APIConfigurationInstanceName(componentName string) string {
 }
 
 // DesiredAPIConfigurationTrait — convenience shim that calls
-// DesiredAPIConfigurationTraitWithIssuers with no issuer pinning.
+// DesiredAPIConfigurationTraitWithIssuers with no issuer pinning and
+// no sibling origins (wildcard CORS).
 // Existing callers (tests, single-IDP code paths) get the same shape
 // as before.
 func DesiredAPIConfigurationTrait(componentName string, enabled bool) (traits []models.ComponentTrait, configs map[string]map[string]interface{}) {
-	return DesiredAPIConfigurationTraitWithIssuers(componentName, enabled, nil)
+	return DesiredAPIConfigurationTraitWithIssuers(componentName, enabled, nil, nil)
 }
 
 // DesiredAPIConfigurationTraitWithIssuers returns the BFF-internal
@@ -292,10 +409,17 @@ func DesiredAPIConfigurationTrait(componentName string, enabled bool) (traits []
 // `enabled` is false, the function returns nil + a tombstone entry to
 // strip any previously-set config.
 //
+// `allowedOrigins` (Phase 1) lists the SPA hostnames the gateway should
+// echo on CORS preflight. Empty/nil falls back to the trait schema's
+// default of `["*"]` (wildcard, allowCredentials=false). When non-empty
+// the BFF sets `allowCredentials: true` so browsers can send the
+// `Authorization: Bearer …` header on cross-origin fetches (the WSO2
+// platform forbids the `*` + credentials combo).
+//
 // `configs` is keyed by trait instance name; the value is the parameters
 // block that lands at `ReleaseBinding.spec.traitEnvironmentConfigs[<inst>]`.
 // The shape (cors / jwtAuth) matches the trait's environmentConfigSchema.
-func DesiredAPIConfigurationTraitWithIssuers(componentName string, enabled bool, issuers []string) (traits []models.ComponentTrait, configs map[string]map[string]interface{}) {
+func DesiredAPIConfigurationTraitWithIssuers(componentName string, enabled bool, issuers []string, allowedOrigins []string) (traits []models.ComponentTrait, configs map[string]map[string]interface{}) {
 	inst := APIConfigurationInstanceName(componentName)
 	if !enabled {
 		// Clear both: empty traits + empty config marks the instance for
@@ -316,19 +440,29 @@ func DesiredAPIConfigurationTraitWithIssuers(componentName string, enabled bool,
 	for _, iss := range issuers {
 		issuersIface = append(issuersIface, iss)
 	}
+	cors := map[string]interface{}{
+		"enabled": true,
+	}
+	if len(allowedOrigins) > 0 {
+		originsIface := make([]interface{}, 0, len(allowedOrigins))
+		for _, o := range allowedOrigins {
+			originsIface = append(originsIface, o)
+		}
+		cors["allowedOrigins"] = originsIface
+		cors["allowedMethods"] = []interface{}{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"}
+		cors["allowedHeaders"] = []interface{}{"Authorization", "Content-Type", "Accept", "Origin"}
+		cors["allowCredentials"] = true
+	}
 	configs = map[string]map[string]interface{}{
 		inst: {
-			"cors": map[string]interface{}{
-				"enabled": true,
-			},
+			"cors": cors,
 			"jwtAuth": map[string]interface{}{
 				"enabled": true,
-				// Phase 6 — the trait now emits `jwt-auth v1` which
-				// accepts `issuers` + `audience` arrays. Empty issuers
-				// mean "no per-RestApi filter; trust any cluster-
-				// configured keymanager" (Phase 6 default). Phase 7
-				// (BYO-IDP) populates these from the org's IDP profile
-				// so each protected API only trusts its org's IDP.
+				// jwt-auth v1 accepts `issuers` + `audience` arrays. Empty
+				// issuers means "no per-RestApi filter; trust any cluster-
+				// configured keymanager". BYO-IDP orgs populate this from
+				// the org's IDP profile so each protected API only trusts
+				// its org's IDP.
 				"issuers":  issuersIface,
 				"audience": []interface{}{},
 			},

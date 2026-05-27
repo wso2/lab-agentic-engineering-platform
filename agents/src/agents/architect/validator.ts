@@ -46,19 +46,16 @@ export function validate(doc: DesignDoc): ValidationIssue[] {
   return issues;
 }
 
-// V1-hardened: every web-app whose dependsOn is non-empty MUST mention each
-// upstream's expected env var name in componentAgentInstructions so the
-// coding agent knows which VITE_<UPSTREAM>_URL key to write into .env at
-// build time. This catches the silent-fallback bug class at design time
-// rather than at user-discovery time.
+// Phase 1+ runtime-config: every web-app whose dependsOn is non-empty MUST
+// mention each upstream's runtime config key in componentAgentInstructions
+// so the coding agent knows which `window._env_.<UPSTREAM>_URL` key to
+// read at runtime. This catches the silent-fallback bug class at design
+// time rather than at user-discovery time.
 //
 // Pattern enforced: for each upstream `<name>` in dependsOn (when the
 // upstream is itself a `service` component — web-apps don't expose URLs to
 // other web-apps), componentAgentInstructions must contain a literal
-// `VITE_<NAME_UPPER_SNAKE>_URL` substring. The match is intentionally loose
-// (substring, not regex on surrounding context) — the architect's prompt
-// gives the exact phrasing; this validator just confirms the env var name
-// landed somewhere the coding agent will see.
+// `window._env_.<NAME_UPPER_SNAKE>_URL` substring.
 function validateWebUpstreamWiring(
   doc: DesignDoc,
   issues: ValidationIssue[],
@@ -76,14 +73,14 @@ function validateWebUpstreamWiring(
       if (!upstreamEntry) continue;
       if (upstreamEntry.slim.componentType !== "service") continue;
 
-      const envVarName = `VITE_${toUpperSnake(upstream)}_URL`;
-      if (!instructions.includes(envVarName)) {
+      const envKey = `window._env_.${toUpperSnake(upstream)}_URL`;
+      if (!instructions.includes(envKey)) {
         issues.push({
           component: name,
           code: "missing-upstream-env-binding",
           upstream,
-          envVar: envVarName,
-          hint: `web-app '${name}' depends on service '${upstream}' but componentAgentInstructions does not mention '${envVarName}'. Add a line like "Upstream ${upstream}: env var ${envVarName} — fill in .env at build time from the issue's '## Dependency endpoint resolved' comment for ${upstream}." so the coding agent writes the .env key correctly.`,
+          envKey,
+          hint: `web-app '${name}' depends on service '${upstream}' but componentAgentInstructions does not mention '${envKey}'. Add a line like "Upstream ${upstream}: read the URL from \`${envKey}\` via \`src/env.ts\`. Throw (no \`?? "" \` fallback) on missing." so the coding agent reads the runtime config correctly.`,
         });
       }
     }

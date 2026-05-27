@@ -5,7 +5,7 @@ import {
   matchingFamilies,
 } from "./security-classifier.js";
 
-// Golden tests for the api.security rubric from prompt.ts. These are the
+// Golden tests for the `exposesAPI` rubric from prompt.ts. These are the
 // canonical examples the architect agent is expected to handle the same
 // way. When the rubric changes, update these tests AND the prompt — they
 // must move together. Five cases cover one path each:

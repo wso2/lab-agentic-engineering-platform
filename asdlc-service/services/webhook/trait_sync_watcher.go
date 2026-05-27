@@ -59,8 +59,7 @@ type tupleFailure struct {
 
 // NewTraitSyncWatcher builds a watcher. tokenInject is optional — when
 // non-nil it adds the BFF's service-credential token to outbound OC
-// calls. The watcher silently no-ops every tick when traitSync is
-// disabled (FEATURE_EMIT_API_TRAIT=false).
+// calls.
 func NewTraitSyncWatcher(
 	db *gorm.DB,
 	traitSync *services.TraitSyncService,
@@ -79,8 +78,8 @@ func NewTraitSyncWatcher(
 
 // Run blocks until ctx is cancelled. Spawned as a goroutine from main.
 func (w *TraitSyncWatcher) Run(ctx context.Context) {
-	if w.traitSync == nil || !w.traitSync.Enabled() {
-		slog.InfoContext(ctx, "trait_sync watcher: disabled (FEATURE_EMIT_API_TRAIT=false)")
+	if w.traitSync == nil {
+		slog.InfoContext(ctx, "trait_sync watcher: traitSync nil; not starting")
 		return
 	}
 	ticker := time.NewTicker(w.tick)

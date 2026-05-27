@@ -24,10 +24,28 @@ export interface StartedRun {
   completion: Promise<RunResult>;
 }
 
+// PerTaskSkills carries the materialised AgentSkills plugin into the SDK
+// query options. PR 3 of docs/design/skills-system.md.
+//
+// `skillsPluginDir` is the absolute path to .asdlc/skills-plugin/. If
+// set, runner.ts adds a second `{type:"local"}` plugin entry pointing
+// at it. `preloadBuiltinNames` lists the materialised names of every
+// `kind: builtin` skill in that plugin, which we push into the SDK's
+// `skills:` array so their full bodies inject at startup. Custom and
+// imported skills sit in the same plugin and surface via the SDK's
+// standard skill listing (description in context, body on invoke) —
+// they are NOT in the preload array. See the design doc's
+// "Why skills: <built-in names> and not skills: 'all'" rationale.
+export interface PerTaskSkills {
+  skillsPluginDir?: string;
+  preloadBuiltinNames: string[];
+}
+
 export function runClaudeQuery(
   req: DispatchRequest,
   layout: WorkspaceLayout,
   log: TaskLog,
+  perTaskSkills?: PerTaskSkills,
 ): StartedRun {
   // Spawn env: bearer + git-service URL passed by file path / URL only.
   // No tokens cross via env, so transcripts cannot leak credentials.
@@ -49,6 +67,24 @@ export function runClaudeQuery(
     ASDLC_CORRELATION_ID: req.correlationId ?? "",
   };
 
+  // Two-tier plugin list: the base `asdlc` plugin (workflow + base
+  // conventions) is always loaded; the per-task `asdlc-task-skills`
+  // plugin (project-attached skills) is loaded conditionally when
+  // workspace.ts materialised it. Per-task built-ins land in the
+  // `skills:` preload so the SDK injects their full bodies at startup;
+  // custom + imported sit in the same plugin and surface via the SDK's
+  // standard discovery (description in context, body on invoke).
+  const plugins: Array<{ type: "local"; path: string }> = [
+    { type: "local", path: PLUGIN_PATH },
+  ];
+  const skillPreload: string[] = ["asdlc:asdlc"];
+  if (perTaskSkills?.skillsPluginDir) {
+    plugins.push({ type: "local", path: perTaskSkills.skillsPluginDir });
+    for (const name of perTaskSkills.preloadBuiltinNames) {
+      skillPreload.push(`asdlc-task-skills:${name}`);
+    }
+  }
+
   // SDK v0.2.126 auto-discovers the bundled native binary — no
   // pathToClaudeCodeExecutable needed. settingSources: [] ensures no
   // host filesystem settings leak into the container agent.
@@ -56,7 +92,10 @@ export function runClaudeQuery(
     prompt: req.prompt,
     options: {
       cwd: layout.workspace,
-      plugins: [{ type: "local", path: PLUGIN_PATH }],
+      plugins,
+      // Force built-in skill bodies into context at startup. Do NOT
+      // replace with 'all' — see docs/design/skills-system.md.
+      skills: skillPreload as unknown as string[],
       allowedTools: ALLOWED_TOOLS,
       permissionMode: "bypassPermissions",
       allowDangerouslySkipPermissions: true,

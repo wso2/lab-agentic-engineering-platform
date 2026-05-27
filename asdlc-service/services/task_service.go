@@ -61,6 +61,17 @@ type taskService struct {
 	gitClient     gitservice.Client    // for committing and pushing code after implementation
 	agentsClient  agents.Client        // for calling tech-lead agent (plan + detail)
 	dbClient      dbclient.Client      // for provisioning and testing databases
+	// skillSvc resolves the per-org skill catalogue for tech-lead plan
+	// (attached-skills context) + detail (full bodies). Snapshot writes
+	// to design_version_skill_snapshots also go through here. Optional
+	// in tests; nil → tech-lead runs with no skills attached.
+	skillSvc *SkillService
+}
+
+// SetSkillService wires the skills catalogue + snapshot writer.
+// Mirrors the SetTraitSync setter pattern.
+func (s *taskService) SetSkillService(svc *SkillService) {
+	s.skillSvc = svc
 }
 
 func NewTaskService(
@@ -333,6 +344,20 @@ func (s *taskService) ensureIssueForTask(
 	}
 	if s.gitClient == nil {
 		return fmt.Errorf("git client not configured")
+	}
+
+	// SNAPSHOT — freeze the project's currently-attached skills' bodies
+	// at (project_id, design_version) so the dispatched agent's
+	// workspace materialises the same content the tech-lead used. Idempotent:
+	// no-op when a snapshot already exists for the key. Best-effort —
+	// failures log but don't block issue creation, so a missing snapshot
+	// just produces an empty preload set on dispatch (same effective
+	// behaviour as today).
+	if s.skillSvc != nil && task.SourceDesignVersion != "" {
+		if err := snapshotProjectSkills(ctx, s.db, s.store, s.skillSvc, task.OrgID, task.ProjectID, task.SourceDesignVersion); err != nil {
+			slog.WarnContext(ctx, "ensureIssueForTask: skill snapshot failed — continuing",
+				"task", task.ID, "designVersion", task.SourceDesignVersion, "error", err)
+		}
 	}
 
 	// The agent owns branch + PR creation, so the issue body intentionally

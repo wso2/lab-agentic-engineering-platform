@@ -60,6 +60,9 @@ var _ openchoreo.ComponentClient = &ComponentClientMock{}
 //			UpdateComponentWorkflowEnvVarsFunc: func(ctx context.Context, orgName string, projectName string, componentName string, envVars []models.WorkflowEnvVarRef) error {
 //				panic("mock out the UpdateComponentWorkflowEnvVars method")
 //			},
+//			UpdateComponentWorkflowFilesFunc: func(ctx context.Context, orgName string, projectName string, componentName string, files []models.WorkflowFileVar) error {
+//				panic("mock out the UpdateComponentWorkflowFiles method")
+//			},
 //		}
 //
 //		// use mockedComponentClient in code that requires openchoreo.ComponentClient
@@ -105,6 +108,9 @@ type ComponentClientMock struct {
 
 	// UpdateComponentWorkflowEnvVarsFunc mocks the UpdateComponentWorkflowEnvVars method.
 	UpdateComponentWorkflowEnvVarsFunc func(ctx context.Context, orgName string, projectName string, componentName string, envVars []models.WorkflowEnvVarRef) error
+
+	// UpdateComponentWorkflowFilesFunc mocks the UpdateComponentWorkflowFiles method.
+	UpdateComponentWorkflowFilesFunc func(ctx context.Context, orgName string, projectName string, componentName string, files []models.WorkflowFileVar) error
 
 	// calls tracks calls to the methods.
 	calls struct {
@@ -263,6 +269,19 @@ type ComponentClientMock struct {
 			// EnvVars is the envVars argument value.
 			EnvVars []models.WorkflowEnvVarRef
 		}
+		// UpdateComponentWorkflowFiles holds details about calls to the UpdateComponentWorkflowFiles method.
+		UpdateComponentWorkflowFiles []struct {
+			// Ctx is the ctx argument value.
+			Ctx context.Context
+			// OrgName is the orgName argument value.
+			OrgName string
+			// ProjectName is the projectName argument value.
+			ProjectName string
+			// ComponentName is the componentName argument value.
+			ComponentName string
+			// Files is the files argument value.
+			Files []models.WorkflowFileVar
+		}
 	}
 	lockCreateComponent                        sync.RWMutex
 	lockDeleteComponent                        sync.RWMutex
@@ -277,6 +296,7 @@ type ComponentClientMock struct {
 	lockUpdateComponentTraitEnvironmentConfigs sync.RWMutex
 	lockUpdateComponentTraits                  sync.RWMutex
 	lockUpdateComponentWorkflowEnvVars         sync.RWMutex
+	lockUpdateComponentWorkflowFiles           sync.RWMutex
 }
 
 // CreateComponent calls CreateComponentFunc.
@@ -872,5 +892,53 @@ func (mock *ComponentClientMock) UpdateComponentWorkflowEnvVarsCalls() []struct 
 	mock.lockUpdateComponentWorkflowEnvVars.RLock()
 	calls = mock.calls.UpdateComponentWorkflowEnvVars
 	mock.lockUpdateComponentWorkflowEnvVars.RUnlock()
+	return calls
+}
+
+// UpdateComponentWorkflowFiles calls UpdateComponentWorkflowFilesFunc.
+func (mock *ComponentClientMock) UpdateComponentWorkflowFiles(ctx context.Context, orgName string, projectName string, componentName string, files []models.WorkflowFileVar) error {
+	if mock.UpdateComponentWorkflowFilesFunc == nil {
+		panic("ComponentClientMock.UpdateComponentWorkflowFilesFunc: method is nil but ComponentClient.UpdateComponentWorkflowFiles was just called")
+	}
+	callInfo := struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+		Files         []models.WorkflowFileVar
+	}{
+		Ctx:           ctx,
+		OrgName:       orgName,
+		ProjectName:   projectName,
+		ComponentName: componentName,
+		Files:         files,
+	}
+	mock.lockUpdateComponentWorkflowFiles.Lock()
+	mock.calls.UpdateComponentWorkflowFiles = append(mock.calls.UpdateComponentWorkflowFiles, callInfo)
+	mock.lockUpdateComponentWorkflowFiles.Unlock()
+	return mock.UpdateComponentWorkflowFilesFunc(ctx, orgName, projectName, componentName, files)
+}
+
+// UpdateComponentWorkflowFilesCalls gets all the calls that were made to UpdateComponentWorkflowFiles.
+// Check the length with:
+//
+//	len(mockedComponentClient.UpdateComponentWorkflowFilesCalls())
+func (mock *ComponentClientMock) UpdateComponentWorkflowFilesCalls() []struct {
+	Ctx           context.Context
+	OrgName       string
+	ProjectName   string
+	ComponentName string
+	Files         []models.WorkflowFileVar
+} {
+	var calls []struct {
+		Ctx           context.Context
+		OrgName       string
+		ProjectName   string
+		ComponentName string
+		Files         []models.WorkflowFileVar
+	}
+	mock.lockUpdateComponentWorkflowFiles.RLock()
+	calls = mock.calls.UpdateComponentWorkflowFiles
+	mock.lockUpdateComponentWorkflowFiles.RUnlock()
 	return calls
 }

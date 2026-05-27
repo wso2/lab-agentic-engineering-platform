@@ -34,6 +34,7 @@ type AppParams struct {
 	WebhookController      controllers.WebhookController
 	OrgGitHubController    controllers.OrgGitHubController
 	OrgAnthropicController controllers.OrgAnthropicController
+	SkillController        controllers.SkillController
 	OrganizationController controllers.OrganizationController
 	IDPController          controllers.IDPController
 	JWKSController         controllers.JWKSController
@@ -136,6 +137,9 @@ func NewHandler(params AppParams) http.Handler {
 	if params.OrgAnthropicController != nil {
 		registerOrgAnthropicRoutes(apiMux, params.OrgAnthropicController)
 	}
+	if params.SkillController != nil {
+		registerSkillRoutes(apiMux, params.SkillController)
+	}
 	if params.IDPController != nil {
 		registerIDPRoutes(apiMux, params.IDPController)
 	}
@@ -155,6 +159,11 @@ func NewHandler(params AppParams) http.Handler {
 	// handler with the per-task RS256 bearer the runner already holds.
 	if params.TaskController != nil {
 		mux.HandleFunc("POST /api/v1/tasks/{taskId}/verification-failed", params.TaskController.VerificationFailed)
+		// Per-task skills pull endpoint — runner pod fetches its
+		// snapshotted SKILL.md bodies at init time. Outside the Thunder
+		// JWT path, authenticated inside the handler with the per-task
+		// RS256 bearer the runner already holds.
+		mux.HandleFunc("GET /api/v1/tasks/{taskId}/skills", params.TaskController.Skills)
 	}
 
 	// App-mode connect callback — outside JWT. The signed connect-state JWT

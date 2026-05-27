@@ -15,39 +15,6 @@ import (
 // read paths are tested implicitly via the E2E console flow + the unit
 // tests for DesiredAPIConfigurationTrait / componentNameFromDesignPath.
 
-// TestTraitSync_FeatureFlag_SyncIsNoOp — when FEATURE_EMIT_API_TRAIT is
-// false, SyncComponentTraits short-circuits without reading design.md
-// or touching OC. Dispatch + design PUT call sites are unchanged, but
-// the emit work is effectively disabled. This is the rollout safety
-// net per §14 of the plan.
-//
-// Note: DeleteComponentCascade is INTENTIONALLY not gated by the flag
-// — deleting an OC Component CR is desirable regardless of whether the
-// platform is currently emitting traits (the Component may have been
-// created before the flag was toggled, and we want clean teardown).
-// Only the audit log entry is gated. See trait_sync.go DeleteComponentCascade
-// for the documented rationale.
-func TestTraitSync_FeatureFlag_SyncIsNoOp(t *testing.T) {
-	mock := &mocks.ComponentClientMock{
-		UpdateComponentTraitsFunc: func(ctx context.Context, orgName, projectName, componentName string, traits []models.ComponentTrait) error {
-			t.Fatalf("UpdateComponentTraits should not be called when feature is disabled")
-			return nil
-		},
-		UpdateComponentTraitEnvironmentConfigsFunc: func(ctx context.Context, orgName, projectName, componentName string, configs map[string]map[string]interface{}) error {
-			t.Fatalf("UpdateComponentTraitEnvironmentConfigs should not be called when feature is disabled")
-			return nil
-		},
-	}
-	svc := NewTraitSyncService(mock, nil /*store*/, false /*enabled*/)
-	if svc.Enabled() {
-		t.Fatal("Enabled() should be false")
-	}
-
-	if err := svc.SyncComponentTraits(context.Background(), "org", "proj", "comp"); err != nil {
-		t.Fatalf("SyncComponentTraits no-op should not error: %v", err)
-	}
-}
-
 // TestTraitSync_DeleteCascade_HappyPath — calls componentClient.DeleteComponent
 // exactly once with the scoped (org, project, componentName) tuple and
 // returns nil. Audit logging is fire-and-forget — we don't assert on
@@ -64,7 +31,7 @@ func TestTraitSync_DeleteCascade_HappyPath(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewTraitSyncService(mock, nil, true)
+	svc := NewTraitSyncService(mock, nil)
 	if err := svc.DeleteComponentCascade(context.Background(), "org-1", "proj-1", "comp-x"); err != nil {
 		t.Fatalf("DeleteComponentCascade: %v", err)
 	}
@@ -84,7 +51,7 @@ func TestTraitSync_DeleteCascade_PropagatesError(t *testing.T) {
 			return errors.New("simulated OC failure")
 		},
 	}
-	svc := NewTraitSyncService(mock, nil, true)
+	svc := NewTraitSyncService(mock, nil)
 	err := svc.DeleteComponentCascade(context.Background(), "org", "proj", "comp")
 	if err == nil {
 		t.Fatal("want error from DeleteComponentCascade, got nil")
@@ -107,7 +74,7 @@ func TestTraitSync_DeleteCascade_EmptyArgsRejected(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewTraitSyncService(mock, nil, true)
+	svc := NewTraitSyncService(mock, nil)
 	cases := []struct {
 		name        string
 		org, p, c   string
@@ -135,7 +102,7 @@ func TestSyncComponentTraits_RejectsEmptyArgs(t *testing.T) {
 			return nil
 		},
 	}
-	svc := NewTraitSyncService(mock, nil, true)
+	svc := NewTraitSyncService(mock, nil)
 	if err := svc.SyncComponentTraits(context.Background(), "", "p", "c"); err == nil {
 		t.Fatal("want error, got nil")
 	}
