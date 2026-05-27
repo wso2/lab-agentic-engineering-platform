@@ -15,8 +15,17 @@ import (
 	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/agents"
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 )
+
+// RequirementsSnapshotFile is the JSON shape returned by GetSessionBaselineFile.
+// `Existed` distinguishes "file present in snapshot" (Revert = write-back)
+// from "snapshot existed but did not include this file" (Revert = delete).
+type RequirementsSnapshotFile struct {
+	SnapshotID string `json:"snapshotId"`
+	Filename   string `json:"filename"`
+	Content    string `json:"content,omitempty"`
+	Existed    bool   `json:"existed"`
+}
 
 // RequirementsChatService streams a chat turn between the user and the
 // requirements-chat agent. The agent runs in agents-service; this service
@@ -28,7 +37,7 @@ import (
 type RequirementsChatService interface {
 	StreamChat(ctx context.Context, orgID, projectID string, req ChatTurnRequest, w io.Writer, flush func()) error
 	UndoTurn(ctx context.Context, orgID, projectID, turnID string) (map[string]string, error)
-	GetSessionBaselineFile(ctx context.Context, orgID, projectID, baselineID, filename string) (*gitservice.RequirementsSnapshotFile, error)
+	GetSessionBaselineFile(ctx context.Context, orgID, projectID, baselineID, filename string) (*RequirementsSnapshotFile, error)
 	DropSessionBaseline(ctx context.Context, orgID, projectID, baselineID string) error
 	RevertFileToBaseline(ctx context.Context, orgID, projectID, baselineID, filename string) error
 }
@@ -53,20 +62,20 @@ type ChatTurnRequest struct {
 type requirementsChatService struct {
 	store        *ArtifactStore
 	agentsClient agents.Client
-	gitClient    gitservice.Client
+	artifactSvc  ArtifactService
 	locker       *RequirementsDirLocker
 }
 
 func NewRequirementsChatService(
 	store *ArtifactStore,
 	agentsClient agents.Client,
-	gitClient gitservice.Client,
+	artifactSvc ArtifactService,
 	locker *RequirementsDirLocker,
 ) RequirementsChatService {
 	return &requirementsChatService{
 		store:        store,
 		agentsClient: agentsClient,
-		gitClient:    gitClient,
+		artifactSvc:  artifactSvc,
 		locker:       locker,
 	}
 }
@@ -139,7 +148,7 @@ func (s *requirementsChatService) StreamChat(ctx context.Context, orgID, project
 
 	// 3a. Capture per-turn undo snapshot.
 	turnID := "t_" + randomID()
-	if _, err := s.gitClient.CaptureRequirementsSnapshot(ctx, orgID, projectID, turnID); err != nil {
+	if _, err := s.artifactSvc.CaptureRequirementsSnapshot(ctx, projectID,turnID); err != nil {
 		slog.WarnContext(ctx, "capture snapshot failed (continuing without undo)",
 			"project", projectID, "turn", turnID, "error", err)
 		// Non-fatal — the turn can still proceed; the user just won't have
@@ -151,7 +160,7 @@ func (s *requirementsChatService) StreamChat(ctx context.Context, orgID, project
 	// drive per-file Accept / Revert against this fixed point.
 	if req.RequestSessionBaseline {
 		baselineID := "sb_" + randomID()
-		if _, err := s.gitClient.CaptureRequirementsSnapshot(ctx, orgID, projectID, baselineID); err != nil {
+		if _, err := s.artifactSvc.CaptureRequirementsSnapshot(ctx, projectID,baselineID); err != nil {
 			slog.WarnContext(ctx, "capture session baseline failed (continuing without per-file undo)",
 				"project", projectID, "baseline", baselineID, "error", err)
 		} else {
@@ -381,12 +390,12 @@ func (s *requirementsChatService) UndoTurn(ctx context.Context, orgID, projectID
 	}
 	var out map[string]string
 	err := s.locker.WithTxLock(ctx, orgID, projectID, func(ctx context.Context) error {
-		files, err := s.gitClient.RestoreRequirementsSnapshot(ctx, orgID, projectID, turnID)
+		files, err := s.artifactSvc.RestoreRequirementsSnapshot(ctx, projectID,turnID)
 		if err != nil {
 			return fmt.Errorf("restore snapshot: %w", err)
 		}
 		// Snapshot used once; drop it so we don't accumulate stale blobs.
-		if err := s.gitClient.DeleteRequirementsSnapshot(ctx, orgID, projectID, turnID); err != nil {
+		if err := s.artifactSvc.DeleteRequirementsSnapshot(ctx, projectID,turnID); err != nil {
 			slog.WarnContext(ctx, "snapshot delete failed (non-fatal)",
 				"project", projectID, "turn", turnID, "error", err)
 		}
@@ -401,14 +410,23 @@ func (s *requirementsChatService) UndoTurn(ctx context.Context, orgID, projectID
 
 // GetSessionBaselineFile fetches `filename`'s content as captured in the
 // session baseline snapshot. Read-only — no dir lock taken.
-func (s *requirementsChatService) GetSessionBaselineFile(ctx context.Context, orgID, projectID, baselineID, filename string) (*gitservice.RequirementsSnapshotFile, error) {
+func (s *requirementsChatService) GetSessionBaselineFile(ctx context.Context, orgID, projectID, baselineID, filename string) (*RequirementsSnapshotFile, error) {
 	if baselineID == "" {
 		return nil, fmt.Errorf("baselineID is required")
 	}
 	if filename == "" {
 		return nil, fmt.Errorf("filename is required")
 	}
-	return s.gitClient.ReadRequirementsSnapshotFile(ctx, orgID, projectID, baselineID, filename)
+	content, existed, err := s.artifactSvc.ReadFileFromRequirementsSnapshot(ctx, projectID, baselineID, filename)
+	if err != nil {
+		return nil, err
+	}
+	return &RequirementsSnapshotFile{
+		SnapshotID: baselineID,
+		Filename:   filename,
+		Content:    content,
+		Existed:    existed,
+	}, nil
 }
 
 // DropSessionBaseline deletes the baseline snapshot blob. Idempotent.
@@ -417,7 +435,7 @@ func (s *requirementsChatService) DropSessionBaseline(ctx context.Context, orgID
 	if baselineID == "" {
 		return fmt.Errorf("baselineID is required")
 	}
-	return s.gitClient.DeleteRequirementsSnapshot(ctx, orgID, projectID, baselineID)
+	return s.artifactSvc.DeleteRequirementsSnapshot(ctx, projectID,baselineID)
 }
 
 // RevertFileToBaseline rewrites a single requirement file to the content
@@ -432,9 +450,15 @@ func (s *requirementsChatService) RevertFileToBaseline(ctx context.Context, orgI
 	if filename == "" {
 		return fmt.Errorf("filename is required")
 	}
-	file, err := s.gitClient.ReadRequirementsSnapshotFile(ctx, orgID, projectID, baselineID, filename)
+	content, existed, err := s.artifactSvc.ReadFileFromRequirementsSnapshot(ctx, projectID, baselineID, filename)
 	if err != nil {
 		return fmt.Errorf("read baseline file: %w", err)
+	}
+	file := &RequirementsSnapshotFile{
+		SnapshotID: baselineID,
+		Filename:   filename,
+		Content:    content,
+		Existed:    existed,
 	}
 	return s.locker.WithTxLock(ctx, orgID, projectID, func(ctx context.Context) error {
 		if !file.Existed {
@@ -450,7 +474,7 @@ func (s *requirementsChatService) RevertFileToBaseline(ctx context.Context, orgI
 				return nil
 			}
 			if err := s.store.DeleteRequirementFile(ctx, orgID, projectID, filename); err != nil {
-				if errors.Is(err, gitservice.ErrArtifactNotFound) {
+				if errors.Is(err, ErrArtifactNotFound) {
 					// Already gone — treat as success.
 					return nil
 				}
