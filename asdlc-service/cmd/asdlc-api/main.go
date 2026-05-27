@@ -654,19 +654,8 @@ func main() {
 	// GitServiceSecretProvider — secrets now come from the per-org
 	// credential record (via git-service). The receiver pipeline shape
 	// is unchanged from Phase 0; only the lookup backend changes.
-	var (
-		secretProvider webhook.SecretProvider
-		routingLookup  webhook.OcOrgIDLookup
-	)
-	if gitClient != nil {
-		secretProvider = webhook.NewGitServiceSecretProvider(gitClient, 30*time.Second)
-		routingLookup = gitClient
-	} else {
-		// Defensive — running without a git-service is not a supported
-		// dev configuration but main.go shouldn't crash on it.
-		secretProvider = webhook.NewGitServiceSecretProvider(nilSecretFetcher{}, 30*time.Second)
-		routingLookup = nilLookup{}
-	}
+	secretProvider := webhook.NewGitServiceSecretProvider(credService, 30*time.Second)
+	var routingLookup webhook.OcOrgIDLookup = credService
 	webhookVerifier := webhook.NewVerifier(secretProvider).
 		WithRefetchLimiter(webhook.NewRefetchLimiter(1, 5))
 	routingCache := webhook.NewRoutingCache(60 * time.Second)

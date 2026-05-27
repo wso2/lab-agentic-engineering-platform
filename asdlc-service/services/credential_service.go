@@ -684,10 +684,10 @@ func (s *CredentialService) IdentityFor(ctx context.Context, ocOrgID string) (*I
 // Webhook secrets — GET / POST / DELETE
 // ----------------------------------------------------------------------------
 
-// WebhookSecrets returns the accepted HMAC keys for ocOrgID, current-first.
+// GetWebhookSecrets returns the accepted HMAC keys for ocOrgID, current-first.
 // PAT mode reads from the row's webhook_secrets JSONB. App mode reads from
 // the platform-wide secret/asdlc/_platform/github/app/webhook_secret.
-func (s *CredentialService) WebhookSecrets(ctx context.Context, ocOrgID string) ([][]byte, error) {
+func (s *CredentialService) GetWebhookSecrets(ctx context.Context, ocOrgID string) ([][]byte, error) {
 	row, err := s.fetchRow(ctx, ocOrgID)
 	if err != nil {
 		return nil, err
