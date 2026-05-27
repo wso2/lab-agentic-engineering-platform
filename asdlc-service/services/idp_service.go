@@ -91,14 +91,28 @@ type idpService struct {
 	db        *gorm.DB
 	thunder   thundersvc.Client
 	platform  PlatformIDPConfig
+	smAPI     *SMAPIWriter
 }
 
 // NewIDPService builds the service. `thunder` may be nil in unit tests
 // — the service rejects EnsureOrgPublisher / RevokeOrgPublisher /
 // RegenerateClientSecret with ErrIDPThunderUnavailable when so. Read
-// methods (GetProfile, GetOrCreateProfile) keep working.
-func NewIDPService(db *gorm.DB, thunder thundersvc.Client, platform PlatformIDPConfig) IDPService {
+// methods (GetProfile, GetOrCreateProfile) keep working. Returns the
+// concrete type so WithSMAPIWriter (WS2.4) can chain at the composition
+// root; the concrete value still satisfies the IDPService interface for
+// consumers that store it as such.
+func NewIDPService(db *gorm.DB, thunder thundersvc.Client, platform PlatformIDPConfig) *idpService {
 	return &idpService{db: db, thunder: thunder, platform: platform}
+}
+
+// WithSMAPIWriter attaches the SM-API writer so EnsureOrgPublisher /
+// RegenerateClientSecret mirror the publisher cc credentials to SM-API
+// (WS2.4 — runner pods consume them via per-run ExternalSecret). nil
+// writer or one with Enabled()==false is a no-op; publisher provisioning
+// still works but dispatcher's runner-auth path stays disabled.
+func (s *idpService) WithSMAPIWriter(w *SMAPIWriter) *idpService {
+	s.smAPI = w
+	return s
 }
 
 // ErrIDPThunderUnavailable means the Thunder admin client isn't wired
@@ -192,6 +206,19 @@ func (s *idpService) EnsureOrgPublisher(ctx context.Context, orgID, actor string
 		return "", "", false, fmt.Errorf("idp_service.EnsureOrgPublisher persist: %w", err)
 	}
 
+	// WS2.4 — mirror publisher creds to SM-API so the dispatcher can mint
+	// a per-run ExternalSecret for the runner's cc flow. Only on fresh
+	// create (Thunder doesn't return the secret on subsequent reads); pre-
+	// existing apps without SM-API mirroring recover via an explicit
+	// RegenerateClientSecret. Best-effort: SM-API outage doesn't fail
+	// publisher provisioning.
+	if created && clientSecret != "" && s.smAPI != nil && s.smAPI.Enabled() {
+		if _, smerr := s.smAPI.WritePublisher(ctx, orgID, clientID, clientSecret); smerr != nil {
+			slog.WarnContext(ctx, "idp_service: SM-API publisher write failed (continuing)",
+				"orgID", orgID, "error", smerr)
+		}
+	}
+
 	// Re-read for the audit "after" snapshot.
 	after, _ := s.GetProfile(ctx, orgID)
 	afterJSON, _ := json.Marshal(profileSummary(after))
@@ -239,6 +266,16 @@ func (s *idpService) RevokeOrgPublisher(ctx context.Context, orgID, actor string
 		s.audit(ctx, orgID, models.IDPAuditRevokePublisher, actor, beforeJSON, nil, err)
 		return deleted, fmt.Errorf("idp_service.RevokeOrgPublisher persist: %w", err)
 	}
+
+	// WS2.4 — drop the SM-API publisher secret + clear the triplet. Best-
+	// effort so a missing SM-API doesn't strand the Thunder revoke.
+	if s.smAPI != nil && s.smAPI.Enabled() {
+		if smerr := s.smAPI.DeletePublisher(ctx, orgID); smerr != nil {
+			slog.WarnContext(ctx, "idp_service: SM-API publisher delete failed (continuing)",
+				"orgID", orgID, "error", smerr)
+		}
+	}
+
 	after, _ := s.GetProfile(ctx, orgID)
 	afterJSON, _ := json.Marshal(profileSummary(after))
 	s.audit(ctx, orgID, models.IDPAuditRevokePublisher, actor, beforeJSON, afterJSON, nil)
@@ -279,6 +316,17 @@ func (s *idpService) RegenerateClientSecret(ctx context.Context, orgID, actor st
 		s.audit(ctx, orgID, models.IDPAuditRegenerateSecret, actor, beforeJSON, nil, err)
 		return "", fmt.Errorf("idp_service.RegenerateClientSecret persist: %w", err)
 	}
+
+	// WS2.4 — mirror the rotated secret to SM-API; runner pods picking up
+	// from the next dispatch will receive the new secret via ExternalSecret
+	// refresh. Best-effort.
+	if s.smAPI != nil && s.smAPI.Enabled() {
+		if _, smerr := s.smAPI.WritePublisher(ctx, orgID, profile.PublisherClientID, newSecret); smerr != nil {
+			slog.WarnContext(ctx, "idp_service: SM-API publisher rewrite failed (continuing)",
+				"orgID", orgID, "error", smerr)
+		}
+	}
+
 	after, _ := s.GetProfile(ctx, orgID)
 	afterJSON, _ := json.Marshal(profileSummary(after))
 	s.audit(ctx, orgID, models.IDPAuditRegenerateSecret, actor, beforeJSON, afterJSON, nil)

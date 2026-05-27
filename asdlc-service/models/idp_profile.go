@@ -32,6 +32,14 @@ type OrganizationIDPProfile struct {
 	// purpose-built endpoint to fetch it.
 	PublisherClientSecret string    `gorm:"column:publisher_client_secret" json:"-"`
 	PublisherSecretRef    string    `gorm:"column:publisher_secret_ref" json:"publisherSecretRef,omitempty"`
+	// SM-API triplet (WS2.4) — populated by SMAPIWriter.WritePublisher
+	// after EnsureOrgPublisher provisions the Thunder cc app. Nullable
+	// rows pre-date WS2.4; the dispatcher short-circuits the per-run
+	// runner-auth ExternalSecret when missing.
+	SMAPISecretRefName *string    `gorm:"type:text;column:sm_api_secret_ref_name" json:"-"`
+	SMAPIKVPath        *string    `gorm:"type:text;column:sm_api_kv_path" json:"-"`
+	SMAPIProperty      *string    `gorm:"type:text;column:sm_api_property" json:"-"`
+	SMAPIWrittenAt     *time.Time `gorm:"column:sm_api_written_at" json:"-"`
 	CreatedAt           time.Time `gorm:"column:created_at" json:"createdAt"`
 	UpdatedAt           time.Time `gorm:"column:updated_at" json:"updatedAt"`
 }

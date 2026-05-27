@@ -17,7 +17,7 @@ func validInputs() JobInputs {
 		ServiceAccountName:      "remote-worker-runner",
 		AnthropicSecretName:     "run-abc12345-anthropic",
 		GitHubSecretName:        "run-abc12345-github",
-		ThunderClientSecretName: "",
+		PublisherSecretName:     "",
 		RepoURL:                 "https://github.com/wso2/demo.git",
 		Prompt:                  "implement /healthz",
 		IdentityName:            "ASDLC Bot",
@@ -60,19 +60,22 @@ func TestBuild_MissingField(t *testing.T) {
 	}
 }
 
-func TestBuild_BearerAndThunderConflict(t *testing.T) {
+func TestBuild_BearerAndPublisherCoexist(t *testing.T) {
+	// During the WS2.4 cutover Bearer + PublisherSecretName both ride on
+	// the same dispatch; the runner prefers cc and falls back to Bearer.
+	// Build must accept both being set.
 	in := validInputs()
-	in.ThunderClientSecretName = "run-abc12345-runner-auth"
-	// Bearer is still set from validInputs — this is the forbidden case.
-	if _, err := Build(in); err == nil {
-		t.Fatal("expected error when Bearer + ThunderClientSecretName both set")
+	in.PublisherSecretName = "run-abc12345-publisher"
+	in.PublisherTokenURL = "https://thunder.example.com/oauth2/token"
+	if _, err := Build(in); err != nil {
+		t.Fatalf("Bearer + PublisherSecretName must coexist during WS2.4 cutover: %v", err)
 	}
 }
 
-func TestBuild_ThunderOnlyAddsEnvFrom(t *testing.T) {
+func TestBuild_PublisherAddsEnvFrom(t *testing.T) {
 	in := validInputs()
-	in.Bearer = ""
-	in.ThunderClientSecretName = "run-abc12345-runner-auth"
+	in.PublisherSecretName = "run-abc12345-publisher"
+	in.PublisherTokenURL = "https://thunder.example.com/oauth2/token"
 	job, err := Build(in)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -81,7 +84,17 @@ func TestBuild_ThunderOnlyAddsEnvFrom(t *testing.T) {
 	containers := tmpl["spec"].(map[string]any)["containers"].([]map[string]any)
 	envFrom := containers[0]["envFrom"].([]map[string]any)
 	if len(envFrom) != 3 {
-		t.Fatalf("envFrom should include anthropic + github + thunder (3 entries); got %d", len(envFrom))
+		t.Fatalf("envFrom should include anthropic + github + publisher (3 entries); got %d", len(envFrom))
+	}
+	env := containers[0]["env"].([]map[string]any)
+	var sawTokenURL bool
+	for _, e := range env {
+		if e["name"] == "PUBLISHER_TOKEN_URL" {
+			sawTokenURL = true
+		}
+	}
+	if !sawTokenURL {
+		t.Fatal("PUBLISHER_TOKEN_URL env missing")
 	}
 }
 

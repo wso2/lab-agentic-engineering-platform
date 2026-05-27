@@ -35,7 +35,7 @@ type Inputs struct {
 	// Job is the fully-resolved Job manifest inputs. The orchestrator
 	// passes it straight to Build; callers fill in everything except
 	// `OrgNS`, `AnthropicSecretName`, `GitHubSecretName`, and
-	// `ThunderClientSecretName`, which the orchestrator computes from
+	// `PublisherSecretName`, which the orchestrator computes from
 	// the run name and overwrites.
 	Job JobInputs
 
@@ -46,10 +46,14 @@ type Inputs struct {
 	AnthropicSR SecretRef
 	GitHubSR    SecretRef
 
-	// ThunderClientSR is WS2.4's third per-run ExternalSecret carrying
-	// the per-org Thunder client_credentials. Optional today; required
-	// once WS2.4 lands.
-	ThunderClientSR *SecretRef
+	// PublisherSR is WS2.4's per-org publisher cc credentials triplet
+	// (`organization_idp_profiles`). When present, the orchestrator
+	// emits a third per-run ExternalSecret materialising both
+	// client_id + client_secret into a K8s Secret that the runner
+	// mounts via envFrom (PUBLISHER_CLIENT_ID + PUBLISHER_CLIENT_SECRET).
+	// Optional during the WS2.4 rollout — when absent the runner falls
+	// back to ASDLC_BEARER.
+	PublisherSR *SecretRef
 
 	// ClusterSecretStoreName is the ESO CSS that backs reads. On
 	// cloud-dp-oc-dp this MUST be `application-secrets-read` (AppRole
@@ -136,9 +140,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in Inputs) (string, error) {
 	runName := in.Job.RunName
 	anthropicSecret := runName + "-anthropic"
 	githubSecret := runName + "-github"
-	thunderSecret := ""
-	if in.ThunderClientSR != nil {
-		thunderSecret = runName + "-runner-auth"
+	publisherSecret := ""
+	if in.PublisherSR != nil {
+		publisherSecret = runName + "-publisher"
 	}
 
 	// 3) ExternalSecrets.
@@ -148,9 +152,9 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in Inputs) (string, error) {
 	if err := d.applyExternalSecret(ctx, in, ns, runName+"-github-es", githubSecret, "GITHUB_TOKEN", in.GitHubSR); err != nil {
 		return "", fmt.Errorf("dispatcher: apply github-pat ExternalSecret: %w", err)
 	}
-	if in.ThunderClientSR != nil {
-		if err := d.applyExternalSecret(ctx, in, ns, runName+"-runner-auth-es", thunderSecret, "RUNNER_CLIENT_SECRET", *in.ThunderClientSR); err != nil {
-			return "", fmt.Errorf("dispatcher: apply runner-auth ExternalSecret: %w", err)
+	if in.PublisherSR != nil {
+		if err := d.applyPublisherExternalSecret(ctx, in, ns, runName+"-publisher-es", publisherSecret, *in.PublisherSR); err != nil {
+			return "", fmt.Errorf("dispatcher: apply publisher ExternalSecret: %w", err)
 		}
 	}
 
@@ -161,7 +165,7 @@ func (d *Dispatcher) Dispatch(ctx context.Context, in Inputs) (string, error) {
 	job.ServiceAccountName = d.serviceAccount
 	job.AnthropicSecretName = anthropicSecret
 	job.GitHubSecretName = githubSecret
-	job.ThunderClientSecretName = thunderSecret
+	job.PublisherSecretName = publisherSecret
 	manifest, err := Build(job)
 	if err != nil {
 		return "", fmt.Errorf("dispatcher: build Job manifest: %w", err)
@@ -181,6 +185,29 @@ func (d *Dispatcher) applyExternalSecret(ctx context.Context, in Inputs, ns, esN
 		RemoteRefKey:           ref.KVPath,
 		RemoteRefProperty:      ref.Property,
 		LocalKey:               localKey,
+	})
+	if err != nil {
+		return err
+	}
+	return d.proxy.ApplyExternalSecret(ctx, ns, manifest)
+}
+
+// applyPublisherExternalSecret emits one ExternalSecret with two data
+// entries — client_id and client_secret share the SM-API secret at
+// ref.KVPath but materialise into distinct K8s Secret keys (PUBLISHER_
+// CLIENT_ID + PUBLISHER_CLIENT_SECRET) for envFrom in the Job pod.
+// Token URL is non-secret and rides as a plain env from the Job template.
+func (d *Dispatcher) applyPublisherExternalSecret(ctx context.Context, in Inputs, ns, esName, secretName string, ref SecretRef) error {
+	manifest, err := BuildExternalSecret(ExternalSecretInputs{
+		Name:                   esName,
+		Namespace:              ns,
+		TargetSecretName:       secretName,
+		ClusterSecretStoreName: in.ClusterSecretStoreName,
+		RemoteRefKey:           ref.KVPath,
+		DataEntries: []ExternalSecretDataEntry{
+			{LocalKey: "PUBLISHER_CLIENT_ID", RemoteRefProperty: "client_id"},
+			{LocalKey: "PUBLISHER_CLIENT_SECRET", RemoteRefProperty: "client_secret"},
+		},
 	})
 	if err != nil {
 		return err
