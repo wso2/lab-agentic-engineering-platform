@@ -710,7 +710,7 @@ func main() {
 
 	webhook.Register(webhookRouter, db, projector, wfRunService)
 	if gitClient != nil {
-		webhook.RegisterInstallationHandlers(webhookRouter, db, gitClient, taskRepo, projector)
+		webhook.RegisterInstallationHandlers(webhookRouter, db, credService, issueService, taskRepo, projector)
 	}
 	webhookCtrl := controllers.NewWebhookController(webhookVerifier, deliveryStore, webhookRouter, routingLookup, routingCache)
 
@@ -744,7 +744,7 @@ func main() {
 	}
 
 	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
-	disconnectSvc := services.NewOrgDisconnectService(taskRepo, db, gitClient)
+	disconnectSvc := services.NewOrgDisconnectService(taskRepo, db, credService, issueService)
 	orgGitHubCtrl := controllers.NewOrgGitHubController(
 		credService,
 		disconnectSvc,
