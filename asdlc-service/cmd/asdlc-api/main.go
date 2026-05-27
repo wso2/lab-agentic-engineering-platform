@@ -510,7 +510,7 @@ func main() {
 	// Services. componentService is constructed before configService so
 	// configService can call back into it to mirror env-var edits onto
 	// the OC Component's workflow params.
-	projectService := services.NewProjectService(projectClient, gitClient, artifactStore, taskRepo)
+	projectService := services.NewProjectService(projectClient, repoService, webhookRegService, artifactSvcGit, artifactStore, taskRepo)
 	organizationService := services.NewOrganizationService(db, namespaceClient)
 	// componentService takes repoSvc + buildCredSvc so TriggerBuild can
 	// pre-stage the per-WorkflowRun build Secret in workflows-<orgID>

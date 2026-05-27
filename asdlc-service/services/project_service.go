@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
@@ -18,28 +17,34 @@ type ProjectService interface {
 	GetProject(ctx context.Context, orgName, projectName string) (*models.Project, error)
 	CreateProject(ctx context.Context, orgName string, req *models.CreateProjectRequest) (*models.Project, error)
 	DeleteProject(ctx context.Context, orgName, projectName string) error
-	GetRepoStatus(ctx context.Context, orgName, projectID string) (*gitservice.RepoInfo, error)
+	GetRepoStatus(ctx context.Context, orgName, projectID string) (*models.GitRepository, error)
 	GetProjectStatus(ctx context.Context, orgName, projectName string) (*models.ProjectStatus, error)
 }
 
 type projectService struct {
-	client    openchoreo.ProjectClient
-	gitClient gitservice.Client
-	store     *ArtifactStore
-	taskRepo  repositories.TaskRepository
+	client      openchoreo.ProjectClient
+	repoSvc     RepoService
+	webhookSvc  WebhookService
+	artifactSvc ArtifactService
+	store       *ArtifactStore
+	taskRepo    repositories.TaskRepository
 }
 
 func NewProjectService(
 	client openchoreo.ProjectClient,
-	gitClient gitservice.Client,
+	repoSvc RepoService,
+	webhookSvc WebhookService,
+	artifactSvc ArtifactService,
 	store *ArtifactStore,
 	taskRepo repositories.TaskRepository,
 ) ProjectService {
 	return &projectService{
-		client:    client,
-		gitClient: gitClient,
-		store:     store,
-		taskRepo:  taskRepo,
+		client:      client,
+		repoSvc:     repoSvc,
+		webhookSvc:  webhookSvc,
+		artifactSvc: artifactSvc,
+		store:       store,
+		taskRepo:    taskRepo,
 	}
 }
 
@@ -66,37 +71,28 @@ func (s *projectService) CreateProject(ctx context.Context, orgName string, req 
 	}
 
 	// Provision + clone the platform-owned git repo (async — polling via GetRepoStatus).
-	if s.gitClient != nil {
-		repoInfo, createErr := s.gitClient.InitProjectComponents(ctx, &gitservice.CreateRepoRequest{
-			OrgID:       orgName,
-			ProjectID:   project.Name,
-			ProjectName: req.Name,
-		})
+	if s.repoSvc != nil {
+		repoInfo, createErr := s.repoSvc.CreateRepo(ctx, orgName, project.Name, req.Name)
 		if createErr != nil {
 			slog.ErrorContext(ctx, "failed to provision repo", "project", project.Name, "error", createErr)
 			// Don't fail project creation — clone happens async and can be retried.
 		} else {
 			// Build credentials are now pre-staged per WorkflowRun as a K8s
 			// Secret named `<workflowRunName>-git-secret` in
-			// workflows-<orgID> by git-service immediately before each
-			// dispatch — see docs/design/build-credential-injection.md.
-			// The asdlc-service no longer participates in any secret
-			// provisioning at project-creation time; OcSecretRefName is
-			// unused on new flows.
+			// workflows-<orgID> immediately before each dispatch — see
+			// docs/design/build-credential-injection.md. Project creation
+			// no longer participates in any secret provisioning;
+			// OcSecretRefName is unused on new flows.
 			if repoInfo == nil {
-				slog.ErrorContext(ctx, "git-service returned nil repoInfo on InitProjectComponents",
-					"project", project.Name)
+				slog.ErrorContext(ctx, "nil repoInfo on CreateRepo", "project", project.Name)
 			}
 			// Register the per-repo webhook so the BFF starts receiving events
-			// (pull_request, push, issue_comment) on this repo. Best-effort:
-			// the GitHub repo is already created at this point, so a webhook
-			// failure leaves a usable repo but no event flow — surfaceable in
-			// logs and recoverable by re-running with the right scopes on the
-			// PAT. Phase 2 App-mode credentials short-circuit registration
-			// (returns strategy=platform) inside the resolver.
-			if _, hookErr := s.gitClient.RegisterWebhook(ctx, orgName, project.Name); hookErr != nil {
-				slog.ErrorContext(ctx, "failed to register webhook on repo",
-					"project", project.Name, "error", hookErr)
+			// (pull_request, push, issue_comment) on this repo. Best-effort.
+			if s.webhookSvc != nil {
+				if _, hookErr := s.webhookSvc.Register(ctx, project.Name); hookErr != nil {
+					slog.ErrorContext(ctx, "failed to register webhook on repo",
+						"project", project.Name, "error", hookErr)
+				}
 			}
 		}
 	}
@@ -110,8 +106,8 @@ func (s *projectService) DeleteProject(ctx context.Context, orgName, projectName
 	}
 
 	// Clean up the git clone
-	if s.gitClient != nil {
-		if err := s.gitClient.DeleteRepo(ctx, orgName, projectName); err != nil {
+	if s.repoSvc != nil {
+		if err := s.repoSvc.DeleteRepo(ctx, projectName); err != nil {
 			slog.ErrorContext(ctx, "failed to delete git repo for project", "org", orgName, "project", projectName, "error", err)
 		}
 	}
@@ -119,11 +115,11 @@ func (s *projectService) DeleteProject(ctx context.Context, orgName, projectName
 	return nil
 }
 
-func (s *projectService) GetRepoStatus(ctx context.Context, orgName, projectID string) (*gitservice.RepoInfo, error) {
-	if s.gitClient == nil {
-		return nil, fmt.Errorf("git service not configured")
+func (s *projectService) GetRepoStatus(ctx context.Context, orgName, projectID string) (*models.GitRepository, error) {
+	if s.repoSvc == nil {
+		return nil, fmt.Errorf("repo service not configured")
 	}
-	repo, err := s.gitClient.GetRepo(ctx, orgName, projectID)
+	repo, err := s.repoSvc.GetRepo(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("get repo: %w", err)
 	}
@@ -137,12 +133,12 @@ func (s *projectService) GetProjectStatus(ctx context.Context, orgName, projectN
 	status := &models.ProjectStatus{}
 
 	// Check git repo
-	if s.gitClient == nil {
+	if s.repoSvc == nil {
 		status.Phase = "no-repo"
 		return status, nil
 	}
 
-	repo, err := s.gitClient.GetRepo(ctx, orgName, projectName)
+	repo, err := s.repoSvc.GetRepo(ctx, projectName)
 	if err != nil {
 		slog.ErrorContext(ctx, "get repo for project status", "error", err, "project", projectName)
 		status.Phase = "no-repo"
@@ -173,9 +169,9 @@ func (s *projectService) GetProjectStatus(ctx context.Context, orgName, projectN
 	}
 	status.HasSpec = len(files) > 0
 
-	if s.gitClient != nil {
-		reqVersions, _ := s.gitClient.ListRequirementsVersions(ctx, orgName, projectName)
-		designVersions, _ := s.gitClient.ListDesignVersions(ctx, orgName, projectName)
+	if s.artifactSvc != nil {
+		reqVersions, _ := s.artifactSvc.ListRequirementsVersions(ctx, projectName)
+		designVersions, _ := s.artifactSvc.ListDesignVersions(ctx, projectName)
 
 		if len(reqVersions) > 0 {
 			status.SpecStatus = "approved"
