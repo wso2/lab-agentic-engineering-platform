@@ -57,11 +57,11 @@ export function resetAnthropicCache(): void {
   cache.clear();
 }
 
-function gitServiceUrl(): string {
+function asdlcApiUrl(): string {
   const url =
-    process.env.GIT_SERVICE_URL ||
-    process.env.ASDLC_GIT_SERVICE_URL ||
-    "http://app-factory-git-service:3300";
+    process.env.ASDLC_API_URL ||
+    process.env.GIT_SERVICE_URL || // legacy fallback, removed in a follow-up
+    "http://asdlc-api:9090";
   return url.replace(/\/+$/, "");
 }
 
@@ -93,7 +93,7 @@ export async function resolveAnthropicKey(
   let resp: Response;
   try {
     resp = await fetch(
-      `${gitServiceUrl()}/internal/credentials/orgs/${encodeURIComponent(ocOrgId)}/anthropic/effective-key`,
+      `${asdlcApiUrl()}/internal/credentials/orgs/${encodeURIComponent(ocOrgId)}/anthropic/effective-key`,
       {
         method: "GET",
         headers: {

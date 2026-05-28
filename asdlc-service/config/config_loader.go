@@ -67,28 +67,18 @@ func Load() (Config, error) {
 		AgentsService: AgentsServiceConfig{
 			BaseURL: r.readOptionalString("AGENTS_SERVICE_BASE_URL", ""),
 		},
-		AgentGitServiceURL: r.readOptionalString("AGENT_GIT_SERVICE_URL", ""),
-		AgentPlatformURL:   r.readOptionalString("AGENT_PLATFORM_URL", ""),
+		AgentPlatformURL: r.readOptionalString("AGENT_PLATFORM_URL", ""),
 		ServiceAuth: ServiceAuthConfig{
 			TokenURL:     r.readOptionalString("SERVICE_AUTH_TOKEN_URL", ""),
 			ClientID:     r.readOptionalString("SERVICE_AUTH_CLIENT_ID", ""),
 			ClientSecret: r.readOptionalString("SERVICE_AUTH_CLIENT_SECRET", ""),
 			HostHeader:   r.readOptionalString("SERVICE_AUTH_HOST_HEADER", ""),
 		},
-		ServiceAuthGitService: ServiceAuthConfig{
-			TokenURL:     r.readOptionalString("SERVICE_AUTH_GIT_TOKEN_URL", ""),
-			ClientID:     r.readOptionalString("SERVICE_AUTH_GIT_CLIENT_ID", ""),
-			ClientSecret: r.readOptionalString("SERVICE_AUTH_GIT_CLIENT_SECRET", ""),
-			HostHeader:   r.readOptionalString("SERVICE_AUTH_GIT_HOST_HEADER", ""),
-		},
 		ServiceAuthAgentsService: ServiceAuthConfig{
 			TokenURL:     r.readOptionalString("SERVICE_AUTH_AGENTS_TOKEN_URL", ""),
 			ClientID:     r.readOptionalString("SERVICE_AUTH_AGENTS_CLIENT_ID", ""),
 			ClientSecret: r.readOptionalString("SERVICE_AUTH_AGENTS_CLIENT_SECRET", ""),
 			HostHeader:   r.readOptionalString("SERVICE_AUTH_AGENTS_HOST_HEADER", ""),
-		},
-		GitService: GitServiceConfig{
-			BaseURL: r.readOptionalString("GIT_SERVICE_BASE_URL", ""),
 		},
 		DatabaseService: DatabaseServiceConfig{
 			BaseURL: r.readOptionalString("DATABASE_SERVICE_BASE_URL", ""),

@@ -52,16 +52,10 @@ services:
       # ── Sister services on the asdlc compose network
       AGENTS_SERVICE_BASE_URL: "http://agents-service:3400"
       # After WS0.1, git-service is folded into the asdlc-api binary. The
-      # gitservice HTTP client targets the same binary over loopback —
-      # zero serialization cost beyond the loopback round-trip; a full
-      # in-process interface rewrite is a follow-up (see WS0.1.h).
-      GIT_SERVICE_BASE_URL: "http://localhost:9090"
-
-      # ── Coding-agent runner reach-back URLs. The pod runs in
+      # ── Coding-agent runner reach-back URL. The pod runs in
       # `workflows-<orgID>` inside the cluster, so it must reach the
-      # compose services through k3d's host bridge. After fold, both the
-      # git endpoints and the BFF endpoints live on the same port.
-      AGENT_GIT_SERVICE_URL: "http://host.k3d.internal:9090"
+      # compose services through k3d's host bridge. All former
+      # git-service endpoints + the BFF live on the merged binary.
       AGENT_PLATFORM_URL: "http://host.k3d.internal:9090"
 
       # ── GitHub webhook validation + connect-state HMAC.
@@ -208,10 +202,9 @@ services:
       JWT_ISSUER: "${JWT_ISSUER:-http://thunder.openchoreo.localhost:8080}"
       JWT_AUDIENCE: "${AGENTS_AUDIENCE:-asdlc-bff-to-agents-service}"
       # Resolve the per-org Anthropic key (or platform fallback) on each call.
-      # The agents-service has no outbound Service-JWT client wired (mirrors
-      # agent-manager-service); git-service's internal/credentials path must
-      # therefore stay unauthenticated in this compose-only setup.
-      GIT_SERVICE_URL: "http://asdlc-api:9090"
+      # Points at the merged asdlc-api which serves the former
+      # /internal/credentials/orgs/{ocOrgId}/anthropic surface.
+      ASDLC_API_URL: "http://asdlc-api:9090"
     networks:
       - asdlc
     extra_hosts:

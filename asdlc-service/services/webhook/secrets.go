@@ -36,7 +36,7 @@ type SecretOpts struct {
 // ----------------------------------------------------------------------------
 
 // SecretFetcher is the dependency the GitServiceSecretProvider calls to
-// fetch the accepted HMAC keys. It's gitservice.Client.GetWebhookSecrets
+// fetch the accepted HMAC keys. Backed by CredentialService.GetWebhookSecrets
 // in production, mocked in unit tests.
 type SecretFetcher interface {
 	GetWebhookSecrets(ctx context.Context, ocOrgID string) ([][]byte, error)

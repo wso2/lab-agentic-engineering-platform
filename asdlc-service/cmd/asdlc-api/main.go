@@ -17,7 +17,6 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/clients/auth"
 	"github.com/wso2/asdlc/asdlc-service/clients/clustergatewayproxy"
 	dbclient "github.com/wso2/asdlc/asdlc-service/clients/database"
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	k8sclient "github.com/wso2/asdlc/asdlc-service/clients/k8s"
 	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
 	"github.com/wso2/asdlc/asdlc-service/clients/observability"
@@ -308,19 +307,11 @@ func main() {
 	// flow with the audience pinned to the target service. nil providers fall
 	// back to no-auth which only makes sense in dev/tests where the target
 	// service is configured with IS_LOCAL_DEV_ENV.
-	gitAuth := buildAuthProvider("git-service", cfg.ServiceAuthGitService)
 	agentsAuth := buildAuthProvider("agents-service", cfg.ServiceAuthAgentsService)
 
 	// Agents service client (AI SDK v6 — BA, architect, tech-lead)
 	agentsClient := agents.NewClient(cfg.AgentsService.BaseURL, agentsAuth)
 	slog.Info("Agents service", "baseURL", cfg.AgentsService.BaseURL)
-
-	// Git service client (optional — disabled when GIT_SERVICE_BASE_URL not set).
-	var gitClient gitservice.Client
-	if cfg.GitService.BaseURL != "" {
-		gitClient = gitservice.NewClient(cfg.GitService.BaseURL, gitAuth)
-		slog.Info("Git service", "baseURL", cfg.GitService.BaseURL)
-	}
 
 	// Database service client (optional — disabled when DATABASE_SERVICE_BASE_URL not set)
 	var dbClient dbclient.Client
@@ -665,11 +656,10 @@ func main() {
 	// WorkflowRunService.TriggerCodingAgent (ClusterWorkflow `app-factory-coding-agent`)
 	// for the per-task agent pod. AGENT_GIT_SERVICE_URL must be reachable from
 	// the WorkflowPlane namespace (cross-namespace FQDN — see env-overlay).
-	agentGitServiceURL := cfg.AgentGitServiceURL
-	if agentGitServiceURL == "" {
-		agentGitServiceURL = cfg.GitService.BaseURL
-	}
-	dispatchSvc := services.NewDispatchService(taskRepo, repoService, credService, anthropicCredService, repoBoardService, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, agentGitServiceURL, cfg.AgentPlatformURL)
+	// AGENT_GIT_SERVICE_URL collapsed into AGENT_PLATFORM_URL: post-fold,
+	// the runner pod reaches every former git-service endpoint via the
+	// merged asdlc-api at AGENT_PLATFORM_URL.
+	dispatchSvc := services.NewDispatchService(taskRepo, repoService, credService, anthropicCredService, repoBoardService, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, cfg.AgentPlatformURL, cfg.AgentPlatformURL)
 	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
 		hook.SetTraitSync(traitSyncService)
 	}
@@ -695,7 +685,7 @@ func main() {
 	}); ok {
 		rcSetter.SetRuntimeConfig(runtimeConfigSvc)
 	}
-	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
+	slog.Info("Dispatch service", "agentPlatformURL", cfg.AgentPlatformURL)
 
 	// F1 — wire the post-deploy dispatch cascade. The projector fires
 	// OnTaskDeployed whenever ApplyBuildResult lands a task in `deployed`;
@@ -709,9 +699,7 @@ func main() {
 	projector.SetDispatchHook(cascadeHook)
 
 	webhook.Register(webhookRouter, db, projector, wfRunService)
-	if gitClient != nil {
-		webhook.RegisterInstallationHandlers(webhookRouter, db, credService, issueService, taskRepo, projector)
-	}
+	webhook.RegisterInstallationHandlers(webhookRouter, db, credService, issueService, taskRepo, projector)
 	webhookCtrl := controllers.NewWebhookController(webhookVerifier, deliveryStore, webhookRouter, routingLookup, routingCache)
 
 	// Build watcher — 10s sweep for in-flight WorkflowRuns. Started after
@@ -908,25 +896,6 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("server stopped")
-}
-
-// nilSecretFetcher / nilLookup are defensive fallbacks for the (unsupported
-// in dev, but possible in tests) configuration where git-service isn't
-// configured. Both reject every call so the receiver returns 5xx, which
-// is the right signal — webhook routing without git-service is broken.
-type nilSecretFetcher struct{}
-
-func (nilSecretFetcher) GetWebhookSecrets(context.Context, string) ([][]byte, error) {
-	return nil, fmt.Errorf("git-service not configured")
-}
-
-type nilLookup struct{}
-
-func (nilLookup) OrgIDByInstallationID(context.Context, int64) (string, error) {
-	return "", fmt.Errorf("git-service not configured")
-}
-func (nilLookup) OrgIDByRepoFullName(context.Context, string) (string, error) {
-	return "", fmt.Errorf("git-service not configured")
 }
 
 // buildAuthProvider returns an AuthProvider when client_credentials are

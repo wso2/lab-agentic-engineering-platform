@@ -68,23 +68,14 @@ type Config struct {
 	Observability   ObservabilityConfig
 	AgentsService   AgentsServiceConfig
 	ServiceAuth     ServiceAuthConfig
-	GitService      GitServiceConfig
 	DatabaseService DatabaseServiceConfig
 
-	// AgentGitServiceURL is the URL the coding-agent runner pod uses to reach
-	// git-service for /credentials/refresh. The pod runs in the per-tenant
-	// WorkflowPlane namespace (`workflows-<ouHandle>`), so this must be a
-	// cross-namespace FQDN (e.g.
-	// http://app-factory-git-service.<dp-ns>.svc.cluster.local:3300).
-	// Falls back to GitService.BaseURL when empty.
-	AgentGitServiceURL string
-
 	// AgentPlatformURL is the URL the coding-agent runner pod uses to call
-	// back to the BFF (F3c — POST /api/v1/tasks/{id}/verification-failed).
-	// Reachable from the WorkflowPlane namespace; same cross-namespace FQDN
-	// shape as AgentGitServiceURL. When empty, the runner skips the
-	// verification-failed callback and only records the diagnostic on the
-	// GitHub issue.
+	// back to the BFF (every former git-service endpoint is served by the
+	// merged asdlc-api now). Reachable from the WorkflowPlane namespace
+	// (`workflows-<ouHandle>`) via cross-namespace FQDN. When empty, the
+	// runner skips the verification-failed callback and only records the
+	// diagnostic on the GitHub issue.
 	AgentPlatformURL string
 
 	// JWKS settings for inbound JWT verification — Thunder publishes the
@@ -98,7 +89,6 @@ type Config struct {
 	// Per-target Service JWT clients used for outbound auth. Each one
 	// corresponds to a distinct Thunder OAuth2 client whose audience is
 	// pinned to the target service.
-	ServiceAuthGitService    ServiceAuthConfig
 	ServiceAuthAgentsService ServiceAuthConfig
 
 	// --- Folded in from git-service after WS0.1.g --------------------
@@ -238,15 +228,6 @@ type ObservabilityConfig struct {
 type PlatformAPIConfig struct {
 	BaseURL    string
 	HostHeader string
-}
-
-// GitServiceConfig holds connection settings for the git-service.
-//
-// PR 2 of the repo-storage-ownership refactor removed RepoBasePath: the
-// BFF no longer mounts the repo working tree (git-service is the sole
-// owner). All artifact reads/writes go over HTTP via BaseURL.
-type GitServiceConfig struct {
-	BaseURL string
 }
 
 // DatabaseServiceConfig holds connection settings for the database-service.

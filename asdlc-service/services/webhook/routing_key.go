@@ -51,16 +51,12 @@ func extractRoutingKey(event string, payload []byte) RoutingKey {
 }
 
 // OcOrgIDLookup is the dependency the webhook controller uses to resolve
-// (installation_id | repo_full_name) → ocOrgId. The implementation is
-// gitservice.Client.OrgIDByInstallationID + a separate path for repos.
+// (installation_id | repo_full_name) → ocOrgId. Backed by
+// CredentialService.OrgIDByInstallationID + OrgIDByRepoFullName.
 type OcOrgIDLookup interface {
 	OrgIDByInstallationID(ctx context.Context, installationID int64) (string, error)
-	// OrgIDByRepoFullName is wired against a small repo-records table the
-	// BFF already maintains via /api/v1/repos. For PR B we look up via
-	// the existing gitservice.GetRepo (which carries the orgId), keyed
-	// on full_name → repo lookup. The PR plan keeps the BFF lookup
-	// surgical: we add a small in-process map seeded by webhook routing
-	// data the receiver already sees.
+	// OrgIDByRepoFullName is wired against the in-process org_credentials
+	// table the BFF already maintains.
 	OrgIDByRepoFullName(ctx context.Context, fullName string) (string, error)
 }
 
