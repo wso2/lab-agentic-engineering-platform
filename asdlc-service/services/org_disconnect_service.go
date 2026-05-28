@@ -137,6 +137,11 @@ func (s *OrgDisconnectService) Disconnect(ctx context.Context, ocOrgID, cause st
 
 	// Phase D — finalize on git-service: status flip + OpenBao GC.
 	if err := s.credSvc.Disconnect(ctx, ocOrgID); err != nil {
+		var nfe *NotFoundError
+		if errors.As(err, &nfe) {
+			slog.InfoContext(ctx, "disconnect: already finalized during cascade", "ocOrgId", ocOrgID)
+			return nil
+		}
 		return fmt.Errorf("disconnect Phase D: %w", err)
 	}
 

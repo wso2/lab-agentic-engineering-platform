@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"path"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -74,7 +73,7 @@ func (s *ArtifactStore) ListRequirements(ctx context.Context, orgID, projectID s
 
 // ReadRequirementFile reads a single requirement file by basename.
 func (s *ArtifactStore) ReadRequirementFile(ctx context.Context, orgID, projectID, name string) (string, error) {
-	res, err := s.artifactSvc.GetFile(ctx, projectID, filepath.Join(RequirementsDir, name))
+	res, err := s.artifactSvc.GetFile(ctx, projectID, path.Join(RequirementsDir, name))
 	if err != nil {
 		return "", err
 	}
@@ -85,7 +84,7 @@ func (s *ArtifactStore) ReadRequirementFile(ctx context.Context, orgID, projectI
 // The optional ifMatch sha (returned by the previous PUT) gives the
 // streaming caller optimistic concurrency control.
 func (s *ArtifactStore) WriteRequirementFile(ctx context.Context, orgID, projectID, name, content string) (sha string, err error) {
-	res, err := s.artifactSvc.PutFile(ctx, projectID, filepath.Join(RequirementsDir, name), content, "")
+	res, err := s.artifactSvc.PutFile(ctx, projectID, path.Join(RequirementsDir, name), content, "")
 	if err != nil {
 		return "", fmt.Errorf("write requirement file %q: %w", name, err)
 	}
@@ -146,7 +145,7 @@ func (s *ArtifactStore) ListDesignFiles(ctx context.Context, orgID, projectID st
 
 // ReadDesignFile reads a single design file by sub-path.
 func (s *ArtifactStore) ReadDesignFile(ctx context.Context, orgID, projectID, subPath string) (string, error) {
-	res, err := s.artifactSvc.GetFile(ctx, projectID, filepath.Join(DesignDir, subPath))
+	res, err := s.artifactSvc.GetFile(ctx, projectID, path.Join(DesignDir, subPath))
 	if err != nil {
 		return "", err
 	}
@@ -156,7 +155,7 @@ func (s *ArtifactStore) ReadDesignFile(ctx context.Context, orgID, projectID, su
 // WriteDesignFile creates or overwrites a single design file. The path is
 // relative to `specs/design/` (forward slashes; nested components allowed).
 func (s *ArtifactStore) WriteDesignFile(ctx context.Context, orgID, projectID, subPath, content string) (sha string, err error) {
-	res, err := s.artifactSvc.PutFile(ctx, projectID, filepath.Join(DesignDir, subPath), content, "")
+	res, err := s.artifactSvc.PutFile(ctx, projectID, path.Join(DesignDir, subPath), content, "")
 	if err != nil {
 		return "", fmt.Errorf("write design file %q: %w", subPath, err)
 	}

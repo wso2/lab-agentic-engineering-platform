@@ -628,8 +628,8 @@ func (s *taskService) runReconciliationStreamed(ctx context.Context, orgID, proj
 			continue
 		}
 		// Component removed — close issue and reject task.
-		if s.artifactSvc != nil && t.IssueNumber > 0 {
-			if err := s.issueSvc.CloseIssue(ctx, projectID,t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
+		if s.issueSvc != nil && t.IssueNumber > 0 {
+			if err := s.issueSvc.CloseIssue(ctx, projectID, t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
 				slog.WarnContext(ctx, "close issue on reconciliation", "task", t.ID, "issue", t.IssueNumber, "error", err)
 			}
 		}
@@ -678,8 +678,8 @@ func (s *taskService) ReconcilePendingForDesignChange(ctx context.Context, orgID
 		if _, ok := current[strings.ToLower(t.ComponentName)]; ok {
 			continue
 		}
-		if s.artifactSvc != nil && t.IssueNumber > 0 {
-			if err := s.issueSvc.CloseIssue(ctx, projectID,t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
+		if s.issueSvc != nil && t.IssueNumber > 0 {
+			if err := s.issueSvc.CloseIssue(ctx, projectID, t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
 				slog.WarnContext(ctx, "close issue on reconciliation", "task", t.ID, "issue", t.IssueNumber, "error", err)
 			}
 		}
@@ -744,7 +744,7 @@ func (s *taskService) RegenerateTaskBody(ctx context.Context, taskID string, out
 // =============================================================================
 
 func (s *taskService) repoInfoForBody(ctx context.Context, orgID, projectID string) (string, string) {
-	if s.issueSvc == nil {
+	if s.repoSvc == nil {
 		return "", ""
 	}
 	repo, err := s.repoSvc.GetRepo(ctx, projectID)
@@ -755,7 +755,7 @@ func (s *taskService) repoInfoForBody(ctx context.Context, orgID, projectID stri
 }
 
 func (s *taskService) currentArtifactVersions(ctx context.Context, orgID, projectID string) (specV, designV string) {
-	if s.issueSvc == nil {
+	if s.artifactSvc == nil {
 		return "", ""
 	}
 	if vs, err := s.artifactSvc.ListRequirementsVersions(ctx, projectID); err == nil && len(vs) > 0 {

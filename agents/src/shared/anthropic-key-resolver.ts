@@ -103,7 +103,7 @@ export async function resolveAnthropicKey(
     );
   } catch (err) {
     throw new AnthropicKeyError(
-      `git-service unreachable: ${(err as Error).message}`,
+      `asdlc-api unreachable: ${(err as Error).message}`,
       "resolver_unreachable",
       502,
     );
@@ -112,7 +112,7 @@ export async function resolveAnthropicKey(
   if (!resp.ok) {
     const body = await resp.text().catch(() => "");
     throw new AnthropicKeyError(
-      `git-service returned ${resp.status}: ${body.slice(0, 200)}`,
+      `asdlc-api returned ${resp.status}: ${body.slice(0, 200)}`,
       "resolver_error",
       502,
     );
@@ -121,7 +121,7 @@ export async function resolveAnthropicKey(
   const data = (await resp.json()) as EffectiveKey;
   if (!data || (data.source !== "org" && data.source !== "platform" && data.source !== "none")) {
     throw new AnthropicKeyError(
-      "git-service returned an unexpected effective-key shape",
+      "asdlc-api returned an unexpected effective-key shape",
       "resolver_error",
       502,
     );
