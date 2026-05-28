@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"net/http"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/utils"
 )
@@ -89,7 +88,7 @@ func (c *requirementsChatController) GetBaselineFile(w http.ResponseWriter, r *h
 	}
 	res, err := c.service.GetSessionBaselineFile(r.Context(), org, project, baseline, filename)
 	if err != nil {
-		if errors.Is(err, gitservice.ErrArtifactNotFound) {
+		if errors.Is(err, services.ErrArtifactNotFound) {
 			utils.WriteErrorResponse(w, http.StatusNotFound, "baseline snapshot not found")
 			return
 		}
@@ -118,7 +117,7 @@ func (c *requirementsChatController) RevertBaselineFile(w http.ResponseWriter, r
 			utils.WriteErrorResponse(w, http.StatusConflict, "chat_in_progress")
 			return
 		}
-		if errors.Is(err, gitservice.ErrArtifactNotFound) {
+		if errors.Is(err, services.ErrArtifactNotFound) {
 			utils.WriteErrorResponse(w, http.StatusNotFound, "baseline snapshot not found")
 			return
 		}

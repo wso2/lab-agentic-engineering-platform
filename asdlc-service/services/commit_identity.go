@@ -3,8 +3,6 @@ package services
 import (
 	"context"
 	"log/slog"
-
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 )
 
 // commitIdentity returns the (authorName, authorEmail) tuple to use for
@@ -13,18 +11,16 @@ import (
 //
 // Phase 2 PR B: identity now comes from the org's active credential
 // record — App mode returns the bot identity (asdlc-platform[bot]);
-// PAT mode returns the PAT owner. Phase 0 hardcoded "ASDLC Bot /
-// bot@asdlc.dev"; PR B replaces the hardcode while keeping the same
-// shape as a fallback for the case where the lookup fails (newly-
-// connected org with empty cache, transient git-service hiccup).
-func commitIdentity(ctx context.Context, gitClient gitservice.Client, orgID string) (name, email string) {
+// PAT mode returns the PAT owner. The fallback covers newly-connected
+// orgs with empty cache and transient lookup hiccups.
+func commitIdentity(ctx context.Context, credentialSvc *CredentialService, orgID string) (name, email string) {
 	const fallbackName = "ASDLC Bot"
 	const fallbackEmail = "bot@asdlc.dev"
 
-	if gitClient == nil || orgID == "" {
+	if credentialSvc == nil || orgID == "" {
 		return fallbackName, fallbackEmail
 	}
-	ident, err := gitClient.GetCredentialIdentity(ctx, orgID)
+	ident, err := credentialSvc.IdentityFor(ctx, orgID)
 	if err != nil {
 		slog.WarnContext(ctx, "commit identity lookup failed; falling back to default",
 			"orgId", orgID, "error", err)

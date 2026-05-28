@@ -8,7 +8,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
@@ -90,8 +89,9 @@ type workflowRunService struct {
 	db          *gorm.DB
 	taskRepo    repositories.TaskRepository
 	ocClient    openchoreo.ComponentClient
-	gitClient   gitservice.Client
-	store       *ArtifactStore
+	repoSvc      RepoService
+	buildCredSvc *BuildCredentialsService
+	store        *ArtifactStore
 	configSvc   ConfigService
 	projector   TaskStateProjector
 	tokenInject func(ctx context.Context) context.Context
@@ -99,28 +99,29 @@ type workflowRunService struct {
 
 // NewWorkflowRunService constructs the service. tokenInject lets the BFF
 // inject the service-auth token for OC API calls; pass nil for tests.
-// gitClient is the BFF's git-service client — used to mint a fresh GitHub
-// token via /internal/credentials/orgs/{ocOrgId}/mint-build immediately
-// before each WorkflowRun (phase2.md §9.2). store is used to look up
-// per-component AppPath for the changed-path filter — tasks no longer
-// snapshot AppPath, dispatch reads design fresh.
+// repoSvc + buildCredSvc together pre-stage the per-WorkflowRun build
+// Secret in workflows-<orgID> before each WorkflowRun (phase2.md §9.2).
+// store is used to look up per-component AppPath for the changed-path
+// filter — tasks no longer snapshot AppPath, dispatch reads design fresh.
 func NewWorkflowRunService(
 	db *gorm.DB,
 	taskRepo repositories.TaskRepository,
 	ocClient openchoreo.ComponentClient,
-	gitClient gitservice.Client,
+	repoSvc RepoService,
+	buildCredSvc *BuildCredentialsService,
 	store *ArtifactStore,
 	projector TaskStateProjector,
 	tokenInject func(ctx context.Context) context.Context,
 ) WorkflowRunService {
 	return &workflowRunService{
-		db:          db,
-		taskRepo:    taskRepo,
-		ocClient:    ocClient,
-		gitClient:   gitClient,
-		store:       store,
-		projector:   projector,
-		tokenInject: tokenInject,
+		db:           db,
+		taskRepo:     taskRepo,
+		ocClient:     ocClient,
+		repoSvc:      repoSvc,
+		buildCredSvc: buildCredSvc,
+		store:        store,
+		projector:    projector,
+		tokenInject:  tokenInject,
 	}
 }
 
@@ -143,8 +144,8 @@ func (s *workflowRunService) DispatchTaskBuild(ctx context.Context, task *models
 	}
 
 	var repoSlug string
-	if s.gitClient != nil {
-		repo, err := s.gitClient.GetRepo(ctx, task.OrgID, task.ProjectID)
+	if s.repoSvc != nil && s.buildCredSvc != nil {
+		repo, err := s.repoSvc.GetRepo(ctx, task.ProjectID)
 		if err != nil {
 			return "", fmt.Errorf("get repo for slug: %w", err)
 		}
@@ -173,14 +174,14 @@ func (s *workflowRunService) dispatchBuild(
 	// Stage the per-WorkflowRun build Secret in workflows-<orgID> with the
 	// org's GitHub credential. Errors classify identically to the previous
 	// mint-build surface (404 → skip, 409 → skip, 5xx → log + retry).
-	if s.gitClient != nil && repoSlug != "" {
-		if _, err := s.gitClient.StageBuildSecret(ctx, orgID, repoSlug, runName); err != nil {
+	if s.repoSvc != nil && s.buildCredSvc != nil && repoSlug != "" {
+		if _, err := s.buildCredSvc.StageBuildSecret(ctx, orgID, repoSlug, runName); err != nil {
 			switch {
-			case errors.Is(err, gitservice.ErrRepoNotInOrg):
+			case errors.Is(err, ErrRepoNotInOrg):
 				slog.WarnContext(ctx, "stage-build-secret refused: repo/org mismatch",
 					"orgId", orgID, "repoSlug", repoSlug, "task", task.ID)
 				return "", err
-			case errors.Is(err, gitservice.ErrOrgDisconnected):
+			case errors.Is(err, ErrOrgDisconnected):
 				slog.WarnContext(ctx, "stage-build-secret refused: org disconnected; skipping build",
 					"orgId", orgID, "repoSlug", repoSlug, "task", task.ID)
 				return "", err
@@ -271,13 +272,13 @@ func (s *workflowRunService) RetryAuthFailedBuild(ctx context.Context, task *mod
 	if s.tokenInject != nil {
 		ctx = s.tokenInject(ctx)
 	}
-	if s.gitClient == nil {
+	if s.repoSvc == nil || s.buildCredSvc == nil {
 		return "", fmt.Errorf("retry-auth-failed: git client not configured")
 	}
 	if task.LastBuildSHA == "" {
 		return "", fmt.Errorf("retry-auth-failed: task has no LastBuildSHA")
 	}
-	repo, err := s.gitClient.GetRepo(ctx, task.OrgID, task.ProjectID)
+	repo, err := s.repoSvc.GetRepo(ctx, task.ProjectID)
 	if err != nil {
 		return "", fmt.Errorf("retry-auth-failed: get repo: %w", err)
 	}
@@ -285,9 +286,9 @@ func (s *workflowRunService) RetryAuthFailedBuild(ctx context.Context, task *mod
 		return "", fmt.Errorf("retry-auth-failed: project %s has no repo slug", task.ProjectID)
 	}
 	runName := openchoreo.NewBuildRunName(task.ProjectID, task.ComponentName)
-	if _, err := s.gitClient.StageBuildSecret(ctx, task.OrgID, repo.RepoSlug, runName); err != nil {
+	if _, err := s.buildCredSvc.StageBuildSecret(ctx, task.OrgID, repo.RepoSlug, runName); err != nil {
 		switch {
-		case errors.Is(err, gitservice.ErrRepoNotInOrg), errors.Is(err, gitservice.ErrOrgDisconnected):
+		case errors.Is(err, ErrRepoNotInOrg), errors.Is(err, ErrOrgDisconnected):
 			return "", err
 		default:
 			return "", fmt.Errorf("retry-auth-failed: stage-build-secret: %w", err)

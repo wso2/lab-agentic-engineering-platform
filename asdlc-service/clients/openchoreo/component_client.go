@@ -131,8 +131,8 @@ type CodingAgentParams struct {
 	PlatformURL string
 	// AnthropicSecretRef is the name of the per-org K8s Secret in
 	// workflows-<OrgName> carrying ANTHROPIC_API_KEY. Materialised by
-	// git-service in the dispatch pre-flight (see
-	// gitservice.Client.ApplyAnthropicWPSecret). The ClusterWorkflow wires
+	// AnthropicCredentialService.ApplyWPSecret in the dispatch pre-flight.
+	// The ClusterWorkflow wires
 	// it into the pod via `parameters.anthropic.secretRef` →
 	// `secretKeyRef.name`. See docs/design/anthropic-key-dual-token.md §5.
 	AnthropicSecretRef string

@@ -8,7 +8,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 )
@@ -49,19 +48,22 @@ var ErrOrgNotFound = errors.New("org credentials: not found")
 type OrgDisconnectService struct {
 	taskRepo  repositories.TaskRepository
 	db        *gorm.DB
-	gitClient gitservice.Client
+	credSvc   *CredentialService
+	issueSvc  IssueService
 }
 
 // NewOrgDisconnectService constructs the cascade orchestrator.
 func NewOrgDisconnectService(
 	taskRepo repositories.TaskRepository,
 	db *gorm.DB,
-	gitClient gitservice.Client,
+	credSvc *CredentialService,
+	issueSvc IssueService,
 ) *OrgDisconnectService {
 	return &OrgDisconnectService{
-		taskRepo:  taskRepo,
-		db:        db,
-		gitClient: gitClient,
+		taskRepo: taskRepo,
+		db:       db,
+		credSvc:  credSvc,
+		issueSvc: issueSvc,
 	}
 }
 
@@ -82,9 +84,10 @@ func (s *OrgDisconnectService) Disconnect(ctx context.Context, ocOrgID, cause st
 	}
 	// Phase A — confirm the row exists. If not, return ErrOrgNotFound so
 	// the controller can return 200 idempotent.
-	proj, err := s.gitClient.GetCredentialProjection(ctx, ocOrgID)
+	proj, err := s.credSvc.Status(ctx, ocOrgID)
 	if err != nil {
-		if gitservice.IsNotFound(err) {
+		var nfe *NotFoundError
+		if errors.As(err, &nfe) {
 			return ErrOrgNotFound
 		}
 		return fmt.Errorf("disconnect Phase A: status: %w", err)
@@ -111,7 +114,7 @@ func (s *OrgDisconnectService) Disconnect(ctx context.Context, ocOrgID, cause st
 		t := &tasks[i]
 		// Phase B — best-effort comment.
 		if t.IssueNumber > 0 && t.ProjectID != "" {
-			if err := s.gitClient.CommentIssue(ctx, t.OrgID, t.ProjectID, t.IssueNumber, "abandoned: org disconnected"); err != nil {
+			if err := s.issueSvc.CommentIssue(ctx, t.ProjectID, t.IssueNumber, "abandoned: org disconnected"); err != nil {
 				slog.WarnContext(ctx, "disconnect Phase B: comment failed", "taskId", t.ID, "error", err)
 			}
 		}
@@ -133,7 +136,12 @@ func (s *OrgDisconnectService) Disconnect(ctx context.Context, ocOrgID, cause st
 	}
 
 	// Phase D — finalize on git-service: status flip + OpenBao GC.
-	if err := s.gitClient.DisconnectCredential(ctx, ocOrgID); err != nil {
+	if err := s.credSvc.Disconnect(ctx, ocOrgID); err != nil {
+		var nfe *NotFoundError
+		if errors.As(err, &nfe) {
+			slog.InfoContext(ctx, "disconnect: already finalized during cascade", "ocOrgId", ocOrgID)
+			return nil
+		}
 		return fmt.Errorf("disconnect Phase D: %w", err)
 	}
 
@@ -141,7 +149,7 @@ func (s *OrgDisconnectService) Disconnect(ctx context.Context, ocOrgID, cause st
 	// failure are silent (the platform row is gone regardless, and an
 	// admin can clean up via github.com if needed).
 	if uninstallApp && proj.Kind == "app-installation" {
-		if err := s.gitClient.UninstallAppInstallation(ctx, ocOrgID); err != nil {
+		if err := s.credSvc.UninstallAppInstallation(ctx, ocOrgID); err != nil {
 			slog.WarnContext(ctx, "disconnect Phase E: uninstall failed", "ocOrgId", ocOrgID, "error", err)
 		}
 	}

@@ -17,7 +17,6 @@ import (
 	"github.com/wso2/asdlc/asdlc-service/clients/auth"
 	"github.com/wso2/asdlc/asdlc-service/clients/clustergatewayproxy"
 	dbclient "github.com/wso2/asdlc/asdlc-service/clients/database"
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	k8sclient "github.com/wso2/asdlc/asdlc-service/clients/k8s"
 	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
 	"github.com/wso2/asdlc/asdlc-service/clients/observability"
@@ -308,19 +307,11 @@ func main() {
 	// flow with the audience pinned to the target service. nil providers fall
 	// back to no-auth which only makes sense in dev/tests where the target
 	// service is configured with IS_LOCAL_DEV_ENV.
-	gitAuth := buildAuthProvider("git-service", cfg.ServiceAuthGitService)
 	agentsAuth := buildAuthProvider("agents-service", cfg.ServiceAuthAgentsService)
 
 	// Agents service client (AI SDK v6 — BA, architect, tech-lead)
 	agentsClient := agents.NewClient(cfg.AgentsService.BaseURL, agentsAuth)
 	slog.Info("Agents service", "baseURL", cfg.AgentsService.BaseURL)
-
-	// Git service client (optional — disabled when GIT_SERVICE_BASE_URL not set).
-	var gitClient gitservice.Client
-	if cfg.GitService.BaseURL != "" {
-		gitClient = gitservice.NewClient(cfg.GitService.BaseURL, gitAuth)
-		slog.Info("Git service", "baseURL", cfg.GitService.BaseURL)
-	}
 
 	// Database service client (optional — disabled when DATABASE_SERVICE_BASE_URL not set)
 	var dbClient dbclient.Client
@@ -376,284 +367,7 @@ func main() {
 		codingAgentDispatcher = codingagent.New(cgwClient)
 	}
 
-	// Artifact store — PR 2 of repo-storage-ownership: HTTP-backed via
-	// git-service. The BFF no longer mounts /data/repos.
-	artifactStore := services.NewArtifactStore(gitClient)
-
-	// Services. componentService is constructed before configService so
-	// configService can call back into it to mirror env-var edits onto
-	// the OC Component's workflow params.
-	projectService := services.NewProjectService(projectClient, gitClient, artifactStore, taskRepo)
-	organizationService := services.NewOrganizationService(db, namespaceClient)
-	// componentService.WithGitClient wires git-service in so TriggerBuild
-	// can pre-stage the per-WorkflowRun build Secret in workflows-<orgID>
-	// before the WorkflowRun is created (see
-	// docs/design/build-credential-injection.md).
-	componentService := services.NewComponentService(componentClient, observClient, artifactStore)
-	if cs, ok := componentService.(interface {
-		WithGitClient(gitservice.Client) services.ComponentService
-	}); ok && gitClient != nil {
-		componentService = cs.WithGitClient(gitClient)
-	}
-	configService := services.NewConfigService(configRepo, componentService)
-	requirementsDirLocker := services.NewRequirementsDirLocker(db)
-	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, gitClient)
-	if locked, ok := requirementsService.(interface {
-		WithLocker(*services.RequirementsDirLocker) services.RequirementsService
-	}); ok {
-		requirementsService = locked.WithLocker(requirementsDirLocker)
-	}
-	requirementsChatService := services.NewRequirementsChatService(artifactStore, agentsClient, gitClient, requirementsDirLocker)
-	designService := services.NewDesignService(artifactStore, agentsClient, gitClient)
-
-	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, gitClient, agentsClient, dbClient)
-	boardService := services.NewBoardService(gitClient, taskRepo)
-
-	if hook, ok := designService.(services.DesignServiceWithTaskHook); ok {
-		hook.SetTaskService(taskService)
-	}
-	// Wire the skills catalogue into design + task services so the
-	// architect input ships builtin/org skills, and the tech-lead detail
-	// phase ships full bodies of every attached skill.
-	if setter, ok := designService.(services.DesignServiceWithSkills); ok {
-		setter.SetSkillService(skillSvc)
-	}
-	if setter, ok := taskService.(interface {
-		SetSkillService(*services.SkillService)
-	}); ok {
-		setter.SetSkillService(skillSvc)
-	}
-	// TaskSkillsService backs GET /api/v1/tasks/:taskId/skills which
-	// the runner pod calls at init to fetch its frozen SKILL.md bodies.
-	taskSkillsSvc := services.NewTaskSkillsService(db, taskRepo)
-
-	// Phase 2 (api-platform-integration) — trait_sync is the single shared
-	// emitter that reconciles the `api-configuration` ClusterTrait on a
-	// Component CR + per-environment ReleaseBindings. Hooked from both the
-	// dispatch path (after CreateComponent) and the design-edit path
-	// (after `components/<name>/design.md` PUT). See
-	// docs/design/api-platform-integration.md §6 Phase 2.
-	traitSyncService := services.NewTraitSyncService(componentClient, artifactStore)
-	if hook, ok := designService.(services.DesignServiceWithTraitSync); ok {
-		hook.SetTraitSync(traitSyncService)
-	}
-
-	// Phase 3 — Thunder admin client + IDP service. Reads
-	// asdlc-system-client credentials from env (THUNDER_*) and exposes
-	// EnsureOrgPublisher / RevokeOrgPublisher / RegenerateClientSecret
-	// for per-org publisher OAuth app lifecycle. Optional — when the
-	// Thunder base URL is empty the IDP service still runs and serves
-	// GetProfile / GetOrCreateProfile, but mutating calls fail with
-	// ErrIDPThunderUnavailable (non-fatal — protected components keep
-	// deploying, just without per-org publishers).
-	var thunderAdminClient thundersvc.Client
-	thunderBase := cfg.ThunderAdmin.BaseURL
-	if thunderBase == "" {
-		// Fall back to the public Thunder URL the auth middleware
-		// already trusts. setup-prerequisites and docker compose set
-		// this to http://k3d-openchoreo-serverlb:8080 in-cluster /
-		// http://thunder.openchoreo.localhost:8080 from the host.
-		thunderBase = cfg.ServiceAuth.TokenURL
-		// TokenURL contains /oauth2/token — strip back to the host:
-		if idx := strings.Index(thunderBase, "/oauth2/"); idx > 0 {
-			thunderBase = thunderBase[:idx]
-		}
-	}
-	if cfg.ThunderAdmin.ClientID != "" && cfg.ThunderAdmin.ClientSecret != "" && thunderBase != "" {
-		thunderAdminClient = thundersvc.New(thundersvc.Config{
-			BaseURL:      thunderBase,
-			ClientID:     cfg.ThunderAdmin.ClientID,
-			ClientSecret: cfg.ThunderAdmin.ClientSecret,
-		})
-		slog.Info("Thunder admin client", "baseURL", thunderBase, "clientID", cfg.ThunderAdmin.ClientID)
-	} else {
-		slog.Warn("Thunder admin client disabled — set THUNDER_ADMIN_URL + THUNDER_SYSTEM_CLIENT_ID + THUNDER_SYSTEM_CLIENT_SECRET")
-	}
-	idpService := services.NewIDPService(db, thunderAdminClient, services.PlatformIDPConfig{
-		Issuer:  cfg.PlatformIDP.Issuer,
-		JWKSURL: cfg.PlatformIDP.JWKSURL,
-	})
-	// Make idpService available to trait_sync so first-protected-deploy
-	// provisions the publisher app lazily.
-	traitSyncService.SetIDPService(idpService)
-
-	// Connect-state JWT issuer (App-mode OAuth CSRF state). The Task JWT
-	// path moved to RS256 (taskTokens below); this signing key is HS256 and
-	// only ever leaves the BFF as a JWT signature inside the GitHub OAuth
-	// `state` query param.
-	bearerSvc := services.NewBearerService(cfg.OAuthStateSigningKey, 24*time.Hour)
-	if cfg.OAuthStateSigningKey == "" {
-		slog.Warn("OAUTH_STATE_SIGNING_KEY not set — connect-state JWTs will fail to mint")
-	}
-
-	// Task JWT manager — RS256, 24h TTL. Public key is published on the
-	// JWKS endpoint and verified by git-service /credentials/refresh.
-	var taskTokens *services.TaskTokenManager
-	if cfg.TaskTokenSigningKey != "" {
-		mgr, err := services.NewTaskTokenManager(services.TaskTokenConfig{
-			PrivateKey: cfg.TaskTokenSigningKey,
-			Issuer:     cfg.TaskTokenIssuer,
-			Audience:   cfg.TaskTokenAudience,
-			TTL:        24 * time.Hour,
-		})
-		if err != nil {
-			slog.Error("task token manager init failed", "error", err)
-			os.Exit(1)
-		}
-		taskTokens = mgr
-		slog.Info("Task token manager", "kid", mgr.KeyID(), "issuer", cfg.TaskTokenIssuer, "audience", cfg.TaskTokenAudience)
-	} else {
-		slog.Warn("BFF_TASK_SIGNING_KEY not set — task dispatch will fail")
-	}
-
-	// Token injector for OC API calls from inside dispatch, webhook handlers,
-	// and the build watcher. Uses the same service auth as the rest of the BFF.
-	tokenInject := func(ctx context.Context) context.Context {
-		if tokenProvider == nil {
-			return ctx
-		}
-		token, err := tokenProvider.Token()
-		if err != nil {
-			slog.WarnContext(ctx, "service token fetch failed", "error", err)
-			return ctx
-		}
-		return middleware.WithAuthToken(ctx, token)
-	}
-
-	// Dispatch service drives the per-task Issue/branch/PR/Component
-	// pipeline and creates a coding-agent WorkflowRun. wfRunService is
-	// constructed below; we wire DispatchService after it.
-
-	// Webhook receiver wiring. PR B swaps EnvSecretProvider for
-	// GitServiceSecretProvider — secrets now come from the per-org
-	// credential record (via git-service). The receiver pipeline shape
-	// is unchanged from Phase 0; only the lookup backend changes.
-	var (
-		secretProvider webhook.SecretProvider
-		routingLookup  webhook.OcOrgIDLookup
-	)
-	if gitClient != nil {
-		secretProvider = webhook.NewGitServiceSecretProvider(gitClient, 30*time.Second)
-		routingLookup = gitClient
-	} else {
-		// Defensive — running without a git-service is not a supported
-		// dev configuration but main.go shouldn't crash on it.
-		secretProvider = webhook.NewGitServiceSecretProvider(nilSecretFetcher{}, 30*time.Second)
-		routingLookup = nilLookup{}
-	}
-	webhookVerifier := webhook.NewVerifier(secretProvider).
-		WithRefetchLimiter(webhook.NewRefetchLimiter(1, 5))
-	routingCache := webhook.NewRoutingCache(60 * time.Second)
-	deliveryStore := webhook.NewDeliveryStore(db)
-	webhookRouter := webhook.NewRouter()
-	projector := webhook.NewProjector(db)
-
-	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, gitClient, artifactStore, projector, tokenInject)
-
-	// Dispatch service — replaces the legacy RemoteWorkerService. Routes to
-	// WorkflowRunService.TriggerCodingAgent (ClusterWorkflow `app-factory-coding-agent`)
-	// for the per-task agent pod. AGENT_GIT_SERVICE_URL must be reachable from
-	// the WorkflowPlane namespace (cross-namespace FQDN — see env-overlay).
-	agentGitServiceURL := cfg.AgentGitServiceURL
-	if agentGitServiceURL == "" {
-		agentGitServiceURL = cfg.GitService.BaseURL
-	}
-	dispatchSvc := services.NewDispatchService(taskRepo, gitClient, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, agentGitServiceURL, cfg.AgentPlatformURL)
-	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
-		hook.SetTraitSync(traitSyncService)
-	}
-	// WS2.3 — wire the proxy-based dispatcher. nil dispatcher → the
-	// legacy ClusterWorkflow path stays the only dispatch flow.
-	if codingAgentDispatcher != nil {
-		if setter, ok := dispatchSvc.(interface {
-			WithCodingAgentDispatcher(*codingagent.Dispatcher, *gorm.DB, string, string) services.DispatchService
-		}); ok {
-			setter.WithCodingAgentDispatcher(codingAgentDispatcher, db, cfg.AgentClusterSecretStore, cfg.AgentRunnerImage)
-			slog.Info("dispatch: proxy-based coding-agent path enabled",
-				"runnerImage", cfg.AgentRunnerImage,
-				"clusterSecretStore", cfg.AgentClusterSecretStore)
-		}
-	}
-	runtimeConfigSvc := services.NewRuntimeConfigService(componentClient, artifactStore)
-	runtimeConfigSvc.SetPlatformIDP(cfg.PlatformIDP.Issuer, "openid profile email")
-	if thunderAdminClient != nil {
-		runtimeConfigSvc.SetThunderAdmin(thunderAdminClient)
-	}
-	if rcSetter, ok := dispatchSvc.(interface {
-		SetRuntimeConfig(*services.RuntimeConfigService)
-	}); ok {
-		rcSetter.SetRuntimeConfig(runtimeConfigSvc)
-	}
-	slog.Info("Dispatch service", "agentGitServiceURL", agentGitServiceURL)
-
-	// F1 — wire the post-deploy dispatch cascade. The projector fires
-	// OnTaskDeployed whenever ApplyBuildResult lands a task in `deployed`;
-	// the cascade takes a per-project lock and calls DispatchTasks to
-	// re-evaluate `on_hold` siblings and auto-dispatch the ones
-	// whose deps are now satisfied. See docs/design/cross-component-
-	// wiring-gaps.md §3 F1.
-	cascadeHook := services.NewDispatchCascadeHook(db, dispatchSvc)
-	cascadeHook.SetTraitSync(traitSyncService)
-	cascadeHook.SetRuntimeConfig(runtimeConfigSvc)
-	projector.SetDispatchHook(cascadeHook)
-
-	webhook.Register(webhookRouter, db, projector, wfRunService)
-	if gitClient != nil {
-		webhook.RegisterInstallationHandlers(webhookRouter, db, gitClient, taskRepo, projector)
-	}
-	webhookCtrl := controllers.NewWebhookController(webhookVerifier, deliveryStore, webhookRouter, routingLookup, routingCache)
-
-	// Build watcher — 10s sweep for in-flight WorkflowRuns. Started after
-	// the HTTP server is up so it's not killed during handler init failures.
-	// Phase 2 PR D — wfRunService.RetryAuthFailedBuild backs the auth
-	// retry path. authBudget is configurable for tests via env.
-	buildWatcher := webhook.NewBuildWatcher(db, componentClient, projector, tokenInject, wfRunService, cfg.BuildAuthRetryBudget)
-
-	// Coding-agent watcher — same cadence, complementary to the GitHub
-	// webhook path. Only acts on terminal-failed coding-agent WorkflowRuns;
-	// success transitions ride the pull_request:ready_for_review webhook.
-	codingAgentWatcher := webhook.NewCodingAgentWatcher(db, componentClient, projector, tokenInject)
-
-	// Phase 2 — trait_sync drift watcher (10 s cadence). Idempotent
-	// reconcile of the `api-configuration` ClusterTrait on every
-	// (org,project,component) tuple that has a task record. Closes
-	// write-write races between dispatch / design PUT and provides the
-	// convergence backstop the §6 Phase 2 plan calls for.
-	traitSyncWatcher := webhook.NewTraitSyncWatcher(db, traitSyncService, tokenInject)
-
-	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
-	var orgGitHubCtrl controllers.OrgGitHubController
-	if gitClient != nil {
-		disconnectSvc := services.NewOrgDisconnectService(taskRepo, db, gitClient)
-		orgGitHubCtrl = controllers.NewOrgGitHubController(
-			gitClient,
-			disconnectSvc,
-			bearerSvc,
-			cfg.GithubAppSlug,
-			cfg.BFFPublicURL,
-			cfg.GithubAppClientID,
-		)
-	}
-
-	// Per-org Anthropic settings surface. Proxies to git-service's internal
-	// credential routes; same JWT gating as GitHub Integration.
-	var orgAnthropicCtrl controllers.OrgAnthropicController
-	if gitClient != nil {
-		orgAnthropicCtrl = controllers.NewOrgAnthropicController(gitClient)
-	}
-
-	// Inbound JWT verifier — Thunder publishes the User JWT and Service JWT
-	// signing keys at JWKSURL. Lazy fetch on first request avoids compose
-	// start-order races.
-	var thunderJWKS *jwtassertion.JWKSCache
-	if cfg.JWKSURL != "" {
-		thunderJWKS = jwtassertion.NewJWKSCache(cfg.JWKSURL)
-		slog.Info("Inbound JWT verifier", "jwksURL", cfg.JWKSURL, "audience", cfg.JWTAllowedAudience, "issuer", cfg.JWTAllowedIssuer)
-	} else {
-		slog.Warn("JWKS_URL not set — inbound JWT verification disabled (dev/test only)")
-	}
-
-	// --- Git-service services + controllers (folded in after WS0.1.i) ---
+	// --- Credentials + in-process services (folded in after WS0.1.i) ---
 	credKey, err := base64.StdEncoding.DecodeString(cfg.CredentialEncryptionKey)
 	if err != nil || len(credKey) != 32 {
 		slog.Error("CREDENTIAL_ENCRYPTION_KEY must be a base64-encoded 32-byte key", "error", err)
@@ -778,6 +492,258 @@ func main() {
 	credRefreshCtrl := controllers.NewCredentialsRefreshController(credRefreshService)
 	gitProjectCtrl := controllers.NewGitProjectController(githubV2Client, credResolver, repoService)
 	repoBoardCtrl := controllers.NewRepoBoardController(repoBoardService)
+
+	// Artifact store — in-process via artifactSvcGit. Adds the
+	// external-API catalog + the `DesignFile` YAML split/assemble layer
+	// on top of raw file I/O.
+	artifactStore := services.NewArtifactStore(artifactSvcGit)
+
+	// Services. componentService is constructed before configService so
+	// configService can call back into it to mirror env-var edits onto
+	// the OC Component's workflow params.
+	projectService := services.NewProjectService(projectClient, repoService, webhookRegService, artifactSvcGit, artifactStore, taskRepo)
+	organizationService := services.NewOrganizationService(db, namespaceClient)
+	// componentService takes repoSvc + buildCredSvc so TriggerBuild can
+	// pre-stage the per-WorkflowRun build Secret in workflows-<orgID>
+	// before the WorkflowRun is created (see
+	// docs/design/build-credential-injection.md).
+	componentService := services.NewComponentService(componentClient, observClient, artifactStore, repoService, buildCredService)
+	configService := services.NewConfigService(configRepo, componentService)
+	requirementsDirLocker := services.NewRequirementsDirLocker(db)
+	requirementsService := services.NewRequirementsService(artifactStore, agentsClient, artifactSvcGit)
+	if locked, ok := requirementsService.(interface {
+		WithLocker(*services.RequirementsDirLocker) services.RequirementsService
+	}); ok {
+		requirementsService = locked.WithLocker(requirementsDirLocker)
+	}
+	requirementsChatService := services.NewRequirementsChatService(artifactStore, agentsClient, artifactSvcGit, requirementsDirLocker)
+	designService := services.NewDesignService(artifactStore, agentsClient, artifactSvcGit)
+
+	taskService := services.NewTaskService(db, taskRepo, artifactStore, componentService, tokenProvider, configService, issueService, artifactSvcGit, repoService, agentsClient, dbClient)
+	boardService := services.NewBoardService(repoBoardService, taskRepo)
+
+	if hook, ok := designService.(services.DesignServiceWithTaskHook); ok {
+		hook.SetTaskService(taskService)
+	}
+	// Wire the skills catalogue into design + task services so the
+	// architect input ships builtin/org skills, and the tech-lead detail
+	// phase ships full bodies of every attached skill.
+	if setter, ok := designService.(services.DesignServiceWithSkills); ok {
+		setter.SetSkillService(skillSvc)
+	}
+	if setter, ok := taskService.(interface {
+		SetSkillService(*services.SkillService)
+	}); ok {
+		setter.SetSkillService(skillSvc)
+	}
+	// TaskSkillsService backs GET /api/v1/tasks/:taskId/skills which
+	// the runner pod calls at init to fetch its frozen SKILL.md bodies.
+	taskSkillsSvc := services.NewTaskSkillsService(db, taskRepo)
+
+	// Phase 2 (api-platform-integration) — trait_sync is the single shared
+	// emitter that reconciles the `api-configuration` ClusterTrait on a
+	// Component CR + per-environment ReleaseBindings. Hooked from both the
+	// dispatch path (after CreateComponent) and the design-edit path
+	// (after `components/<name>/design.md` PUT). See
+	// docs/design/api-platform-integration.md §6 Phase 2.
+	traitSyncService := services.NewTraitSyncService(componentClient, artifactStore)
+	if hook, ok := designService.(services.DesignServiceWithTraitSync); ok {
+		hook.SetTraitSync(traitSyncService)
+	}
+
+	// Phase 3 — Thunder admin client + IDP service. Reads
+	// asdlc-system-client credentials from env (THUNDER_*) and exposes
+	// EnsureOrgPublisher / RevokeOrgPublisher / RegenerateClientSecret
+	// for per-org publisher OAuth app lifecycle. Optional — when the
+	// Thunder base URL is empty the IDP service still runs and serves
+	// GetProfile / GetOrCreateProfile, but mutating calls fail with
+	// ErrIDPThunderUnavailable (non-fatal — protected components keep
+	// deploying, just without per-org publishers).
+	var thunderAdminClient thundersvc.Client
+	thunderBase := cfg.ThunderAdmin.BaseURL
+	if thunderBase == "" {
+		// Fall back to the public Thunder URL the auth middleware
+		// already trusts. setup-prerequisites and docker compose set
+		// this to http://k3d-openchoreo-serverlb:8080 in-cluster /
+		// http://thunder.openchoreo.localhost:8080 from the host.
+		thunderBase = cfg.ServiceAuth.TokenURL
+		// TokenURL contains /oauth2/token — strip back to the host:
+		if idx := strings.Index(thunderBase, "/oauth2/"); idx > 0 {
+			thunderBase = thunderBase[:idx]
+		}
+	}
+	if cfg.ThunderAdmin.ClientID != "" && cfg.ThunderAdmin.ClientSecret != "" && thunderBase != "" {
+		thunderAdminClient = thundersvc.New(thundersvc.Config{
+			BaseURL:      thunderBase,
+			ClientID:     cfg.ThunderAdmin.ClientID,
+			ClientSecret: cfg.ThunderAdmin.ClientSecret,
+		})
+		slog.Info("Thunder admin client", "baseURL", thunderBase, "clientID", cfg.ThunderAdmin.ClientID)
+	} else {
+		slog.Warn("Thunder admin client disabled — set THUNDER_ADMIN_URL + THUNDER_SYSTEM_CLIENT_ID + THUNDER_SYSTEM_CLIENT_SECRET")
+	}
+	idpService := services.NewIDPService(db, thunderAdminClient, services.PlatformIDPConfig{
+		Issuer:  cfg.PlatformIDP.Issuer,
+		JWKSURL: cfg.PlatformIDP.JWKSURL,
+	})
+	// Make idpService available to trait_sync so first-protected-deploy
+	// provisions the publisher app lazily.
+	traitSyncService.SetIDPService(idpService)
+
+	// Connect-state JWT issuer (App-mode OAuth CSRF state). The Task JWT
+	// path moved to RS256 (taskTokens below); this signing key is HS256 and
+	// only ever leaves the BFF as a JWT signature inside the GitHub OAuth
+	// `state` query param.
+	bearerSvc := services.NewBearerService(cfg.OAuthStateSigningKey, 24*time.Hour)
+	if cfg.OAuthStateSigningKey == "" {
+		slog.Warn("OAUTH_STATE_SIGNING_KEY not set — connect-state JWTs will fail to mint")
+	}
+
+	// Task JWT manager — RS256, 24h TTL. Public key is published on the
+	// JWKS endpoint and verified by git-service /credentials/refresh.
+	var taskTokens *services.TaskTokenManager
+	if cfg.TaskTokenSigningKey != "" {
+		mgr, err := services.NewTaskTokenManager(services.TaskTokenConfig{
+			PrivateKey: cfg.TaskTokenSigningKey,
+			Issuer:     cfg.TaskTokenIssuer,
+			Audience:   cfg.TaskTokenAudience,
+			TTL:        24 * time.Hour,
+		})
+		if err != nil {
+			slog.Error("task token manager init failed", "error", err)
+			os.Exit(1)
+		}
+		taskTokens = mgr
+		slog.Info("Task token manager", "kid", mgr.KeyID(), "issuer", cfg.TaskTokenIssuer, "audience", cfg.TaskTokenAudience)
+	} else {
+		slog.Warn("BFF_TASK_SIGNING_KEY not set — task dispatch will fail")
+	}
+
+	// Token injector for OC API calls from inside dispatch, webhook handlers,
+	// and the build watcher. Uses the same service auth as the rest of the BFF.
+	tokenInject := func(ctx context.Context) context.Context {
+		if tokenProvider == nil {
+			return ctx
+		}
+		token, err := tokenProvider.Token()
+		if err != nil {
+			slog.WarnContext(ctx, "service token fetch failed", "error", err)
+			return ctx
+		}
+		return middleware.WithAuthToken(ctx, token)
+	}
+
+	// Dispatch service drives the per-task Issue/branch/PR/Component
+	// pipeline and creates a coding-agent WorkflowRun. wfRunService is
+	// constructed below; we wire DispatchService after it.
+
+	// Webhook receiver wiring. PR B swaps EnvSecretProvider for
+	// GitServiceSecretProvider — secrets now come from the per-org
+	// credential record (via git-service). The receiver pipeline shape
+	// is unchanged from Phase 0; only the lookup backend changes.
+	secretProvider := webhook.NewGitServiceSecretProvider(credService, 30*time.Second)
+	var routingLookup webhook.OcOrgIDLookup = credService
+	webhookVerifier := webhook.NewVerifier(secretProvider).
+		WithRefetchLimiter(webhook.NewRefetchLimiter(1, 5))
+	routingCache := webhook.NewRoutingCache(60 * time.Second)
+	deliveryStore := webhook.NewDeliveryStore(db)
+	webhookRouter := webhook.NewRouter()
+	projector := webhook.NewProjector(db)
+
+	wfRunService := services.NewWorkflowRunService(db, taskRepo, componentClient, repoService, buildCredService, artifactStore, projector, tokenInject)
+
+	// Dispatch service — replaces the legacy RemoteWorkerService. Routes to
+	// WorkflowRunService.TriggerCodingAgent (ClusterWorkflow `app-factory-coding-agent`)
+	// for the per-task agent pod. AGENT_GIT_SERVICE_URL must be reachable from
+	// the WorkflowPlane namespace (cross-namespace FQDN — see env-overlay).
+	// AGENT_GIT_SERVICE_URL collapsed into AGENT_PLATFORM_URL: post-fold,
+	// the runner pod reaches every former git-service endpoint via the
+	// merged asdlc-api at AGENT_PLATFORM_URL.
+	dispatchSvc := services.NewDispatchService(taskRepo, repoService, credService, anthropicCredService, repoBoardService, componentService, configService, artifactStore, taskTokens, tokenInject, wfRunService, projector, cfg.AgentPlatformURL, cfg.AgentPlatformURL)
+	if hook, ok := dispatchSvc.(services.DispatchServiceWithTraitSync); ok {
+		hook.SetTraitSync(traitSyncService)
+	}
+	// WS2.3 — wire the proxy-based dispatcher. nil dispatcher → the
+	// legacy ClusterWorkflow path stays the only dispatch flow.
+	if codingAgentDispatcher != nil {
+		if setter, ok := dispatchSvc.(interface {
+			WithCodingAgentDispatcher(*codingagent.Dispatcher, *gorm.DB, string, string) services.DispatchService
+		}); ok {
+			setter.WithCodingAgentDispatcher(codingAgentDispatcher, db, cfg.AgentClusterSecretStore, cfg.AgentRunnerImage)
+			slog.Info("dispatch: proxy-based coding-agent path enabled",
+				"runnerImage", cfg.AgentRunnerImage,
+				"clusterSecretStore", cfg.AgentClusterSecretStore)
+		}
+	}
+	runtimeConfigSvc := services.NewRuntimeConfigService(componentClient, artifactStore)
+	runtimeConfigSvc.SetPlatformIDP(cfg.PlatformIDP.Issuer, "openid profile email")
+	if thunderAdminClient != nil {
+		runtimeConfigSvc.SetThunderAdmin(thunderAdminClient)
+	}
+	if rcSetter, ok := dispatchSvc.(interface {
+		SetRuntimeConfig(*services.RuntimeConfigService)
+	}); ok {
+		rcSetter.SetRuntimeConfig(runtimeConfigSvc)
+	}
+	slog.Info("Dispatch service", "agentPlatformURL", cfg.AgentPlatformURL)
+
+	// F1 — wire the post-deploy dispatch cascade. The projector fires
+	// OnTaskDeployed whenever ApplyBuildResult lands a task in `deployed`;
+	// the cascade takes a per-project lock and calls DispatchTasks to
+	// re-evaluate `on_hold` siblings and auto-dispatch the ones
+	// whose deps are now satisfied. See docs/design/cross-component-
+	// wiring-gaps.md §3 F1.
+	cascadeHook := services.NewDispatchCascadeHook(db, dispatchSvc)
+	cascadeHook.SetTraitSync(traitSyncService)
+	cascadeHook.SetRuntimeConfig(runtimeConfigSvc)
+	projector.SetDispatchHook(cascadeHook)
+
+	webhook.Register(webhookRouter, db, projector, wfRunService)
+	webhook.RegisterInstallationHandlers(webhookRouter, db, credService, issueService, taskRepo, projector)
+	webhookCtrl := controllers.NewWebhookController(webhookVerifier, deliveryStore, webhookRouter, routingLookup, routingCache)
+
+	// Build watcher — 10s sweep for in-flight WorkflowRuns. Started after
+	// the HTTP server is up so it's not killed during handler init failures.
+	// Phase 2 PR D — wfRunService.RetryAuthFailedBuild backs the auth
+	// retry path. authBudget is configurable for tests via env.
+	buildWatcher := webhook.NewBuildWatcher(db, componentClient, projector, tokenInject, wfRunService, cfg.BuildAuthRetryBudget)
+
+	// Coding-agent watcher — same cadence, complementary to the GitHub
+	// webhook path. Only acts on terminal-failed coding-agent WorkflowRuns;
+	// success transitions ride the pull_request:ready_for_review webhook.
+	codingAgentWatcher := webhook.NewCodingAgentWatcher(db, componentClient, projector, tokenInject)
+
+	// Phase 2 — trait_sync drift watcher (10 s cadence). Idempotent
+	// reconcile of the `api-configuration` ClusterTrait on every
+	// (org,project,component) tuple that has a task record. Closes
+	// write-write races between dispatch / design PUT and provides the
+	// convergence backstop the §6 Phase 2 plan calls for.
+	traitSyncWatcher := webhook.NewTraitSyncWatcher(db, traitSyncService, tokenInject)
+
+	// Inbound JWT verifier — Thunder publishes the User JWT and Service JWT
+	// signing keys at JWKSURL. Lazy fetch on first request avoids compose
+	// start-order races.
+	var thunderJWKS *jwtassertion.JWKSCache
+	if cfg.JWKSURL != "" {
+		thunderJWKS = jwtassertion.NewJWKSCache(cfg.JWKSURL)
+		slog.Info("Inbound JWT verifier", "jwksURL", cfg.JWKSURL, "audience", cfg.JWTAllowedAudience, "issuer", cfg.JWTAllowedIssuer)
+	} else {
+		slog.Warn("JWKS_URL not set — inbound JWT verification disabled (dev/test only)")
+	}
+
+	// Phase 2 PR B — org-scoped GitHub connect/disconnect surface.
+	disconnectSvc := services.NewOrgDisconnectService(taskRepo, db, credService, issueService)
+	orgGitHubCtrl := controllers.NewOrgGitHubController(
+		credService,
+		disconnectSvc,
+		bearerSvc,
+		cfg.GithubAppSlug,
+		cfg.BFFPublicURL,
+		cfg.GithubAppClientID,
+	)
+
+	// Per-org Anthropic settings surface. Same JWT gating as GitHub Integration.
+	orgAnthropicCtrl := controllers.NewOrgAnthropicController(anthropicCredService)
 
 	var serviceJWT, taskJWT jwtassertion.Middleware
 	if cfg.JWKSURL != "" {
@@ -930,25 +896,6 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("server stopped")
-}
-
-// nilSecretFetcher / nilLookup are defensive fallbacks for the (unsupported
-// in dev, but possible in tests) configuration where git-service isn't
-// configured. Both reject every call so the receiver returns 5xx, which
-// is the right signal — webhook routing without git-service is broken.
-type nilSecretFetcher struct{}
-
-func (nilSecretFetcher) GetWebhookSecrets(context.Context, string) ([][]byte, error) {
-	return nil, fmt.Errorf("git-service not configured")
-}
-
-type nilLookup struct{}
-
-func (nilLookup) OrgIDByInstallationID(context.Context, int64) (string, error) {
-	return "", fmt.Errorf("git-service not configured")
-}
-func (nilLookup) OrgIDByRepoFullName(context.Context, string) (string, error) {
-	return "", fmt.Errorf("git-service not configured")
 }
 
 // buildAuthProvider returns an AuthProvider when client_credentials are

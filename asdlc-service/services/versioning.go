@@ -3,7 +3,6 @@ package services
 import (
 	"fmt"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
@@ -18,9 +17,9 @@ import (
 // the lineage label on the architecture page can render "Based on
 // requirements v<N>" without duplicating the decode logic frontend-side.
 
-// mapRequirementsVersions converts the git-service requirements version
+// mapRequirementsVersions converts the artifact-service requirements version
 // list to the BFF's flat ArtifactVersion shape.
-func mapRequirementsVersions(versions []gitservice.RequirementsVersionInfo) []models.ArtifactVersion {
+func mapRequirementsVersions(versions []RequirementsVersionInfo) []models.ArtifactVersion {
 	if len(versions) == 0 {
 		return nil
 	}
@@ -35,11 +34,11 @@ func mapRequirementsVersions(versions []gitservice.RequirementsVersionInfo) []mo
 	return out
 }
 
-// mapDesignVersions converts the git-service design version list. The
+// mapDesignVersions converts the artifact-service design version list. The
 // per-row Version field carries the design revision number (M); the
 // SourceSpec field exposes the parent requirements tag (`v<N>`) so the UI
 // can render lineage without re-parsing tag names.
-func mapDesignVersions(versions []gitservice.DesignVersionInfo) []models.ArtifactVersion {
+func mapDesignVersions(versions []DesignVersionInfo) []models.ArtifactVersion {
 	if len(versions) == 0 {
 		return nil
 	}

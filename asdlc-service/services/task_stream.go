@@ -154,15 +154,15 @@ func (s *taskService) StreamGenerateTasks(ctx context.Context, orgID, projectID 
 		mode = "incremental"
 		// Best-effort: pull the prior design + spec at the baseline tag. Diff
 		// computers tolerate empty/nil prevs.
-		if s.gitClient != nil && baseline.SourceDesignVersion != "" {
-			if files, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, baseline.SourceDesignVersion); err == nil {
+		if s.artifactSvc != nil && baseline.SourceDesignVersion != "" {
+			if files, err := s.artifactSvc.GetDesignAtTag(ctx, projectID,baseline.SourceDesignVersion); err == nil {
 				prevDesign, _ = AssembleDesign(files)
 			}
 		}
-		if s.gitClient != nil && baseline.SourceSpecVersion != "" {
+		if s.artifactSvc != nil && baseline.SourceSpecVersion != "" {
 			// Pull every requirement file at the baseline tag and concatenate.
 			// The tag is a `v<N>` requirements tag; missing files are tolerated.
-			if files, err := s.gitClient.GetRequirementsAtTag(ctx, orgID, projectID, baseline.SourceSpecVersion); err == nil {
+			if files, err := s.artifactSvc.GetRequirementsAtTag(ctx, projectID,baseline.SourceSpecVersion); err == nil {
 				prevSpec = concatRequirementBundle(files)
 			}
 		}
@@ -582,14 +582,14 @@ func (s *taskService) proxyDetailStream(
 }
 
 func (s *taskService) editIssueBodyWithRetries(ctx context.Context, task *models.ComponentTask, repoURL, repoSlug string) {
-	if s.gitClient == nil || task.IssueNumber == 0 {
+	if s.issueSvc == nil || task.IssueNumber == 0 {
 		return
 	}
 	comp, _ := s.resolveDesignComponent(ctx, task)
 	body := buildIssueBody(task, comp, repoURL, repoSlug)
 	var lastErr error
 	for attempt := 1; attempt <= 3; attempt++ {
-		err := s.gitClient.EditIssueBody(ctx, task.OrgID, task.ProjectID, task.IssueNumber, body)
+		err := s.issueSvc.EditIssueBody(ctx, task.ProjectID,task.IssueNumber, body)
 		if err == nil {
 			task.BodySyncPending = false
 			_ = s.taskRepo.Update(ctx, task)
@@ -628,8 +628,8 @@ func (s *taskService) runReconciliationStreamed(ctx context.Context, orgID, proj
 			continue
 		}
 		// Component removed — close issue and reject task.
-		if s.gitClient != nil && t.IssueNumber > 0 {
-			if err := s.gitClient.CloseIssue(ctx, orgID, projectID, t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
+		if s.issueSvc != nil && t.IssueNumber > 0 {
+			if err := s.issueSvc.CloseIssue(ctx, projectID, t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
 				slog.WarnContext(ctx, "close issue on reconciliation", "task", t.ID, "issue", t.IssueNumber, "error", err)
 			}
 		}
@@ -678,8 +678,8 @@ func (s *taskService) ReconcilePendingForDesignChange(ctx context.Context, orgID
 		if _, ok := current[strings.ToLower(t.ComponentName)]; ok {
 			continue
 		}
-		if s.gitClient != nil && t.IssueNumber > 0 {
-			if err := s.gitClient.CloseIssue(ctx, orgID, projectID, t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
+		if s.issueSvc != nil && t.IssueNumber > 0 {
+			if err := s.issueSvc.CloseIssue(ctx, projectID, t.IssueNumber, "Component removed from architecture; auto-closed by tech-lead reconciliation."); err != nil {
 				slog.WarnContext(ctx, "close issue on reconciliation", "task", t.ID, "issue", t.IssueNumber, "error", err)
 			}
 		}
@@ -744,10 +744,10 @@ func (s *taskService) RegenerateTaskBody(ctx context.Context, taskID string, out
 // =============================================================================
 
 func (s *taskService) repoInfoForBody(ctx context.Context, orgID, projectID string) (string, string) {
-	if s.gitClient == nil {
+	if s.repoSvc == nil {
 		return "", ""
 	}
-	repo, err := s.gitClient.GetRepo(ctx, orgID, projectID)
+	repo, err := s.repoSvc.GetRepo(ctx, projectID)
 	if err != nil || repo == nil {
 		return "", ""
 	}
@@ -755,13 +755,13 @@ func (s *taskService) repoInfoForBody(ctx context.Context, orgID, projectID stri
 }
 
 func (s *taskService) currentArtifactVersions(ctx context.Context, orgID, projectID string) (specV, designV string) {
-	if s.gitClient == nil {
+	if s.artifactSvc == nil {
 		return "", ""
 	}
-	if vs, err := s.gitClient.ListRequirementsVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {
+	if vs, err := s.artifactSvc.ListRequirementsVersions(ctx, projectID); err == nil && len(vs) > 0 {
 		specV = vs[0].Tag
 	}
-	if vs, err := s.gitClient.ListDesignVersions(ctx, orgID, projectID); err == nil && len(vs) > 0 {
+	if vs, err := s.artifactSvc.ListDesignVersions(ctx, projectID); err == nil && len(vs) > 0 {
 		designV = vs[0].Tag
 	}
 	return specV, designV

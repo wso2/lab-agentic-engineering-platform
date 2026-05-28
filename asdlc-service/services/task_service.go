@@ -12,7 +12,6 @@ import (
 
 	"github.com/wso2/asdlc/asdlc-service/clients/agents"
 	dbclient "github.com/wso2/asdlc/asdlc-service/clients/database"
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/clients/oauth"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
@@ -58,7 +57,9 @@ type taskService struct {
 	componentSvc  ComponentService     // for creating OC components and checking build/deploy status
 	tokenProvider *oauth.TokenProvider // for service-to-service auth (OC API)
 	configSvc     ConfigService        // for fetching env vars at deploy time
-	gitClient     gitservice.Client    // for committing and pushing code after implementation
+	issueSvc      IssueService         // GitHub issue CRUD for task lifecycle
+	artifactSvc   ArtifactService      // artifact version + at-tag reads for in-flight tasks
+	repoSvc       RepoService          // repo metadata lookups (clone path, slug, …)
 	agentsClient  agents.Client        // for calling tech-lead agent (plan + detail)
 	dbClient      dbclient.Client      // for provisioning and testing databases
 	// skillSvc resolves the per-org skill catalogue for tech-lead plan
@@ -81,7 +82,9 @@ func NewTaskService(
 	componentSvc ComponentService,
 	tokenProvider *oauth.TokenProvider,
 	configSvc ConfigService,
-	gitClient gitservice.Client,
+	issueSvc IssueService,
+	artifactSvc ArtifactService,
+	repoSvc RepoService,
 	agentsClient agents.Client,
 	dbClient dbclient.Client,
 ) TaskService {
@@ -92,7 +95,9 @@ func NewTaskService(
 		componentSvc:  componentSvc,
 		tokenProvider: tokenProvider,
 		configSvc:     configSvc,
-		gitClient:     gitClient,
+		issueSvc:      issueSvc,
+		artifactSvc:   artifactSvc,
+		repoSvc:       repoSvc,
 		agentsClient:  agentsClient,
 		dbClient:      dbClient,
 	}
@@ -127,7 +132,7 @@ func (s *taskService) GetTask(ctx context.Context, taskID string) (*models.Compo
 }
 
 func (s *taskService) GetTasks(ctx context.Context, orgID, projectID string) (*models.Tasks, error) {
-	if s.gitClient == nil {
+	if s.issueSvc == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
 
@@ -145,8 +150,8 @@ func (s *taskService) GetTasks(ctx context.Context, orgID, projectID string) (*m
 
 	// Best-effort: fetch all open GitHub issues to pick up kanban labels.
 	// If this fails we still render tasks from DB.
-	issueByNum := make(map[int]gitservice.IssueInfo)
-	issues, err := s.gitClient.ListIssues(ctx, orgID, projectID, nil)
+	issueByNum := make(map[int]IssueInfo)
+	issues, err := s.issueSvc.ListIssues(ctx, projectID, nil)
 	if err != nil {
 		slog.WarnContext(ctx, "failed to list github issues; rendering from DB only", "error", err)
 	} else {
@@ -342,7 +347,7 @@ func (s *taskService) ensureIssueForTask(
 	if task.IssueURL != "" {
 		return nil
 	}
-	if s.gitClient == nil {
+	if s.issueSvc == nil {
 		return fmt.Errorf("git client not configured")
 	}
 
@@ -364,7 +369,7 @@ func (s *taskService) ensureIssueForTask(
 	// doesn't pre-name a branch. BranchName is filled in later by the
 	// pull_request.opened webhook handler when the agent opens its PR.
 
-	issue, err := s.gitClient.CreateIssue(ctx, task.OrgID, task.ProjectID, &gitservice.CreateIssueRequest{
+	issue, err := s.issueSvc.CreateIssue(ctx, task.ProjectID, CreateIssueRequest{
 		Title:  issueTitle(task),
 		Body:   buildIssueBody(task, comp, repoURL, repoSlug),
 		Labels: []string{"asdlc", "implementation"},

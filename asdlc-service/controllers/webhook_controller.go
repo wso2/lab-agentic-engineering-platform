@@ -8,16 +8,16 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
+	"github.com/wso2/asdlc/asdlc-service/services"
 	"github.com/wso2/asdlc/asdlc-service/services/webhook"
 )
 
 // isLookupNotFound reports whether err is a 404 surfaced by the routing
-// lookup against git-service. A 404 means "this event is for a repo or
-// installation that isn't connected to ASDLC" — ack noop instead of
-// 5xx-retrying for hours.
+// lookup. A 404 means "this event is for a repo or installation that
+// isn't connected to ASDLC" — ack noop instead of 5xx-retrying for hours.
 func isLookupNotFound(err error) bool {
-	if gitservice.IsNotFound(err) {
+	var nfe *services.NotFoundError
+	if errors.As(err, &nfe) {
 		return true
 	}
 	if err == nil {
@@ -48,7 +48,7 @@ type webhookController struct {
 	verifier   *webhook.Verifier
 	deliveries *webhook.DeliveryStore
 	router     *webhook.Router
-	lookup     webhook.OcOrgIDLookup // PR B: gitservice.Client
+	lookup     webhook.OcOrgIDLookup // PR B: served by CredentialService
 	cache      *webhook.RoutingCache // PR B: 60s in-process cache
 }
 

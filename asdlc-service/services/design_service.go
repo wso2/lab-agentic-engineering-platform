@@ -14,7 +14,6 @@ import (
 	"strings"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/agents"
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
@@ -73,7 +72,7 @@ type DesignService interface {
 type designService struct {
 	store        *ArtifactStore
 	agentsClient agents.Client
-	gitClient    gitservice.Client
+	artifactSvc  ArtifactService
 	taskSvc      TaskService // for SaveAndProceed reconciliation; may be nil in tests
 	// traitSync, when non-nil, is invoked after a per-component design
 	// edit so an `exposesAPI.auth` toggle propagates to the OC Component +
@@ -112,12 +111,12 @@ type DesignServiceWithSkills interface {
 func NewDesignService(
 	store *ArtifactStore,
 	agentsClient agents.Client,
-	gitClient gitservice.Client,
+	artifactSvc ArtifactService,
 ) DesignService {
 	return &designService{
 		store:        store,
 		agentsClient: agentsClient,
-		gitClient:    gitClient,
+		artifactSvc:  artifactSvc,
 	}
 }
 
@@ -151,8 +150,8 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 	status := "draft"
 	var versions []models.ArtifactVersion
 
-	if s.gitClient != nil {
-		v, err := s.gitClient.ListDesignVersions(ctx, orgID, projectID)
+	if s.artifactSvc != nil {
+		v, err := s.artifactSvc.ListDesignVersions(ctx, projectID)
 		if err != nil {
 			slog.WarnContext(ctx, "failed to list design versions", "error", err)
 		} else {
@@ -173,10 +172,10 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 	unsaved := false
 	if tag == "" {
 		unsaved = true
-	} else if s.gitClient != nil {
+	} else if s.artifactSvc != nil {
 		current, err := s.store.ListDesignFiles(ctx, orgID, projectID)
 		if err == nil {
-			tagged, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
+			tagged, err := s.artifactSvc.GetDesignAtTag(ctx, projectID, tag)
 			if err == nil && !designFilesEqual(current, tagged) {
 				unsaved = true
 			}
@@ -205,12 +204,12 @@ func (s *designService) GetDesign(ctx context.Context, orgID, projectID string) 
 }
 
 func (s *designService) GetDesignAtTag(ctx context.Context, orgID, projectID, tag string) (*models.Design, error) {
-	if s.gitClient == nil {
+	if s.artifactSvc == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-	files, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
+	files, err := s.artifactSvc.GetDesignAtTag(ctx, projectID, tag)
 	if err != nil {
-		if errors.Is(err, gitservice.ErrArtifactNotFound) {
+		if errors.Is(err, ErrArtifactNotFound) {
 			return nil, ErrDesignNotFound
 		}
 		return nil, fmt.Errorf("get design at %s: %w", tag, err)
@@ -261,8 +260,8 @@ func (s *designService) StreamGenerateDesign(ctx context.Context, orgID, project
 
 	// Require an approved (tagged) requirements version before generating design.
 	var sourceTag string
-	if s.gitClient != nil {
-		versions, err := s.gitClient.ListRequirementsVersions(ctx, orgID, projectID)
+	if s.artifactSvc != nil {
+		versions, err := s.artifactSvc.ListRequirementsVersions(ctx, projectID)
 		if err != nil {
 			slog.WarnContext(ctx, "failed to check requirements versions", "error", err)
 		} else if len(versions) == 0 {
@@ -442,12 +441,12 @@ func (s *designService) GetDesignBundle(ctx context.Context, orgID, projectID st
 // GetDesignBundleAtTag returns the file map + assembled Design at a specific
 // version tag. Used by the version selector when browsing history.
 func (s *designService) GetDesignBundleAtTag(ctx context.Context, orgID, projectID, tag string) (*DesignBundle, error) {
-	if s.gitClient == nil {
+	if s.artifactSvc == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-	files, err := s.gitClient.GetDesignAtTag(ctx, orgID, projectID, tag)
+	files, err := s.artifactSvc.GetDesignAtTag(ctx, projectID, tag)
 	if err != nil {
-		if errors.Is(err, gitservice.ErrArtifactNotFound) {
+		if errors.Is(err, ErrArtifactNotFound) {
 			return nil, ErrDesignNotFound
 		}
 		return nil, fmt.Errorf("get design at %s: %w", tag, err)
@@ -548,7 +547,7 @@ func (s *designService) DeleteComponent(ctx context.Context, orgID, projectID, c
 // Surfaces ErrSpecNotApproved (rendered as 409 by the controller) when
 // no requirements tag exists yet.
 func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID string) (*models.Design, error) {
-	if s.gitClient == nil {
+	if s.artifactSvc == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
 
@@ -563,7 +562,7 @@ func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID str
 		return nil, ErrDesignNotFound
 	}
 
-	res, err := s.gitClient.SaveDesign(ctx, orgID, projectID, gitservice.SaveArtifactRequest{
+	res, err := s.artifactSvc.SaveDesign(ctx, projectID, SaveRequest{
 		Message: "Update design",
 	})
 	if err != nil {
@@ -576,7 +575,7 @@ func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID str
 		return nil, fmt.Errorf("save design: %w", err)
 	}
 
-	versions, err := s.gitClient.ListDesignVersions(ctx, orgID, projectID)
+	versions, err := s.artifactSvc.ListDesignVersions(ctx, projectID)
 	if err != nil {
 		slog.WarnContext(ctx, "list versions after save failed", "error", err)
 	}
@@ -603,11 +602,11 @@ func (s *designService) SaveAndProceed(ctx context.Context, orgID, projectID str
 }
 
 func (s *designService) DiscardChanges(ctx context.Context, orgID, projectID string) (*models.Design, error) {
-	if s.gitClient == nil {
+	if s.artifactSvc == nil {
 		return nil, fmt.Errorf("git client not configured")
 	}
-	if _, err := s.gitClient.DiscardDesign(ctx, orgID, projectID); err != nil {
-		if errors.Is(err, gitservice.ErrArtifactNotFound) {
+	if _, err := s.artifactSvc.DiscardDesign(ctx, projectID); err != nil {
+		if errors.Is(err, ErrArtifactNotFound) {
 			return nil, fmt.Errorf("no saved version to revert to")
 		}
 		return nil, fmt.Errorf("discard design: %w", err)
@@ -616,10 +615,10 @@ func (s *designService) DiscardChanges(ctx context.Context, orgID, projectID str
 }
 
 func (s *designService) ListDesignVersions(ctx context.Context, orgID, projectID string) ([]models.ArtifactVersion, error) {
-	if s.gitClient == nil {
+	if s.artifactSvc == nil {
 		return nil, nil
 	}
-	v, err := s.gitClient.ListDesignVersions(ctx, orgID, projectID)
+	v, err := s.artifactSvc.ListDesignVersions(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list design versions: %w", err)
 	}

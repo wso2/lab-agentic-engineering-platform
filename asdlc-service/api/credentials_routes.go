@@ -124,7 +124,7 @@ func registerCredentialsInternalRoutes(mux *http.ServeMux, svc *services.Credent
 			writeJSONError(w, http.StatusBadRequest, "ocOrgId: "+err.Error())
 			return
 		}
-		secrets, err := svc.WebhookSecrets(r.Context(), ocOrgID)
+		secrets, err := svc.GetWebhookSecrets(r.Context(), ocOrgID)
 		if err != nil {
 			writeServiceError(w, err)
 			return

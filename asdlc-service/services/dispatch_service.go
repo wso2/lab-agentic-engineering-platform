@@ -9,7 +9,6 @@ import (
 
 	"github.com/google/uuid"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 	"github.com/wso2/asdlc/asdlc-service/services/codingagent"
@@ -61,9 +60,12 @@ type DispatchService interface {
 }
 
 type dispatchService struct {
-	taskRepo      repositories.TaskRepository
-	gitClient     gitservice.Client
-	componentSvc  ComponentService
+	taskRepo       repositories.TaskRepository
+	repoSvc        RepoService
+	credSvc        *CredentialService
+	anthropicSvc   *AnthropicCredentialService
+	repoBoardSvc   RepoBoardService
+	componentSvc   ComponentService
 	configSvc     ConfigService
 	store         *ArtifactStore
 	taskTokens    *TaskTokenManager
@@ -142,7 +144,10 @@ func (s *dispatchService) SetTraitSync(traitSync *TraitSyncService) {
 
 func NewDispatchService(
 	taskRepo repositories.TaskRepository,
-	gitClient gitservice.Client,
+	repoSvc RepoService,
+	credSvc *CredentialService,
+	anthropicSvc *AnthropicCredentialService,
+	repoBoardSvc RepoBoardService,
 	componentSvc ComponentService,
 	configSvc ConfigService,
 	store *ArtifactStore,
@@ -155,7 +160,10 @@ func NewDispatchService(
 ) DispatchService {
 	return &dispatchService{
 		taskRepo:      taskRepo,
-		gitClient:     gitClient,
+		repoSvc:       repoSvc,
+		credSvc:       credSvc,
+		anthropicSvc:  anthropicSvc,
+		repoBoardSvc:  repoBoardSvc,
 		componentSvc:  componentSvc,
 		configSvc:     configSvc,
 		store:         store,
@@ -174,7 +182,7 @@ func (s *dispatchService) DispatchTasks(ctx context.Context, orgID, projectID st
 		return nil, fmt.Errorf("list tasks: %w", err)
 	}
 
-	repoInfo, err := s.gitClient.GetRepo(ctx, orgID, projectID)
+	repoInfo, err := s.repoSvc.GetRepo(ctx, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("get repo: %w", err)
 	}
@@ -184,7 +192,7 @@ func (s *dispatchService) DispatchTasks(ctx context.Context, orgID, projectID st
 	if repoInfo.DefaultBranch == "" {
 		repoInfo.DefaultBranch = "main"
 	}
-	identity, err := s.gitClient.GetCredentialIdentity(ctx, orgID)
+	identity, err := s.credSvc.IdentityFor(ctx, orgID)
 	if err != nil {
 		return nil, fmt.Errorf("get credential identity: %w", err)
 	}
@@ -222,7 +230,7 @@ func (s *dispatchService) DispatchTasks(ctx context.Context, orgID, projectID st
 				slog.WarnContext(ctx, "set on_hold", "task", task.ID, "error", err)
 			}
 			if task.IssueURL != "" {
-				if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "On Hold"); err != nil {
+				if err := s.repoBoardSvc.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL,"On Hold"); err != nil {
 					slog.WarnContext(ctx, "failed to move board item to On Hold",
 						"task", task.ID, "error", err)
 				}
@@ -258,8 +266,8 @@ func depsAllDeployed(task *models.ComponentTask, statusByComponent map[string]st
 func (s *dispatchService) dispatchOne(
 	ctx context.Context,
 	task *models.ComponentTask,
-	repoInfo *gitservice.RepoInfo,
-	identity *gitservice.IdentityProjection,
+	repoInfo *models.GitRepository,
+	identity *Identity,
 ) DispatchResult {
 	res := DispatchResult{TaskID: task.ID, ComponentName: task.ComponentName}
 
@@ -323,7 +331,7 @@ func (s *dispatchService) dispatchOne(
 			slog.WarnContext(ctx, "dispatchOne: revert to on_hold failed", "task", task.ID, "error", err)
 		}
 		if task.IssueURL != "" {
-			if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "On Hold"); err != nil {
+			if err := s.repoBoardSvc.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL,"On Hold"); err != nil {
 				slog.WarnContext(ctx, "dispatchOne: move board item to On Hold", "task", task.ID, "error", err)
 			}
 		}
@@ -345,9 +353,9 @@ func (s *dispatchService) dispatchOne(
 	// the org row is missing or inactive; we surface that as a structured
 	// failure rather than markFailed so the console can offer "configure
 	// key" instead of "retry". See docs/design/anthropic-key-dual-token.md §6.2.
-	anthropicRes, err := s.gitClient.ApplyAnthropicWPSecret(ctx, task.OrgID)
+	anthropicRes, err := s.anthropicSvc.ApplyWPSecret(ctx, task.OrgID)
 	if err != nil {
-		if errors.Is(err, gitservice.ErrAnthropicKeyRequired) {
+		if errors.Is(err, ErrAnthropicKeyRequired) {
 			s.markFailed(ctx, task, "anthropic_key_required: configure an Anthropic API key in org settings before dispatching the remote coding agent")
 			res = failResult(res, task.ErrorMessage)
 			res.Error = "anthropic_key_required"
@@ -401,7 +409,7 @@ func (s *dispatchService) dispatchOne(
 	// Move the GitHub Project board item to "In Progress" so the console
 	// kanban reflects dispatch state immediately (GitHub does not do this
 	// automatically on WorkflowRun creation).
-	if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "In Progress"); err != nil {
+	if err := s.repoBoardSvc.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL,"In Progress"); err != nil {
 		slog.WarnContext(ctx, "failed to move board item to In Progress",
 			"task", task.ID, "error", err)
 	}
@@ -434,7 +442,7 @@ func (s *dispatchService) tryDispatchViaProxy(
 	ctx context.Context,
 	task *models.ComponentTask,
 	repoURL, prompt string,
-	identity *gitservice.IdentityProjection,
+	identity *Identity,
 	bearer string,
 ) (bool, string, error) {
 	if s.codingAgentDispatcher == nil || s.db == nil {
@@ -582,7 +590,7 @@ func (s *dispatchService) markFailed(ctx context.Context, task *models.Component
 	slog.ErrorContext(ctx, "dispatch step failed", "task", task.ID, "error", msg)
 	// Sync the GitHub project board item so it surfaces in the Failed column.
 	if task.IssueURL != "" {
-		if err := s.gitClient.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL, "Failed"); err != nil {
+		if err := s.repoBoardSvc.MoveIssueToStatus(ctx, task.ProjectID, task.IssueURL,"Failed"); err != nil {
 			slog.WarnContext(ctx, "markFailed: move board item to Failed", "task", task.ID, "error", err)
 		}
 	}
@@ -650,7 +658,7 @@ func (s *dispatchService) RetryTask(ctx context.Context, taskID string) (Dispatc
 	// Re-dispatch — mirrors the DispatchTasks dispatchOne path. We don't
 	// reuse DispatchTasks because that batches across the project and
 	// would skip our just-cleared task (it's in_progress, not pending).
-	repoInfo, err := s.gitClient.GetRepo(ctx, task.OrgID, task.ProjectID)
+	repoInfo, err := s.repoSvc.GetRepo(ctx, task.ProjectID)
 	if err != nil {
 		return DispatchResult{}, fmt.Errorf("retry: get repo: %w", err)
 	}
@@ -660,7 +668,7 @@ func (s *dispatchService) RetryTask(ctx context.Context, taskID string) (Dispatc
 	if repoInfo.DefaultBranch == "" {
 		repoInfo.DefaultBranch = "main"
 	}
-	identity, err := s.gitClient.GetCredentialIdentity(ctx, task.OrgID)
+	identity, err := s.credSvc.IdentityFor(ctx, task.OrgID)
 	if err != nil {
 		return DispatchResult{}, fmt.Errorf("retry: get identity: %w", err)
 	}
@@ -777,7 +785,7 @@ func firstExternalURL(list *models.DeploymentList) string {
 func (s *dispatchService) ensureOCComponent(
 	ctx context.Context,
 	task *models.ComponentTask,
-	repoInfo *gitservice.RepoInfo,
+	repoInfo *models.GitRepository,
 ) error {
 	if s.tokenInject != nil {
 		ctx = s.tokenInject(ctx)

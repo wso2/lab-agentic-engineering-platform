@@ -8,7 +8,6 @@ import (
 
 	"gorm.io/gorm"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
 	"github.com/wso2/asdlc/asdlc-service/repositories"
 	"github.com/wso2/asdlc/asdlc-service/services"
@@ -32,16 +31,18 @@ import (
 func RegisterInstallationHandlers(
 	router *Router,
 	db *gorm.DB,
-	gitClient gitservice.Client,
+	credSvc *services.CredentialService,
+	issueSvc services.IssueService,
 	taskRepo repositories.TaskRepository,
 	projector *Projector,
 ) {
 	h := &installationHandler{
 		db:         db,
-		gitClient:  gitClient,
+		credSvc:    credSvc,
+		issueSvc:   issueSvc,
 		taskRepo:   taskRepo,
 		projector:  projector,
-		disconnect: services.NewOrgDisconnectService(taskRepo, db, gitClient),
+		disconnect: services.NewOrgDisconnectService(taskRepo, db, credSvc, issueSvc),
 	}
 	router.Register("installation", "created", EventHandlerFunc(h.handleCreated))
 	router.Register("installation", "deleted", EventHandlerFunc(h.handleDeleted))
@@ -53,7 +54,8 @@ func RegisterInstallationHandlers(
 
 type installationHandler struct {
 	db         *gorm.DB
-	gitClient  gitservice.Client
+	credSvc    *services.CredentialService
+	issueSvc   services.IssueService
 	taskRepo   repositories.TaskRepository
 	projector  *Projector
 	disconnect *services.OrgDisconnectService
@@ -107,9 +109,10 @@ func (h *installationHandler) handleDeleted(ctx context.Context, _ string, _ str
 	if err != nil {
 		return err
 	}
-	ocOrgID, err := h.gitClient.OrgIDByInstallationID(ctx, p.Installation.ID)
+	ocOrgID, err := h.credSvc.OrgIDByInstallationID(ctx, p.Installation.ID)
 	if err != nil {
-		if gitservice.IsNotFound(err) {
+		var nfe *services.NotFoundError
+		if errors.As(err, &nfe) {
 			// Install never connected on our side — ack noop.
 			slog.InfoContext(ctx, "webhook: installation.deleted: no matching org (ack noop)", "installationId", p.Installation.ID)
 			return nil
@@ -138,7 +141,7 @@ func (h *installationHandler) handleSuspend(ctx context.Context, _ string, _ str
 	if err != nil {
 		return err
 	}
-	if err := h.gitClient.SetInstallationStatus(ctx, p.Installation.ID, "suspended"); err != nil {
+	if err := h.credSvc.SuspendInstallation(ctx, p.Installation.ID); err != nil {
 		return err
 	}
 	slog.InfoContext(ctx, "webhook: installation.suspend", "installationId", p.Installation.ID)
@@ -151,7 +154,7 @@ func (h *installationHandler) handleUnsuspend(ctx context.Context, _ string, _ s
 	if err != nil {
 		return err
 	}
-	if err := h.gitClient.SetInstallationStatus(ctx, p.Installation.ID, "active"); err != nil {
+	if err := h.credSvc.UnsuspendInstallation(ctx, p.Installation.ID); err != nil {
 		return err
 	}
 	slog.InfoContext(ctx, "webhook: installation.unsuspend", "installationId", p.Installation.ID)
@@ -176,7 +179,7 @@ func (h *installationHandler) handleReposAdded(ctx context.Context, _ string, _ 
 	if len(added) == 0 {
 		return nil
 	}
-	if err := h.gitClient.MergeInstallationRepos(ctx, p.Installation.ID, added, nil); err != nil {
+	if err := h.credSvc.MergeSelectedRepos(ctx, p.Installation.ID, added, nil); err != nil {
 		return err
 	}
 	slog.InfoContext(ctx, "webhook: installation_repositories.added", "installationId", p.Installation.ID, "added", added)
@@ -212,7 +215,7 @@ func (h *installationHandler) handleReposRemoved(ctx context.Context, _ string, 
 	}
 
 	// --- Phase A — JSON merge under git-service's org lock. ---
-	if err := h.gitClient.MergeInstallationRepos(ctx, p.Installation.ID, nil, removed); err != nil {
+	if err := h.credSvc.MergeSelectedRepos(ctx, p.Installation.ID, nil, removed); err != nil {
 		return err
 	}
 	slog.InfoContext(ctx, "webhook: installation_repositories.removed Phase A merged",
@@ -224,7 +227,7 @@ func (h *installationHandler) handleReposRemoved(ctx context.Context, _ string, 
 	// repo list is the authoritative signal — a forged webhook payload
 	// removing a repo that's still selected on GitHub will hit this
 	// confirmation step and stop here.
-	currentRepos, err := h.gitClient.GetInstallationRepositories(ctx, p.Installation.ID)
+	currentRepos, err := h.credSvc.ListInstallationRepos(ctx, p.Installation.ID)
 	if err != nil {
 		// Confirmation failed (network/GitHub transient). Skip cascade —
 		// next webhook redelivery or the periodic validator catches it.
@@ -293,7 +296,7 @@ func (h *installationHandler) handleReposRemoved(ctx context.Context, _ string, 
 	for i := range tasks {
 		t := &tasks[i]
 		if t.IssueNumber > 0 && t.ProjectID != "" {
-			if err := h.gitClient.CommentIssue(ctx, t.OrgID, t.ProjectID, t.IssueNumber, "abandoned: repo unselected on GitHub App install"); err != nil {
+			if err := h.issueSvc.CommentIssue(ctx, t.ProjectID, t.IssueNumber, "abandoned: repo unselected on GitHub App install"); err != nil {
 				slog.WarnContext(ctx, "reach reconciliation: comment failed", "taskId", t.ID, "error", err)
 			}
 		}

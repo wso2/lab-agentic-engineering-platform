@@ -10,20 +10,22 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/wso2/asdlc/asdlc-service/clients/gitservice"
 	"github.com/wso2/asdlc/asdlc-service/models"
 )
 
-// ArtifactStore wraps the git-service artifact endpoints. The BFF doesn't
-// touch /data/repos directly — every read/write is one HTTP call to
-// git-service which is the sole owner of the working tree on disk.
+// ArtifactStore wraps the in-process artifact service to add value beyond
+// pure file I/O: external-API catalog resolution and the typed `DesignFile`
+// shape (YAML split/assemble). The 7 downstream services (design_service,
+// requirements_service, requirements_chat_service, project_service,
+// component_service, trait_sync, runtime_config_service) consume this
+// layer.
 type ArtifactStore struct {
-	gitClient    gitservice.Client
+	artifactSvc  ArtifactService
 	externalAPIs *ExternalAPICatalog
 }
 
-func NewArtifactStore(gitClient gitservice.Client) *ArtifactStore {
-	store := &ArtifactStore{gitClient: gitClient, externalAPIs: DefaultExternalAPICatalog()}
+func NewArtifactStore(artifactSvc ArtifactService) *ArtifactStore {
+	store := &ArtifactStore{artifactSvc: artifactSvc, externalAPIs: DefaultExternalAPICatalog()}
 	registerSplitDesignCatalog(store.externalAPIs)
 	return store
 }
@@ -59,7 +61,7 @@ const RequirementsMainFile = "requirements.md"
 // `specs/requirements/`. A first-time project with no requirements yet
 // returns an empty map (not an error).
 func (s *ArtifactStore) ListRequirements(ctx context.Context, orgID, projectID string) (map[string]string, error) {
-	files, err := s.gitClient.ListRequirements(ctx, orgID, projectID)
+	files, err := s.artifactSvc.ListRequirementFiles(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -71,7 +73,7 @@ func (s *ArtifactStore) ListRequirements(ctx context.Context, orgID, projectID s
 
 // ReadRequirementFile reads a single requirement file by basename.
 func (s *ArtifactStore) ReadRequirementFile(ctx context.Context, orgID, projectID, name string) (string, error) {
-	res, err := s.gitClient.GetRequirementFile(ctx, orgID, projectID, name)
+	res, err := s.artifactSvc.GetFile(ctx, projectID, path.Join(RequirementsDir, name))
 	if err != nil {
 		return "", err
 	}
@@ -82,7 +84,7 @@ func (s *ArtifactStore) ReadRequirementFile(ctx context.Context, orgID, projectI
 // The optional ifMatch sha (returned by the previous PUT) gives the
 // streaming caller optimistic concurrency control.
 func (s *ArtifactStore) WriteRequirementFile(ctx context.Context, orgID, projectID, name, content string) (sha string, err error) {
-	res, err := s.gitClient.PutRequirementFile(ctx, orgID, projectID, name, gitservice.PutFileRequest{Content: content})
+	res, err := s.artifactSvc.PutFile(ctx, projectID, path.Join(RequirementsDir, name), content, "")
 	if err != nil {
 		return "", fmt.Errorf("write requirement file %q: %w", name, err)
 	}
@@ -95,7 +97,7 @@ func (s *ArtifactStore) DeleteRequirementFile(ctx context.Context, orgID, projec
 	if name == RequirementsMainFile {
 		return fmt.Errorf("cannot delete %s", RequirementsMainFile)
 	}
-	if err := s.gitClient.DeleteRequirementFile(ctx, orgID, projectID, name); err != nil {
+	if err := s.artifactSvc.DeleteRequirementFile(ctx, projectID, name); err != nil {
 		return fmt.Errorf("delete requirement file %q: %w", name, err)
 	}
 	return nil
@@ -131,7 +133,7 @@ const componentDirPrefix = "components/"
 // Keys are paths relative to that directory, using forward slashes (e.g.
 // `design.md`, `components/user-api/design.md`).
 func (s *ArtifactStore) ListDesignFiles(ctx context.Context, orgID, projectID string) (map[string]string, error) {
-	files, err := s.gitClient.ListDesign(ctx, orgID, projectID)
+	files, err := s.artifactSvc.ListDesignFiles(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +145,7 @@ func (s *ArtifactStore) ListDesignFiles(ctx context.Context, orgID, projectID st
 
 // ReadDesignFile reads a single design file by sub-path.
 func (s *ArtifactStore) ReadDesignFile(ctx context.Context, orgID, projectID, subPath string) (string, error) {
-	res, err := s.gitClient.GetDesignFile(ctx, orgID, projectID, subPath)
+	res, err := s.artifactSvc.GetFile(ctx, projectID, path.Join(DesignDir, subPath))
 	if err != nil {
 		return "", err
 	}
@@ -153,7 +155,7 @@ func (s *ArtifactStore) ReadDesignFile(ctx context.Context, orgID, projectID, su
 // WriteDesignFile creates or overwrites a single design file. The path is
 // relative to `specs/design/` (forward slashes; nested components allowed).
 func (s *ArtifactStore) WriteDesignFile(ctx context.Context, orgID, projectID, subPath, content string) (sha string, err error) {
-	res, err := s.gitClient.PutDesignFile(ctx, orgID, projectID, subPath, gitservice.PutFileRequest{Content: content})
+	res, err := s.artifactSvc.PutFile(ctx, projectID, path.Join(DesignDir, subPath), content, "")
 	if err != nil {
 		return "", fmt.Errorf("write design file %q: %w", subPath, err)
 	}
@@ -161,12 +163,12 @@ func (s *ArtifactStore) WriteDesignFile(ctx context.Context, orgID, projectID, s
 }
 
 // DeleteDesignFile removes a single design file. Refuses to delete the root
-// `design.md` (returns an error before reaching git-service).
+// `design.md`.
 func (s *ArtifactStore) DeleteDesignFile(ctx context.Context, orgID, projectID, subPath string) error {
 	if subPath == DesignRootFile {
 		return fmt.Errorf("cannot delete %s", DesignRootFile)
 	}
-	if err := s.gitClient.DeleteDesignFile(ctx, orgID, projectID, subPath); err != nil {
+	if err := s.artifactSvc.DeleteDesignFile(ctx, projectID, subPath); err != nil {
 		return fmt.Errorf("delete design file %q: %w", subPath, err)
 	}
 	return nil
@@ -176,7 +178,7 @@ func (s *ArtifactStore) DeleteDesignFile(ctx context.Context, orgID, projectID, 
 // its contents (e.g. `components/user-api` to remove a component's whole
 // subtree).
 func (s *ArtifactStore) DeleteDesignDirectory(ctx context.Context, orgID, projectID, subPath string) error {
-	if err := s.gitClient.DeleteDesignDirectory(ctx, orgID, projectID, subPath); err != nil {
+	if err := s.artifactSvc.DeleteDesignDirectory(ctx, projectID, subPath); err != nil {
 		return fmt.Errorf("delete design directory %q: %w", subPath, err)
 	}
 	return nil
@@ -185,9 +187,9 @@ func (s *ArtifactStore) DeleteDesignDirectory(ctx context.Context, orgID, projec
 // ReadDesign lists the working-tree design files and assembles them into the
 // flat `DesignFile` shape that the rest of the BFF expects (task generation,
 // OC provisioning, issue bodies, etc.). Returns
-// (nil, gitservice.ErrArtifactNotFound) when no design root exists yet.
+// (nil, ErrArtifactNotFound) when no design root exists yet.
 func (s *ArtifactStore) ReadDesign(ctx context.Context, orgID, projectID string) (*DesignFile, error) {
-	files, err := s.gitClient.ListDesign(ctx, orgID, projectID)
+	files, err := s.artifactSvc.ListDesignFiles(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
@@ -251,8 +253,8 @@ func (s *ArtifactStore) WriteDesign(ctx context.Context, orgID, projectID string
 // ---- Helpers ------------------------------------------------------------
 
 // IsNotFound is sugar for callers that want to distinguish "no artifact yet"
-// from a real error without importing the gitservice package.
-func IsNotFound(err error) bool { return errors.Is(err, gitservice.ErrArtifactNotFound) }
+// from a real error.
+func IsNotFound(err error) bool { return errors.Is(err, ErrArtifactNotFound) }
 
 // designFilesEqual compares two design file maps after trimming whitespace
 // from each value. Used by the has-unsaved-changes check.
