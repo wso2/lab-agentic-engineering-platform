@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"time"
 
 	"github.com/wso2/asdlc/asdlc-service/clients/httpx"
 	"github.com/wso2/asdlc/asdlc-service/clients/openchoreo/gen"
@@ -76,7 +77,10 @@ func newGenClient(cfg Config) (*gen.ClientWithResponses, error) {
 		}
 	}
 
-	inner := &http.Client{Transport: httpx.WrapTransport(nil)}
+	// DIAGNOSTIC (revert in Plan A PR) — wrap with logging RoundTripper to
+	// capture method/URL/status/elapsed per OC client call. Confirms which
+	// requests 402 and the exact URL surface BFF is hitting on platform-api.
+	inner := &http.Client{Transport: &diagnosticTransport{base: httpx.WrapTransport(nil)}}
 	outer := requests.NewRetryableHTTPClient(inner, retryCfg)
 
 	authEditor := func(ctx context.Context, req *http.Request) error {
@@ -84,9 +88,14 @@ func newGenClient(cfg Config) (*gen.ClientWithResponses, error) {
 			req.Host = cfg.HostHeader
 		}
 		req.Header.Set("X-Use-OpenAPI", "true")
-		if tok := authToken(ctx, cfg.AuthProvider); tok != "" {
+		tok, src := authTokenWithSource(ctx, cfg.AuthProvider)
+		if tok != "" {
 			req.Header.Set("Authorization", "Bearer "+tok)
 		}
+		// DIAGNOSTIC (revert in Plan A PR) — tag the request context so the
+		// logging RoundTripper can correlate the auth source with the eventual
+		// status code.
+		*req = *req.WithContext(contextWithAuthSource(req.Context(), src))
 		return nil
 	}
 
@@ -110,15 +119,68 @@ func newGenClient(cfg Config) (*gen.ClientWithResponses, error) {
 // preserves auth for async paths that explicitly inject a service token
 // via middleware.WithAuthToken (e.g. MCP-triggered deploys).
 func authToken(ctx context.Context, ap AuthProvider) string {
+	tok, _ := authTokenWithSource(ctx, ap)
+	return tok
+}
+
+// authTokenWithSource is a DIAGNOSTIC variant (revert in Plan A PR) that
+// also returns which auth source supplied the token: "user", "m2m", or "none".
+// Used to correlate request status codes with the auth path taken.
+func authTokenWithSource(ctx context.Context, ap AuthProvider) (string, string) {
 	if tok := middleware.GetAuthToken(ctx); tok != "" {
-		return tok
+		return tok, "user"
 	}
 	if ap != nil {
 		if tok, err := ap.Token(); err == nil {
-			return tok
+			return tok, "m2m"
 		} else {
 			slog.ErrorContext(ctx, "openchoreo: no user token in ctx and service token fetch failed", "error", err)
 		}
 	}
+	return "", "none"
+}
+
+// authSourceCtxKey is the context key for the auth source tag (DIAGNOSTIC).
+type authSourceCtxKey struct{}
+
+func contextWithAuthSource(ctx context.Context, src string) context.Context {
+	return context.WithValue(ctx, authSourceCtxKey{}, src)
+}
+
+func authSourceFromContext(ctx context.Context) string {
+	if v, ok := ctx.Value(authSourceCtxKey{}).(string); ok {
+		return v
+	}
 	return ""
+}
+
+// diagnosticTransport is a DIAGNOSTIC RoundTripper (revert in Plan A PR) that
+// logs the method, URL, status, and elapsed time of every OC client request
+// alongside the auth source tag set in authEditor. Surfaces exactly which
+// URLs 402 and which auth path was used.
+type diagnosticTransport struct {
+	base http.RoundTripper
+}
+
+func (t *diagnosticTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	start := time.Now()
+	resp, err := t.base.RoundTrip(req)
+	elapsed := time.Since(start)
+	status := 0
+	if resp != nil {
+		status = resp.StatusCode
+	}
+	errStr := ""
+	if err != nil {
+		errStr = err.Error()
+	}
+	slog.InfoContext(req.Context(), "openchoreo: request",
+		"method", req.Method,
+		"url", req.URL.String(),
+		"status", status,
+		"elapsed_ms", elapsed.Milliseconds(),
+		"auth_source", authSourceFromContext(req.Context()),
+		"error", errStr,
+	)
+	return resp, err
 }

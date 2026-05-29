@@ -1,9 +1,11 @@
 package oauth
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -92,5 +94,48 @@ func (p *TokenProvider) fetchLocked() (string, error) {
 	p.token = tokenResp.AccessToken
 	p.expiresAt = time.Now().Add(time.Duration(tokenResp.ExpiresIn) * time.Second)
 
+	// DIAGNOSTIC (revert in Plan A PR) — decode the minted JWT and log the
+	// claims that drive platform-api's namespace routing (ouId, ouHandle, sub,
+	// client_id, iss). Logged once per token mint (~1/hour) so log volume is
+	// negligible. Confirms the M2M token actually carries `ouId` for the BFF
+	// client (the open contradiction at the bottom of
+	// `docs/superpowers/plans/2026-05-29-bff-oc-rest-direct.md`).
+	if claims := decodeJWTClaims(p.token); claims != nil {
+		slog.Info("oauth: m2m token minted",
+			"tokenURL", p.tokenURL,
+			"clientID", p.clientID,
+			"jwt.iss", claims["iss"],
+			"jwt.sub", claims["sub"],
+			"jwt.client_id", claims["client_id"],
+			"jwt.ouId", claims["ouId"],
+			"jwt.ouHandle", claims["ouHandle"],
+			"jwt.ouName", claims["ouName"],
+			"jwt.exp", claims["exp"],
+		)
+	} else {
+		slog.Warn("oauth: m2m token minted but could not decode claims",
+			"clientID", p.clientID,
+		)
+	}
+
 	return p.token, nil
+}
+
+// decodeJWTClaims is a DIAGNOSTIC helper (revert in Plan A PR). Decodes the
+// JWT payload without signature verification — used only for logging the
+// claim values that drive downstream namespace routing.
+func decodeJWTClaims(token string) map[string]any {
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		return nil
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return nil
+	}
+	var claims map[string]any
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		return nil
+	}
+	return claims
 }
